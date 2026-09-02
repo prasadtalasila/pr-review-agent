@@ -1,0 +1,22 @@
+# Copy to config.yaml and edit. config.yaml is gitignored: it names real
+# accounts and, later, will sit beside the agent's credentials.
+
+github:
+  # The repository to poll. Reviews are posted here.
+  repo: INTO-CPS-Association/DTaaS
+
+  # The numeric id of the account the agent posts as. Its own comments are
+  # then ignored, so a posted review can never re-trigger a review.
+  # Fill this in once the reviewer account exists on the host.
+  agent_user_id: null
+
+triggers:
+  # The handle that summons a review: "@claude review this".
+  handle: claude
+
+  # Numeric GitHub user ids, never logins. A login can be renamed and the
+  # freed name registered by somebody else, which would hand eligibility to
+  # a stranger. Look an id up with:
+  #     curl -s https://api.github.com/users/<login> | grep '"id"'
+  allowlist:
+    - 114395272  # 8ohamed (Mohamed Abdulkarim)
