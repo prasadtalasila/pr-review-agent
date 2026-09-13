@@ -37,3 +37,9 @@ def test_repeated_activity_holds_at_the_floor():
     for _ in range(5):
         interval.record(changed=True)
     assert interval.seconds == 10
+
+
+def test_force_ceiling_snaps_straight_to_the_max():
+    interval = AdaptiveInterval(min_seconds=10, max_seconds=600)
+    interval.force_ceiling()
+    assert interval.seconds == 600

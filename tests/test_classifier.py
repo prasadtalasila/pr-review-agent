@@ -143,3 +143,15 @@ def test_trigger_kinds_share_no_dedupe_namespace(classifier):
     pr_key = classifier.classify_pull_request(make_pr()).trigger.dedupe_key
     mention_key = classifier.classify_comment(make_comment()).trigger.dedupe_key
     assert pr_key.split(":")[0] != mention_key.split(":")[0]
+
+
+def test_accepted_decision_is_logged_at_info(classifier, caplog):
+    with caplog.at_level("INFO", logger="pr_review_agent.triggers.classifier"):
+        classifier.classify_pull_request(make_pr())
+    assert any("reason=accepted" in r.message for r in caplog.records)
+
+
+def test_rejected_decision_is_logged_with_its_reason(classifier, caplog):
+    with caplog.at_level("DEBUG", logger="pr_review_agent.triggers.classifier"):
+        classifier.classify_pull_request(make_pr(author=OUTSIDER))
+    assert any("reason=author_not_allowlisted" in r.message for r in caplog.records)

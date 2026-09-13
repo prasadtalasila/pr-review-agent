@@ -86,3 +86,72 @@ def test_authorization_header_is_sent():
 
     make_client(handler).get("/repos/o/r/pulls")
     assert seen["auth"] == "Bearer fake-token"
+
+
+def test_malformed_rate_limit_header_is_treated_as_unknown():
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {"x-ratelimit-remaining": "not-a-number", "x-ratelimit-limit": "5000"}
+        return httpx.Response(200, json=[], headers=headers)
+
+    result = make_client(handler).get("/repos/o/r/pulls")
+    assert result.rate_limit is None
+
+
+def test_network_error_is_wrapped_in_github_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    with pytest.raises(GitHubClientError, match="failed"):
+        make_client(handler).get("/repos/o/r/pulls")
+
+
+def test_plain_permission_403_is_not_retried():
+    # No Retry-After header -- this is "bad token", not a rate limit -- so
+    # it must fail on the first attempt, not be mistaken for one.
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(403, text="bad credentials")
+
+    with pytest.raises(GitHubClientError):
+        make_client(handler).get("/repos/o/r/pulls")
+    assert calls["n"] == 1
+
+
+def test_secondary_rate_limit_retries_then_succeeds():
+    calls = {"n": 0}
+    sleeps = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(
+                403, headers={"retry-after": "1"}, text="secondary rate limit"
+            )
+        return httpx.Response(200, json=[{"ok": True}], headers={"etag": '"v"'})
+
+    client = GitHubClient(
+        token="t",
+        transport=httpx.MockTransport(handler),
+        max_retries=2,
+        retry_sleep=sleeps.append,
+    )
+    result = client.get("/repos/o/r/pulls")
+    assert result.changed
+    assert calls["n"] == 3
+    assert sleeps == [1.0, 1.0]
+
+
+def test_exhausting_retries_on_rate_limit_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"retry-after": "1"}, text="still limited")
+
+    client = GitHubClient(
+        token="t",
+        transport=httpx.MockTransport(handler),
+        max_retries=1,
+        retry_sleep=lambda seconds: None,
+    )
+    with pytest.raises(GitHubClientError, match="429"):
+        client.get("/repos/o/r/pulls")

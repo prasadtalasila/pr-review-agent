@@ -87,3 +87,33 @@ def test_interval_decays_when_nothing_changes():
     floor = poller.interval.seconds
     poller.poll_once()
     assert poller.interval.seconds > floor
+
+
+def test_low_remaining_budget_forces_interval_to_ceiling():
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {
+            "etag": '"e"',
+            "x-ratelimit-remaining": "10",
+            "x-ratelimit-limit": "5000",
+        }
+        return httpx.Response(200, json=[{"id": 1}], headers=headers)
+
+    poller = make_poller(handler)
+    poller.poll_once()
+    # Even though something changed (which would normally snap to the
+    # floor), a near-exhausted budget takes priority.
+    assert poller.interval.seconds == poller.interval.max_seconds
+
+
+def test_healthy_remaining_budget_does_not_force_ceiling():
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {
+            "etag": '"e"',
+            "x-ratelimit-remaining": "4999",
+            "x-ratelimit-limit": "5000",
+        }
+        return httpx.Response(200, json=[{"id": 1}], headers=headers)
+
+    poller = make_poller(handler)
+    poller.poll_once()
+    assert poller.interval.seconds == poller.interval.min_seconds

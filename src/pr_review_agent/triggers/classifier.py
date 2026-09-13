@@ -7,12 +7,15 @@ Pushes to an existing pull request are deliberately ignored.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
 from .allowlist import Allowlist
 from .mention import has_mention
 from .models import Actor, Comment, Decision, PullRequest, Trigger, TriggerKind
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,11 @@ class Classifier:
 
     def classify_pull_request(self, pr: PullRequest) -> Decision:
         """Accept a freshly opened pull request from an allowlisted author."""
+        decision = self._decide_pull_request(pr)
+        self._log(decision, repo=pr.repo, pr_number=pr.number, kind="pr_opened")
+        return decision
+
+    def _decide_pull_request(self, pr: PullRequest) -> Decision:
         if pr.author.is_bot or self._is_self(pr.author):
             return Decision(None, "bot_author")
         if pr.is_draft:
@@ -57,6 +65,13 @@ class Classifier:
 
     def classify_comment(self, comment: Comment) -> Decision:
         """Accept an agent mention written by an allowlisted commenter."""
+        decision = self._decide_comment(comment)
+        self._log(
+            decision, repo=comment.repo, pr_number=comment.pr_number, kind="mention"
+        )
+        return decision
+
+    def _decide_comment(self, comment: Comment) -> Decision:
         if comment.author.is_bot or self._is_self(comment.author):
             return Decision(None, "bot_commenter")
         if not has_mention(comment.body, self.handle):
@@ -73,4 +88,18 @@ class Classifier:
                 dedupe_key=f"mention:{comment.repo}:{comment.pr_number}:{comment.comment_id}",
             ),
             "accepted",
+        )
+
+    @staticmethod
+    def _log(decision: Decision, *, repo: str, pr_number: int, kind: str) -> None:
+        """Surface every decision, not just accepted ones -- this is the only
+        observability the daemon has into "why wasn't this reviewed"."""
+        level = logging.INFO if decision.accepted else logging.DEBUG
+        logger.log(
+            level,
+            "trigger decision kind=%s repo=%s pr=%s reason=%s",
+            kind,
+            repo,
+            pr_number,
+            decision.reason,
         )
