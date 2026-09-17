@@ -58,9 +58,56 @@ spend.
 | **Public relay VM forwarding webhooks to an outbound AMQP consumer** | Lowest latency, and the private host still needs no open port. Rejected for now: an internet-facing component and a second piece of infrastructure, for a latency gain of a few seconds that the 👀 acknowledgement already makes imperceptible. |
 | **PostgreSQL instead of SQLite** | The topology is one writer on one host, so Postgres's multi-client concurrency is capability paid for and never used — while SQLite's write serialisation actively simplifies the hardest invariant in the system ([reserve-then-settle](BUDGET.md#-reserve-then-settle)). SQLite needs no daemon, no port and no DBA on a locked-down host, and `sqlite3` is in the standard library. Revisit only if the agent becomes multi-host. |
 | **RabbitMQ as the queue** | Reasonable if already operational, but the budget reservation must be atomic with the dequeue — trivial in one database, awkward across a broker plus a separate store. |
+| **Celery** | The same rejection as RabbitMQ, plus a framework on top: Celery dequeues in a broker while the ledger lives in SQLite, so no transaction spans both. See [Why not Celery](#-why-not-celery). |
 | **Engine code inside DTaaS at `review-agents/`** | The reviewer's CI would run on every DTaaS change unless paths were filtered, its Python dependency tree would join the DTaaS supply chain, and reuse for a second repository would need vendoring or a monorepo-subdirectory dependency. |
 | **API-key billing instead of the subscription** | Not rejected — see [Billing mode](#-billing-mode-unresolved) below. A live option that requires no redesign. |
 | **Human review only (status quo)** | No new infrastructure or cost, but leaves the bottleneck unaddressed. |
+
+## 🌿 Why not Celery
+
+Celery has genuinely similar semantics to what [QUEUE.md](QUEUE.md) describes
+— a durable task queue, bounded retries, a visibility timeout that behaves
+like a lease, and `beat` for periodic work. It is the obvious thing to reach
+for, so the reasons it does not fit are worth writing down.
+
+**The blocking one: the reservation cannot be atomic with the dequeue.** The
+governor [reserves inside the same transaction as the claim](BUDGET.md#-reserve-then-settle)
+because three workers can each check the remaining allowance, each correctly
+conclude there is budget, and collectively breach the cap. Under Celery the
+dequeue happens in the broker and the ledger lives in SQLite, so there is no
+transaction spanning both: what is left is a distributed transaction, or a
+window between dequeue and reserve, which is the breach. Kombu does ship a
+SQLAlchemy transport that could point at SQLite, but it has long been flagged
+experimental rather than a supported production path — and it would not help
+anyway, because the dequeue still happens inside kombu's own session rather
+than one the governor can join.
+
+The rest is mismatch rather than impossibility:
+
+| Need | Celery | Cost |
+| :-- | :-- | :-- |
+| Adaptive 10 s → 600 s poll interval, snapping to the floor on activity | `beat` schedules are static; it needs a custom scheduler or self-rescheduling with `countdown=` | fights the framework for what is fifteen lines in `interval.py` |
+| Enqueue at most once per [dedupe key](TRIGGERS.md#-dedupe-keys) | not native — delivery is at-least-once | implemented in the database regardless |
+| One worker per pull request | not native | a broker-side lock, or `celery-singleton` |
+| Owner-guarded `complete`/`release`, bounded attempts, an `abandoned` status | partly approximated by `acks_late` and the visibility timeout | the inspectable version is hand-rolled anyway |
+| [No inbound port, no extra daemon](#-the-four-constraints) on a locked-down host | needs a broker process | a Redis or RabbitMQ service, a port and an ops surface |
+| An `asyncio`-native client and poller | Celery 5 has no first-class async task execution | the poller runs outside Celery regardless |
+
+The scale argument also runs backwards. Celery exists to fan work across many
+workers; this topology is deliberately **one writer on one host**, and the
+governor actively wants that serialisation. Horizontal scale here is a hazard
+rather than an unused feature.
+
+Two things it would genuinely buy: Flower gives operational visibility a
+`while` loop does not, and task priorities would be a clean way to let an
+explicit `@claude` overtake an auto-review, which today is `ORDER BY
+enqueued_at`. Neither is worth a broker while the cheap local equivalents —
+structured logging, and an ordering tweak — remain available.
+
+Revisit under the condition [STORAGE.md](STORAGE.md#-why-sqlite) already
+names: if the agent ever becomes multi-host. The move then is not
+Celery-on-SQLite but PostgreSQL plus a broker, with the reservation becoming
+an explicit row lock.
 
 ## 🏛 Repository placement
 
