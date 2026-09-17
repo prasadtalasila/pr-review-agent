@@ -35,10 +35,14 @@ pytest-cov = "^6.0"
 ruff = "^0.9"
 pylint = "^3.3"
 pyright = "^1.1"
+pytest-asyncio = "^0.24"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# The client and poller are asyncio-native; every async test in the suite
+# wants the default event loop, so marking each one individually is noise.
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src/pr_review_agent"]

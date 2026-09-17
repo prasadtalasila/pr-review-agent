@@ -3,7 +3,15 @@
 from .allowlist import Allowlist, AllowlistConfigError
 from .classifier import Classifier
 from .mention import has_mention, strip_non_prose
-from .models import Actor, Comment, Decision, PullRequest, Trigger, TriggerKind
+from .models import (
+    Actor,
+    Comment,
+    Decision,
+    PayloadError,
+    PullRequest,
+    Trigger,
+    TriggerKind,
+)
 
 __all__ = [
     "Actor",
@@ -12,6 +20,7 @@ __all__ = [
     "Classifier",
     "Comment",
     "Decision",
+    "PayloadError",
     "PullRequest",
     "Trigger",
     "TriggerKind",

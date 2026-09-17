@@ -1,68 +1,37 @@
-# PR Review Agent Developer Notes
+# Developer guide
 
-This document describes how to set up, verify and build the project. The
-source code lives in the _src/pr_review_agent_ directory and the test suite in
-_tests_.
+How to set up, verify and build the project. The source code lives in
+_src/pr_review_agent_ and the test suite in _tests_.
+
+This document is about the *toolchain*. For what the code does and why it is
+arranged that way, start at [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md);
+[CLAUDE.md](CLAUDE.md) holds the behavioural rules that govern how a change is
+made, and [AGENTS.md](AGENTS.md) the coding conventions.
 
 ## 📦 Dependencies
 
 The agent supports **Python 3.10 through 3.14** and uses:
 
-- [PyYAML](https://pyyaml.org/wiki/PyYAMLDocumentation) : reads
-  `config.yaml`. Loading goes through `yaml.safe_load` only.
-- [httpx](https://www.python-httpx.org/) : the HTTP client used by the poller
-  for conditional (`If-None-Match`) GETs against the GitHub REST API. Its
-  `MockTransport` is what lets the poller tests run with no network.
-- [Poetry](https://python-poetry.org/docs/) : manages dependencies and builds
+- [PyYAML](https://pyyaml.org/wiki/PyYAMLDocumentation) — reads `config.yaml`.
+  Loading goes through `yaml.safe_load` only.
+- [httpx](https://www.python-httpx.org/) — the async HTTP client used by the
+  poller for conditional (`If-None-Match`) GETs against the GitHub REST API.
+  Its `MockTransport` is what lets the poller tests run with no network.
+- [Poetry](https://python-poetry.org/docs/) — manages dependencies and builds
   the package. The configuration is _pyproject.toml_; new dependencies are
   added there and locked into _poetry.lock_.
 - [pytest](https://docs.pytest.org/) with
-  [pytest-cov](https://pytest-cov.readthedocs.io/) : the test suite.
-- [Ruff](https://docs.astral.sh/ruff/) : formatting and fast linting.
-- [Pylint](https://pylint.readthedocs.io/) : deeper static analysis, using the
+  [pytest-cov](https://pytest-cov.readthedocs.io/) and
+  [pytest-asyncio](https://pytest-asyncio.readthedocs.io/) — the test suite.
+  `asyncio_mode = "auto"` is set in _pyproject.toml_, so an `async def test_*`
+  needs no marker.
+- [Ruff](https://docs.astral.sh/ruff/) — formatting and fast linting.
+- [Pylint](https://pylint.readthedocs.io/) — deeper static analysis, using the
   shared _.pylintrc_.
-- [Pyright](https://github.com/microsoft/pyright) : static type checking,
+- [Pyright](https://github.com/microsoft/pyright) — static type checking,
   configured in _pyproject.toml_ under `[tool.pyright]`.
 
-## 🏗️ Code Structure
-
-The package has three layers:
-
-- **Configuration layer** — _src/pr_review_agent/config.py_ loads and
-  validates `config.yaml` into frozen dataclasses (`Config`, `GitHubConfig`,
-  `TriggerConfig`). Unknown keys are rejected rather than ignored: a typo in a
-  safety setting must fail at startup, not silently fall back to a default
-  that spends tokens.
-
-- **Trigger layer** — _src/pr_review_agent/triggers/_ decides whether an
-  observed event starts a review. `models.py` holds the payload-shaped
-  dataclasses, `allowlist.py` the numeric-user-id allowlist, `mention.py` the
-  `@claude` parser (which ignores mentions inside fences, code spans and
-  blockquotes), and `classifier.py` the single `Classifier` that turns a
-  `PullRequest` or `Comment` into a `Decision`. Every rejection carries a
-  reason code, so a "why was this not reviewed?" question is answerable from
-  logs alone.
-
-- **Poller layer** — _src/pr_review_agent/poller/_ is the only part that talks
-  to GitHub. `endpoints.py` builds the three repo-wide request paths,
-  `etag_store.py` caches the last ETag per path, `client.py` performs the
-  conditional GET (parsing rate-limit headers and honouring `Retry-After`),
-  `interval.py` implements the adaptive delay, and `poller.py` runs one cycle
-  across all three endpoints.
-
-Supporting Python 3.10 costs exactly one shim, in
-_src/pr_review_agent/_compat.py_: `enum.StrEnum` arrived in 3.11. The
-replacement is not the obvious `class StrEnum(str, Enum)` -- on 3.10 that
-inherits `Enum.__str__`, so `str(member)` yields `"Endpoint.OPEN_PULLS"`
-instead of `"open_pulls"`, and any interpolated log line or persisted dict key
-would change meaning with the interpreter version. `_compat.py` delegates
-`__str__` and `__format__` to `str` to restore the 3.11 behaviour, and
-_tests/test_compat.py_ pins that parity. Those assertions are the reason the CI
-matrix includes 3.10: it is the only job where the shim is imported at all.
-
-Layers depend downward only: `config` builds a `Classifier`, the poller
-produces payloads for it, and nothing in `triggers/` imports `poller/`. That
-is what keeps the trigger tests free of HTTP.
+`sqlite3` is in the standard library, so the store adds no dependency.
 
 ## ⚙️ Setup
 
@@ -115,7 +84,8 @@ interpreter. Prefix commands with `poetry run`, or open a subshell with
 
 Copy `config.example.yaml` to `config.yaml` before running the daemon.
 `config.yaml` is gitignored: it names real accounts and will later sit beside
-the agent's credentials.
+the agent's credentials. Every key is documented in
+[docs/CONFIG.md](docs/CONFIG.md).
 
 Project metadata is declared in PEP 621's `[project]` table, with only the
 package layout and the dev dependency group left under `[tool.poetry]`. This
@@ -132,9 +102,14 @@ poetry run pytest --cov=src/pr_review_agent --cov-report=term-missing
 ```
 
 The suite needs no network and spends no tokens: the trigger pipeline is pure
-functions over fixtures, and the poller tests drive `httpx.MockTransport`.
+functions over fixtures, the poller tests drive `httpx.MockTransport`, and the
+store tests write to `tmp_path`. There is therefore no excuse for skipping it
+before claiming a change is done.
 
-## 🔍 Linting and Formatting
+Async tests need no decorator — `asyncio_mode = "auto"` means an
+`async def test_*` is collected and run on a fresh event loop.
+
+## 🔍 Linting and formatting
 
 ```bash
 poetry run ruff check .
@@ -147,7 +122,7 @@ poetry run pylint tests --rcfile=.pylintrc --fail-under=9.0 \
 `src` currently scores 10.00/10. The test pass disables the docstring checks
 because a test's name is its description; every other check still applies.
 
-## 🔬 Type Checking
+## 🔬 Type checking
 
 ```bash
 poetry run pyright src tests
@@ -165,7 +140,7 @@ CI additionally rejects any direct-URL (`file://`, `git+`, `https://`)
 dependency that leaked into the built metadata, since such a package cannot be
 installed from an index.
 
-## 🤖 Continuous Integration
+## 🤖 Continuous integration
 
 _.github/workflows/python-ci.yml_ runs the same commands listed above, and
 bootstraps Poetry into `.venv` exactly as the Setup section does.
@@ -181,3 +156,16 @@ bootstraps Poetry into `.venv` exactly as the Setup section does.
 
 Everything CI runs can be run locally with the same `poetry run ...` command,
 which is deliberate: a CI failure should always be reproducible on a laptop.
+
+## ✅ The local gate
+
+Run all of it before claiming a change is done, and quote the result rather
+than predicting it:
+
+```bash
+poetry run pytest --cov --cov-report=term-missing
+poetry run ruff format --check . && poetry run ruff check .
+poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
+poetry run pyright src tests
+poetry build
+```

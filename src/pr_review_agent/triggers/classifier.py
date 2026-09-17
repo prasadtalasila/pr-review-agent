@@ -17,6 +17,11 @@ from .models import Actor, Comment, Decision, PullRequest, Trigger, TriggerKind
 
 logger = logging.getLogger(__name__)
 
+#: Reasons that fire on essentially every poll: ``not_fresh`` once per
+#: already-open pull request, ``no_mention`` once per comment. They stay at
+#: ``DEBUG`` so the operator-relevant rejections are readable at ``INFO``.
+NOISY_REASONS = frozenset({"not_fresh", "no_mention"})
+
 
 @dataclass(frozen=True)
 class Classifier:
@@ -33,6 +38,16 @@ class Classifier:
     agent_user_id: int | None = None
     handle: str = "claude"
 
+    def __post_init__(self) -> None:
+        """Reject a naive watermark.
+
+        GitHub timestamps are aware UTC (``...Z``). Comparing one against a
+        naive ``since`` raises ``TypeError`` on the first pull request seen,
+        which is the worst possible time to find out.
+        """
+        if self.since.tzinfo is None or self.since.utcoffset() is None:
+            raise ValueError("Classifier.since must be timezone-aware (UTC)")
+
     def _is_self(self, actor: Actor) -> bool:
         return self.agent_user_id is not None and actor.user_id == self.agent_user_id
 
@@ -43,7 +58,9 @@ class Classifier:
         return decision
 
     def _decide_pull_request(self, pr: PullRequest) -> Decision:
-        if pr.author.is_bot or self._is_self(pr.author):
+        if self._is_self(pr.author):
+            return Decision(None, "self_author")
+        if pr.author.is_bot:
             return Decision(None, "bot_author")
         if pr.is_draft:
             return Decision(None, "draft")
@@ -64,7 +81,14 @@ class Classifier:
         )
 
     def classify_comment(self, comment: Comment) -> Decision:
-        """Accept an agent mention written by an allowlisted commenter."""
+        """Accept an agent mention written by an allowlisted commenter.
+
+        Draft state is deliberately not checked here. ``draft`` exists to
+        stop the agent auto-reviewing work in progress nobody asked about;
+        an allowlisted human typing ``@claude`` on a draft *is* the ask, and
+        refusing it would make the handle unreliable exactly when a
+        contributor wants early feedback.
+        """
         decision = self._decide_comment(comment)
         self._log(
             decision, repo=comment.repo, pr_number=comment.pr_number, kind="mention"
@@ -72,7 +96,9 @@ class Classifier:
         return decision
 
     def _decide_comment(self, comment: Comment) -> Decision:
-        if comment.author.is_bot or self._is_self(comment.author):
+        if self._is_self(comment.author):
+            return Decision(None, "self_commenter")
+        if comment.author.is_bot:
             return Decision(None, "bot_commenter")
         if not has_mention(comment.body, self.handle):
             return Decision(None, "no_mention")
@@ -93,8 +119,14 @@ class Classifier:
     @staticmethod
     def _log(decision: Decision, *, repo: str, pr_number: int, kind: str) -> None:
         """Surface every decision, not just accepted ones -- this is the only
-        observability the daemon has into "why wasn't this reviewed"."""
-        level = logging.INFO if decision.accepted else logging.DEBUG
+        observability the daemon has into "why wasn't this reviewed".
+
+        Rejections that an operator would ask about are logged at ``INFO``,
+        where the default level shows them. Only the two that fire on every
+        poll are held back to ``DEBUG``.
+        """
+        noisy = decision.reason in NOISY_REASONS
+        level = logging.DEBUG if noisy and not decision.accepted else logging.INFO
         logger.log(
             level,
             "trigger decision kind=%s repo=%s pr=%s reason=%s",
