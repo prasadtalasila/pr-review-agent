@@ -12,6 +12,16 @@ from datetime import datetime
 from .._compat import StrEnum
 
 
+class PayloadError(ValueError):
+    """Raised when a GitHub REST payload cannot be mapped to a model.
+
+    A deleted (ghost) account arrives as ``"user": null``, and an event
+    nobody is accountable for cannot be allowlisted. Raising a typed error
+    lets the caller skip that one item rather than crash the poll cycle on a
+    ``TypeError``.
+    """
+
+
 @dataclass(frozen=True)
 class Actor:
     """A GitHub account responsible for an event."""
@@ -21,11 +31,16 @@ class Actor:
     is_bot: bool = False
 
     @classmethod
-    def from_api(cls, payload: dict) -> Actor:
+    def from_api(cls, payload: dict | None) -> Actor:
         """Build an Actor from a GitHub REST ``user`` object."""
-        login = payload["login"]
+        if not isinstance(payload, dict):
+            raise PayloadError(f"expected a user object, got {payload!r}")
+        try:
+            user_id, login = int(payload["id"]), payload["login"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PayloadError(f"unusable user object: {payload!r}") from exc
         return cls(
-            user_id=int(payload["id"]),
+            user_id=user_id,
             login=login,
             is_bot=payload.get("type") == "Bot" or login.endswith("[bot]"),
         )
@@ -45,14 +60,21 @@ class PullRequest:
 
 @dataclass(frozen=True)
 class Comment:
-    """A PR conversation comment or an inline diff comment."""
+    """A PR conversation comment or an inline diff comment.
+
+    ``head_sha`` is optional because the issue-comments payload does not
+    carry one: a conversation comment is attached to the pull request, not
+    to a commit. Resolving it here would cost one extra API call per comment
+    on every poll, so it is left unresolved and read at claim time instead --
+    which is also the only moment at which it is still correct.
+    """
 
     repo: str
     pr_number: int
     comment_id: int
     author: Actor
     body: str
-    head_sha: str
+    head_sha: str | None = None
 
 
 class TriggerKind(StrEnum):
@@ -64,12 +86,16 @@ class TriggerKind(StrEnum):
 
 @dataclass(frozen=True)
 class Trigger:
-    """An accepted request to review ``head_sha`` of a pull request."""
+    """An accepted request to review a pull request.
+
+    ``head_sha`` is ``None`` for a mention whose payload did not name one;
+    the worker resolves it when it claims the trigger.
+    """
 
     kind: TriggerKind
     repo: str
     pr_number: int
-    head_sha: str
+    head_sha: str | None
     actor_id: int
     dedupe_key: str
 

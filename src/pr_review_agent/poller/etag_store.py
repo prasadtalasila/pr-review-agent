@@ -1,16 +1,29 @@
-"""In-memory ETag cache, keyed by request path.
+"""ETag caches, keyed by request path.
 
-A cold start (no prior ETag) always performs a full GET. Persistence across
-restarts belongs to the SQLite store landing with the queue and budget
-governor; until then, a restart costs one extra full poll per endpoint, not
-correctness.
+A cold start (no prior ETag) always performs a full GET, so losing the cache
+costs one extra poll per endpoint, not correctness. ``ETagStore`` is the
+in-memory cache used by tests and by a one-shot poll;
+:class:`~pr_review_agent.store.SqliteStore` is the one the daemon uses, and
+satisfies the same :class:`ETagCache` protocol.
 """
 
 from __future__ import annotations
 
+from typing import Protocol
+
+
+class ETagCache(Protocol):
+    """What the poller needs of an ETag cache."""
+
+    def get(self, path: str) -> str | None:
+        """The last ETag seen for ``path``, or ``None`` on a cold start."""
+
+    def set(self, path: str, etag: str | None) -> None:
+        """Record ``etag`` for ``path``; a ``None`` etag forgets the entry."""
+
 
 class ETagStore:
-    """Remembers the last ETag seen for each polled path."""
+    """Remembers the last ETag seen for each polled path, in memory only."""
 
     def __init__(self) -> None:
         self._etags: dict[str, str] = {}

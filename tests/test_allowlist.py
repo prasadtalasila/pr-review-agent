@@ -3,7 +3,7 @@
 import pytest
 
 from pr_review_agent.triggers.allowlist import Allowlist, AllowlistConfigError
-from pr_review_agent.triggers.models import Actor
+from pr_review_agent.triggers.models import Actor, PayloadError
 
 
 def test_matches_on_id_regardless_of_login():
@@ -24,7 +24,22 @@ def test_numeric_strings_from_yaml_are_accepted():
     assert Allowlist.from_config(["1234"]).allows(Actor(1234, "alice"))
 
 
-@pytest.mark.parametrize("entries", [["alice"], ["alice", 1234], [None], [True], [1.5]])
+@pytest.mark.parametrize(
+    "entries",
+    [
+        ["alice"],
+        ["alice", 1234],
+        [None],
+        [True],
+        [1.5],
+        # "--5" used to pass the shape check and then raise a bare
+        # ValueError out of int(); a negative id is not a GitHub user.
+        ["--5"],
+        ["-5"],
+        [-5],
+        [0],
+    ],
+)
 def test_non_numeric_entries_fail_loudly(entries):
     # A login-keyed allowlist would never match and silently disable triggers.
     with pytest.raises(AllowlistConfigError):
@@ -43,3 +58,15 @@ def test_actor_from_api_detects_bots():
 
 def test_actor_from_api_coerces_string_id():
     assert Actor.from_api({"id": "42", "login": "alice", "type": "User"}).user_id == 42
+
+
+def test_actor_from_api_rejects_a_ghost_user():
+    # A deleted account arrives as "user": null; nobody is accountable for
+    # the event, so it cannot be allowlisted.
+    with pytest.raises(PayloadError):
+        Actor.from_api(None)
+
+
+def test_actor_from_api_rejects_a_user_object_without_an_id():
+    with pytest.raises(PayloadError):
+        Actor.from_api({"login": "alice"})

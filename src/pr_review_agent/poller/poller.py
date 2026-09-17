@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from .client import GitHubClient
 from .endpoints import Endpoint, RepoEndpoints
-from .etag_store import ETagStore
+from .etag_store import ETagCache, ETagStore
 from .interval import AdaptiveInterval
 
 logger = logging.getLogger(__name__)
@@ -43,17 +43,17 @@ class Poller:
 
     client: GitHubClient
     endpoints: RepoEndpoints
-    etags: ETagStore = field(default_factory=ETagStore)
+    etags: ETagCache = field(default_factory=ETagStore)
     interval: AdaptiveInterval = field(default_factory=AdaptiveInterval)
     rate_limit_floor: int = DEFAULT_RATE_LIMIT_FLOOR
 
-    def poll_once(self) -> PollCycle:
+    async def poll_once(self) -> PollCycle:
         """Sweep all three endpoints once and update the poll interval."""
         results: dict[Endpoint, list[dict] | None] = {}
         any_changed = False
         lowest_remaining: int | None = None
         for endpoint, path in self.endpoints.all_paths().items():
-            result = self.client.get(path, etag=self.etags.get(path))
+            result = await self.client.get(path, etag=self.etags.get(path))
             self.etags.set(path, result.etag)
             results[endpoint] = result.data if result.changed else None
             any_changed = any_changed or result.changed

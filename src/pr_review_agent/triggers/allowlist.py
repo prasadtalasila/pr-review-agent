@@ -30,26 +30,33 @@ class Allowlist:
         misconfigured allowlist fails at startup instead of silently
         disabling every trigger.
         """
-        bad = [entry for entry in entries if not _is_user_id(entry)]
+        coerced = [(entry, _coerce_user_id(entry)) for entry in entries]
+        bad = [entry for entry, user_id in coerced if user_id is None]
         if bad:
             raise AllowlistConfigError(
-                f"allowlist entries must be numeric GitHub user ids, got: {bad!r}"
+                f"allowlist entries must be positive GitHub user ids, got: {bad!r}"
             )
-        return cls(frozenset(int(entry) for entry in entries))
+        return cls(frozenset(user_id for _, user_id in coerced if user_id is not None))
 
     def allows(self, actor: Actor) -> bool:
         """True when ``actor`` is an eligible account."""
         return actor.user_id in self.user_ids
 
 
-def _is_user_id(entry: object) -> bool:
-    """True when ``entry`` is usable as a numeric GitHub user id.
+def _coerce_user_id(entry: object) -> int | None:
+    """``entry`` as a GitHub user id, or ``None`` when it is not one.
 
-    ``bool`` is excluded explicitly because it is a subclass of ``int``,
-    so a stray ``true`` in YAML would otherwise become user id 1.
+    Parsing and validating in one step is what keeps this total: a separate
+    shape check followed by ``int()`` let ``"--5"`` pass the check and then
+    raise a bare ``ValueError`` out of the loader. ``bool`` is excluded
+    explicitly because it is a subclass of ``int``, so a stray ``true`` in
+    YAML would otherwise become user id 1. Non-positive values are rejected
+    because GitHub user ids are positive.
     """
-    if isinstance(entry, bool):
-        return False
-    if isinstance(entry, int):
-        return True
-    return isinstance(entry, str) and entry.strip().lstrip("-").isdigit()
+    if isinstance(entry, bool) or not isinstance(entry, int | str):
+        return None
+    try:
+        value = int(entry)
+    except ValueError:
+        return None
+    return value if value > 0 else None
