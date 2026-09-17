@@ -141,8 +141,16 @@ poetry run pylint tests --rcfile=.pylintrc --fail-under=9.0 \
   --disable=missing-function-docstring,missing-module-docstring
 ```
 
-`src` currently scores 10.00/10. The test pass disables the docstring checks
-because a test's name is its description; every other check still applies.
+`src` currently scores 9.99/10. The single deduction is an `R0801`
+(`duplicate-code`) on the five-line "load the config, print why not, exit 2"
+preamble that `bootstrap.main` and `daemon.main` share. The substance of that
+step already lives in `_startup.py`; what remains is the idiom of turning a
+`StartupError` into an exit status, and removing it would mean either a union
+return type or raising `SystemExit` — which would cost `main` the
+returns-an-exit-code contract its tests rely on.
+
+The test pass disables the docstring checks because a test's name is its
+description; every other check still applies.
 
 ## 🔬 Type checking
 

@@ -30,18 +30,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import httpx
 
-from .config import Config, ConfigError
+from ._startup import StartupError, startup
+from .config import Config
 from .poller.client import GitHubClient, GitHubClientError, PollResult
 from .poller.endpoints import RepoEndpoints
-
-TOKEN_ENV = "GITHUB_TOKEN"
 
 # Unauthenticated, so it answers 401; that is a route, which is all we ask.
 ANTHROPIC_PROBE_URL = "https://api.anthropic.com/v1/models"
@@ -144,13 +142,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="pr-review-agent pre-flight checks")
     parser.add_argument("--config", default="config.yaml", help="path to config.yaml")
     args = parser.parse_args(argv)
-    token = os.environ.get(TOKEN_ENV)
-    if not token:
-        print(f"{TOKEN_ENV} is not set", file=sys.stderr)
-        return 2
     try:
-        config = Config.load(args.config)
-    except ConfigError as exc:
+        config, token = startup(args.config)
+    except StartupError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     return _report(asyncio.run(run_checks(config, token)))

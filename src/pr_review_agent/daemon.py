@@ -27,19 +27,30 @@ loses the trigger permanently.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import contextlib
 import logging
+import signal
+import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
+from ._startup import StartupError, startup
 from .config import Config
 from .poller import payloads
-from .poller.endpoints import Endpoint
+from .poller.client import GitHubClient, GitHubClientError
+from .poller.endpoints import Endpoint, RepoEndpoints
 from .poller.poller import PollCycle, Poller
 from .queue import ReviewQueue
 from .store import SqliteStore
 from .triggers.models import Decision
 
 logger = logging.getLogger(__name__)
+
+TOKEN_ENV = "GITHUB_TOKEN"
 
 #: The two watermark names STORAGE.md declares. Both comment endpoints feed
 #: ``COMMENTS``: GitHub's ``updated`` only ever moves forward, so a single
@@ -92,6 +103,22 @@ class Daemon:
         """Poll every endpoint once, and enqueue what the classifier accepts."""
         cycle = await self.poller.poll_once()
         return self._process(cycle, now=datetime.now(timezone.utc))
+
+    async def run_forever(self, stop: asyncio.Event) -> None:
+        """Cycle until ``stop`` is set.
+
+        A ``GitHubClientError`` is logged and the cycle skipped: a transient
+        network failure must not kill a daemon. Anything else propagates --
+        an unexpected bug should crash loudly rather than spin silently,
+        because a daemon that keeps polling while failing to enqueue looks
+        healthy and reviews nothing.
+        """
+        while not stop.is_set():
+            try:
+                await self.run_once()
+            except GitHubClientError as exc:
+                logger.error("poll cycle failed, retrying after the interval: %s", exc)
+            await _wait(stop, self.poller.interval.seconds)
 
     def _process(self, cycle: PollCycle, *, now: datetime) -> CycleSummary:
         changed = cycle.changed_items()
@@ -149,3 +176,77 @@ class Daemon:
             return stored
         logger.info("cold start: seeding the %s watermark to %s", name, now.isoformat())
         return self.store.advance_watermark(name, now)
+
+
+async def _wait(stop: asyncio.Event, seconds: float) -> None:
+    """Wait ``seconds``, or until ``stop`` is set -- whichever comes first.
+
+    A plain sleep would make a ``SIGTERM`` arriving early in a 600 s idle
+    interval hang a service restart for the remainder of it.
+    """
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+
+
+def _install_signal_handlers(stop: asyncio.Event) -> None:
+    """Set ``stop`` on ``SIGINT`` or ``SIGTERM``.
+
+    ``add_signal_handler`` is the asyncio-aware route, and the one that wakes
+    the loop immediately. It is unimplemented on Windows, which CI
+    spot-checks, so the plain handler is the fallback there.
+    """
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            signal.signal(sig, lambda *_: stop.set())
+
+
+async def run(config: Config, token: str) -> None:
+    """Build the daemon ``config`` describes, and run it until stopped."""
+    stop = asyncio.Event()
+    _install_signal_handlers(stop)
+    path = Path(config.store.path).resolve()
+    # A relative path is resolved against the working directory, and pointing
+    # at the wrong file costs the queue's memory of what has been reviewed.
+    logger.info("state database: %s", path)
+    client = GitHubClient(token)
+    try:
+        with SqliteStore(path) as store:
+            daemon = Daemon(
+                config=config,
+                poller=Poller(
+                    client=client,
+                    endpoints=RepoEndpoints(config.github.owner, config.github.name),
+                    etags=store,
+                ),
+                store=store,
+                queue=ReviewQueue(store),
+            )
+            daemon.seed_watermarks(now=datetime.now(timezone.utc))
+            await daemon.run_forever(stop)
+    finally:
+        await client.aclose()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the daemon from the command line; non-zero exit means unusable."""
+    parser = argparse.ArgumentParser(description="pr-review-agent daemon")
+    parser.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    try:
+        config, token = startup(args.config)
+    except StartupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    asyncio.run(run(config, token))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

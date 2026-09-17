@@ -1,12 +1,13 @@
 """Daemon loop: what one cycle enqueues, and what it must never enqueue."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 
 from pr_review_agent.config import Config
-from pr_review_agent.daemon import COMMENTS, EMPTY, PULL_REQUESTS, Daemon
+from pr_review_agent.daemon import COMMENTS, EMPTY, PULL_REQUESTS, Daemon, main
 from pr_review_agent.poller.client import GitHubClient
 from pr_review_agent.poller.endpoints import RepoEndpoints
 from pr_review_agent.poller.interval import AdaptiveInterval
@@ -211,3 +212,76 @@ async def test_a_failing_enqueue_leaves_the_watermark_unmoved(tmp_path):
         await daemon.run_once()
 
     assert daemon.store.watermark(PULL_REQUESTS) == OLD
+
+
+async def test_the_loop_stops_without_waiting_out_the_interval(tmp_path):
+    stop = asyncio.Event()
+    polls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        polls.append(str(request.url))
+        stop.set()
+        return httpx.Response(304)
+
+    daemon = make_daemon(tmp_path, handler)
+    await asyncio.wait_for(daemon.run_forever(stop), timeout=5)
+
+    assert len(polls) == 3  # exactly one cycle, three endpoints
+
+
+async def test_a_client_error_does_not_stop_the_loop(tmp_path):
+    # A transient network failure must not kill a daemon.
+    stop = asyncio.Event()
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            return httpx.Response(500)
+        stop.set()
+        return httpx.Response(304)
+
+    daemon = make_daemon(tmp_path, handler)
+    await asyncio.wait_for(daemon.run_forever(stop), timeout=5)
+
+    assert calls["n"] > 3
+
+
+async def test_an_unexpected_error_is_not_swallowed(tmp_path):
+    # Only GitHubClientError is survivable; a bug must crash loudly.
+    class BrokenQueue(ReviewQueue):
+        def enqueue(self, trigger, *, now):
+            raise RuntimeError("disk full")
+
+    daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
+    daemon.queue = BrokenQueue(daemon.store)
+    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(daemon.run_forever(asyncio.Event()), timeout=5)
+
+
+async def test_an_already_set_stop_runs_no_cycle(tmp_path):
+    polls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        polls.append(str(request.url))
+        return httpx.Response(304)
+
+    stop = asyncio.Event()
+    stop.set()
+    await asyncio.wait_for(make_daemon(tmp_path, handler).run_forever(stop), timeout=5)
+
+    assert polls == []
+
+
+def test_main_without_a_token_exits_two(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert main(["--config", str(tmp_path / "config.yaml")]) == 2
+    assert "GITHUB_TOKEN is not set" in capsys.readouterr().err
+
+
+def test_main_with_an_unreadable_config_exits_two(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    assert main(["--config", str(tmp_path / "missing.yaml")]) == 2
+    assert "cannot read config" in capsys.readouterr().err
