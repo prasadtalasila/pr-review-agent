@@ -10,7 +10,8 @@ requests/hour against a GitHub App installation budget of at least 5,000/hour
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+
+from .._compat import StrEnum
 
 
 class Endpoint(StrEnum):
@@ -29,6 +30,7 @@ class RepoEndpoints:
     name: str
 
     def path(self, endpoint: Endpoint) -> str:
+        """The request path for one watched endpoint."""
         base = f"/repos/{self.owner}/{self.name}"
         sort_updated = "sort=updated&direction=desc"
         return {
@@ -38,4 +40,5 @@ class RepoEndpoints:
         }[endpoint]
 
     def all_paths(self) -> dict[Endpoint, str]:
+        """The request path for every watched endpoint."""
         return {endpoint: self.path(endpoint) for endpoint in Endpoint}

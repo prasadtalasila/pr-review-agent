@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
+
+from .._compat import StrEnum
 
 
 @dataclass(frozen=True)
@@ -82,4 +83,5 @@ class Decision:
 
     @property
     def accepted(self) -> bool:
+        """Whether the event produced a trigger."""
         return self.trigger is not None

@@ -1,0 +1,190 @@
+name: CI
+
+'on':
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (py${{ matrix.python-version }}, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # The supported range is proved on Linux; the two other platforms are
+        # spot-checked on one version, since the package is pure Python and a
+        # per-OS difference is far likelier than a per-version one.
+        os: [ubuntu-latest]
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        include:
+          - os: macos-latest
+            python-version: '3.12'
+          - os: windows-latest
+            python-version: '3.12'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Bootstrap Poetry into the project venv
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [ -d .venv/Scripts ]; then bin=.venv/Scripts; else bin=.venv/bin; fi
+          "$bin/python" -m pip install --upgrade pip
+          "$bin/python" -m pip install poetry
+          echo "$PWD/$bin" >> "$GITHUB_PATH"
+
+      - name: Confirm Poetry comes from the venv, not the system
+        shell: bash
+        run: |
+          resolved=$(command -v poetry)
+          case "$resolved" in
+            "$PWD/.venv"/*) ;;
+            *) echo "::error::poetry resolved to $resolved, not the project venv"; exit 1 ;;
+          esac
+          poetry --version
+
+      - name: Install dependencies
+        shell: bash
+        run: poetry install --with dev
+
+      - name: Run tests
+        shell: bash
+        run: poetry run pytest -q
+
+  quality:
+    name: Lint, type-check and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Bootstrap Poetry into the project venv
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install poetry
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Check formatting
+        run: poetry run ruff format --check .
+
+      - name: Run ruff
+        run: poetry run ruff check .
+
+      - name: Run pylint on src (min score 9.0)
+        run: poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
+
+      - name: Run pylint on tests (min score 9.0)
+        run: >-
+          poetry run pylint tests --rcfile=.pylintrc --fail-under=9.0
+          --disable=missing-function-docstring,missing-module-docstring
+
+      - name: Run pyright
+        run: poetry run pyright src tests
+
+      - name: Run tests with coverage
+        run: poetry run pytest --cov --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 1
+
+  build:
+    name: Build package
+    needs: [test, quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Bootstrap Poetry into the project venv
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install poetry
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Verify the lock file matches pyproject.toml
+        run: poetry check --lock
+
+      - name: Build wheel and sdist
+        run: poetry build
+
+      - name: Reject direct-URL dependencies in built metadata
+        run: |
+          set -o pipefail
+
+          wheel_metadata=$(unzip -p dist/*.whl '*.dist-info/METADATA')
+          if [ -z "$wheel_metadata" ]; then
+            echo "::error::Failed to extract wheel METADATA (empty output)."
+            exit 1
+          fi
+          if echo "$wheel_metadata" | grep -E '^Requires-Dist:.*@ (file|git\+|https?)://'; then
+            echo "::error::Built wheel has a direct-URL dependency (shown above)."
+            exit 1
+          fi
+
+          sdist_metadata=$(tar -xOzf dist/*.tar.gz --wildcards '*/PKG-INFO')
+          if [ -z "$sdist_metadata" ]; then
+            echo "::error::Failed to extract sdist PKG-INFO (empty output)."
+            exit 1
+          fi
+          if echo "$sdist_metadata" | grep -E '^Requires-Dist:.*@ (file|git\+|https?)://'; then
+            echo "::error::Built sdist has a direct-URL dependency (shown above)."
+            exit 1
+          fi
+
+          echo "OK: no direct-URL dependencies in wheel or sdist metadata."
+
+      - name: Upload dist artefacts
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr-review-agent-dist
+          path: dist
+          retention-days: 1

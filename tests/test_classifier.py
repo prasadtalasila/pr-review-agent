@@ -1,6 +1,6 @@
 """Classifier: exactly two events may start a review."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -13,7 +13,7 @@ from pr_review_agent.triggers import (
     TriggerKind,
 )
 
-SINCE = datetime(2026, 1, 1, tzinfo=UTC)
+SINCE = datetime(2026, 1, 1, tzinfo=timezone.utc)
 LATER = SINCE + timedelta(hours=1)
 EARLIER = SINCE - timedelta(hours=1)
 

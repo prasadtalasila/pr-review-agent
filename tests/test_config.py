@@ -1,6 +1,6 @@
 """Config loading: reject anything that could silently weaken a safety rule."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -126,7 +126,7 @@ def test_shipped_example_config_is_valid():
 
 def test_classifier_is_built_from_config():
     classifier = Config.from_mapping(VALID).classifier(
-        since=datetime(2026, 1, 1, tzinfo=UTC)
+        since=datetime(2026, 1, 1, tzinfo=timezone.utc)
     )
     assert classifier.agent_user_id == 42
     assert classifier.handle == "claude"

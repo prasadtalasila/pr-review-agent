@@ -30,6 +30,7 @@ class AdaptiveInterval:
 
     @property
     def seconds(self) -> int:
+        """The current delay, in whole seconds."""
         return int(self._seconds)
 
     def record(self, *, changed: bool) -> None:

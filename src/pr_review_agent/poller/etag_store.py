@@ -16,9 +16,11 @@ class ETagStore:
         self._etags: dict[str, str] = {}
 
     def get(self, path: str) -> str | None:
+        """The last ETag seen for ``path``, or ``None`` on a cold start."""
         return self._etags.get(path)
 
     def set(self, path: str, etag: str | None) -> None:
+        """Record ``etag`` for ``path``; a ``None`` etag forgets the entry."""
         if etag is None:
             self._etags.pop(path, None)
         else:
