@@ -10,7 +10,8 @@ requests/hour against a GitHub App installation budget of at least 5,000/hour
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+
+from .._compat import StrEnum
 
 
 class Endpoint(StrEnum):

@@ -90,11 +90,18 @@ trigger twice, and a subsequent push must not revive it.
 
 ## Development
 
-Dependencies are managed with [Poetry](https://python-poetry.org/docs/).
+Python **3.10 - 3.14**. Dependencies are managed with
+[Poetry](https://python-poetry.org/docs/), which must be installed **inside the
+project venv** -- a system-wide Poetry is not supported (see
+[DEVELOPER.md](DEVELOPER.md) for why).
 
 ```bash
-pipx install poetry     # or: pip install poetry
-poetry install          # runtime + dev dependencies, into ./.venv
+python -m venv .venv
+.venv/bin/python -m pip install --upgrade pip poetry
+export PATH="$PWD/.venv/bin:$PATH"      # so `poetry` is the project's copy
+command -v poetry                       # must print <repo>/.venv/bin/poetry
+
+poetry install
 poetry run pytest --cov --cov-report=term-missing
 poetry run ruff check . && poetry run ruff format --check .
 poetry run pylint src --rcfile=.pylintrc --fail-under=9.0

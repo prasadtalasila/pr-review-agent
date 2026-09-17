@@ -6,7 +6,7 @@ _tests_.
 
 ## 📦 Dependencies
 
-The agent is written in Python (>= 3.11) and uses:
+The agent supports **Python 3.10 through 3.14** and uses:
 
 - [PyYAML](https://pyyaml.org/wiki/PyYAMLDocumentation) : reads
   `config.yaml`. Loading goes through `yaml.safe_load` only.
@@ -50,19 +50,63 @@ The package has three layers:
   `interval.py` implements the adaptive delay, and `poller.py` runs one cycle
   across all three endpoints.
 
+Supporting Python 3.10 costs exactly one shim, in
+_src/pr_review_agent/_compat.py_: `enum.StrEnum` arrived in 3.11. The
+replacement is not the obvious `class StrEnum(str, Enum)` -- on 3.10 that
+inherits `Enum.__str__`, so `str(member)` yields `"Endpoint.OPEN_PULLS"`
+instead of `"open_pulls"`, and any interpolated log line or persisted dict key
+would change meaning with the interpreter version. `_compat.py` delegates
+`__str__` and `__format__` to `str` to restore the 3.11 behaviour, and
+_tests/test_compat.py_ pins that parity. Those assertions are the reason the CI
+matrix includes 3.10: it is the only job where the shim is imported at all.
+
 Layers depend downward only: `config` builds a `Classifier`, the poller
 produces payloads for it, and nothing in `triggers/` imports `poller/`. That
 is what keeps the trigger tests free of HTTP.
 
 ## ⚙️ Setup
 
+**Poetry must be installed inside the project's own virtual environment. Do
+not use a system-wide Poetry.**
+
 ```bash
-pipx install poetry     # or: pip install poetry
-poetry install          # create the venv and install runtime + dev deps
+python -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install poetry     # latest Poetry, into .venv
+.venv/bin/poetry --version                 # expect 2.x
+.venv/bin/poetry install                   # runtime + dev dependencies
 ```
 
+On Windows the interpreter is `.venv\Scripts\python.exe` and Poetry is
+`.venv\Scripts\poetry.exe`; everything else is identical.
+
+Put `.venv/bin` first on `PATH` (or activate the venv) so a bare `poetry`
+resolves to the project's copy, and check it before you trust it:
+
+```bash
+export PATH="$PWD/.venv/bin:$PATH"
+command -v poetry        # must print <repo>/.venv/bin/poetry
+```
+
+### Why not a system-wide Poetry
+
+The distribution-packaged Poetry is routinely years behind. Debian and Ubuntu
+still ship 1.8, which cannot read this project at all: it rejects PEP 621
+`[project]` metadata outright, and it cannot read a lock-version 2.1
+`poetry.lock`. A system Poetry that is merely *older* rather than too old is
+worse than one that fails loudly, because it silently resolves a different
+dependency set than CI does, and the difference only surfaces as a CI failure
+nobody can reproduce.
+
+Pinning Poetry to the project venv also means the Poetry version is part of
+the checkout, so every contributor and every CI job runs the same one. CI
+bootstraps Poetry exactly as above and then asserts that `poetry` resolves
+inside `.venv` before using it, so this rule cannot quietly rot.
+
 `poetry install` installs the `dev` group by default. To install only the
-runtime dependencies (as the packaging job does), use `poetry install --only main`.
+runtime dependencies, use `poetry install --only main`. Avoid
+`poetry install --sync`: because Poetry lives in the venv it manages, a sync
+would uninstall Poetry itself.
 
 The project is configured (via _poetry.toml_) to create its virtual
 environment in `.venv/` inside the repository, so editors and CI find the same
@@ -73,12 +117,10 @@ Copy `config.example.yaml` to `config.yaml` before running the daemon.
 `config.yaml` is gitignored: it names real accounts and will later sit beside
 the agent's credentials.
 
-Project metadata is declared in the `[tool.poetry]` form rather than PEP 621's
-`[project]` table. That is deliberate: Poetry 1.8 (still the version shipped by
-several distributions) cannot read `[project]` metadata at all and refuses to
-run, whereas Poetry 2.x reads the `[tool.poetry]` form with only deprecation
-warnings. Both the lock file and the build have been verified under 1.8 and
-2.4. Switch to `[project]` once a 2.x floor is acceptable.
+Project metadata is declared in PEP 621's `[project]` table, with only the
+package layout and the dev dependency group left under `[tool.poetry]`. This
+is safe precisely because Poetry is pinned to the project venv: nothing has to
+stay readable by the old system Poetry.
 
 ## 🧪 Testing
 
@@ -125,8 +167,17 @@ installed from an index.
 
 ## 🤖 Continuous Integration
 
-_.github/workflows/python-ci.yml_ runs the same commands listed above. Tests
-run on Ubuntu, macOS and Windows; the lint, type-check and coverage steps run
-on Ubuntu only, to avoid paying three times for a platform-independent result.
+_.github/workflows/python-ci.yml_ runs the same commands listed above, and
+bootstraps Poetry into `.venv` exactly as the Setup section does.
+
+- `test` runs the suite on Python 3.10, 3.11, 3.12, 3.13 and 3.14 on Ubuntu,
+  plus 3.12 on macOS and Windows. The full version range is covered on one OS
+  and the other two are spot-checked, because the package is pure Python: a
+  per-OS difference is far likelier than a per-version one.
+- `quality` runs formatting, ruff, pylint, pyright and coverage once, on
+  Ubuntu and 3.12, since none of those results vary by platform.
+- `build` verifies the lock file, builds the wheel and sdist, and rejects
+  direct-URL dependencies in the built metadata.
+
 Everything CI runs can be run locally with the same `poetry run ...` command,
 which is deliberate: a CI failure should always be reproducible on a laptop.

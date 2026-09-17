@@ -51,12 +51,19 @@ locally-hosted PR review agent.
 
 ```text
 src/pr_review_agent/          importable package (src layout)
+  _compat.py                  stdlib shims for the oldest supported Python
   config.py                   config.yaml loader and validation
   triggers/                   allowlist, @mention parsing, classifier
   poller/                     GitHub REST polling, ETags, adaptive interval
 tests/                        pytest suite, one test_*.py per module
 .github/workflows/python-ci.yml   the single CI workflow
 ```
+
+- The supported range is **Python 3.10 - 3.14**, and CI runs all five. Code
+  must therefore stay 3.10-compatible: a 3.11+ name goes behind a shim in
+  `_compat.py` with a test pinning its behaviour, never an unguarded import.
+- Poetry is installed **into the project venv**; never invoke a system-wide
+  Poetry. See `DEVELOPER.md`.
 
 - Dependencies are managed by Poetry in `pyproject.toml`; `poetry.lock` is
   committed and must be regenerated (`poetry lock`) in the same commit as any
