@@ -41,6 +41,7 @@ class RateLimit:
 
     @classmethod
     def from_headers(cls, headers: httpx.Headers) -> RateLimit | None:
+        """Parse the rate-limit headers, or ``None`` when absent/malformed."""
         remaining, limit = (
             headers.get("x-ratelimit-remaining"),
             headers.get("x-ratelimit-limit"),
@@ -89,6 +90,7 @@ class GitHubClient:
         self._retry_sleep = retry_sleep
 
     def close(self) -> None:
+        """Close the underlying HTTP connection pool."""
         self._http.close()
 
     def get(self, path: str, etag: str | None = None) -> PollResult:
@@ -122,12 +124,11 @@ class GitHubClient:
             except httpx.HTTPError as exc:
                 raise GitHubClientError(f"GET {path} failed: {exc}") from exc
             retry_after = response.headers.get("retry-after")
-            can_retry = (
-                response.status_code in _RETRYABLE_STATUSES
-                and retry_after is not None
-                and attempt < self._max_retries
-            )
-            if not can_retry:
+            if (
+                retry_after is None
+                or response.status_code not in _RETRYABLE_STATUSES
+                or attempt >= self._max_retries
+            ):
                 return response
             delay = _parse_retry_after(retry_after)
             logger.warning(

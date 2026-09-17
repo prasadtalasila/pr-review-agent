@@ -10,3 +10,6 @@ venv/
 *.db-shm
 config.yaml
 bash*
+dist/
+coverage.xml
+.coverage

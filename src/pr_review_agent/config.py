@@ -44,14 +44,17 @@ class GitHubConfig:
 
     @property
     def owner(self) -> str:
+        """The ``owner`` half of ``owner/name``."""
         return self.repo.split("/", 1)[0]
 
     @property
     def name(self) -> str:
+        """The ``name`` half of ``owner/name``."""
         return self.repo.split("/", 1)[1]
 
     @classmethod
     def parse(cls, data: dict) -> GitHubConfig:
+        """Validate the ``github`` section."""
         repo = data.get("repo")
         if not isinstance(repo, str) or repo.count("/") != 1:
             raise ConfigError(f"github.repo must be 'owner/name', got {repo!r}")
@@ -72,6 +75,7 @@ class TriggerConfig:
 
     @classmethod
     def parse(cls, data: dict) -> TriggerConfig:
+        """Validate the ``triggers`` section."""
         entries = data.get("allowlist")
         if not isinstance(entries, list):
             raise ConfigError("triggers.allowlist must be a list of user ids")
@@ -94,6 +98,7 @@ class Config:
 
     @classmethod
     def from_mapping(cls, data: Any) -> Config:
+        """Validate an already-parsed YAML document."""
         if not isinstance(data, dict):
             raise ConfigError("configuration root must be a mapping")
         unknown = sorted(set(data) - {"github", "triggers"})

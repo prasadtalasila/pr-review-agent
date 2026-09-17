@@ -82,4 +82,5 @@ class Decision:
 
     @property
     def accepted(self) -> bool:
+        """Whether the event produced a trigger."""
         return self.trigger is not None

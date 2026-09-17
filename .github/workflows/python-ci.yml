@@ -1,0 +1,139 @@
+name: CI
+
+'on':
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run tests
+        run: poetry run pytest --cov --cov-report=xml --cov-report=term-missing
+
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: poetry run ruff format --check .
+
+      - name: Run ruff
+        if: matrix.os == 'ubuntu-latest'
+        run: poetry run ruff check .
+
+      - name: Run pylint on src (min score 9.0)
+        if: matrix.os == 'ubuntu-latest'
+        run: poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
+
+      - name: Run pylint on tests (min score 9.0)
+        if: matrix.os == 'ubuntu-latest'
+        run: >-
+          poetry run pylint tests --rcfile=.pylintrc --fail-under=9.0
+          --disable=missing-function-docstring,missing-module-docstring
+
+      - name: Run pyright
+        if: matrix.os == 'ubuntu-latest'
+        run: poetry run pyright src tests
+
+      - name: Upload coverage report
+        if: matrix.os == 'ubuntu-latest'
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 7
+
+  build:
+    name: Build package
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Verify the lock file matches pyproject.toml
+        run: poetry check --lock
+
+      - name: Install runtime dependencies
+        run: poetry install --only main
+
+      - name: Build wheel and sdist
+        run: poetry build
+
+      - name: Reject direct-URL dependencies in built metadata
+        run: |
+          set -o pipefail
+
+          wheel_metadata=$(unzip -p dist/*.whl '*.dist-info/METADATA')
+          if [ -z "$wheel_metadata" ]; then
+            echo "::error::Failed to extract wheel METADATA (empty output)."
+            exit 1
+          fi
+          if echo "$wheel_metadata" | grep -E '^Requires-Dist:.*@ (file|git\+|https?)://'; then
+            echo "::error::Built wheel has a direct-URL dependency (shown above)."
+            exit 1
+          fi
+
+          sdist_metadata=$(tar -xOzf dist/*.tar.gz --wildcards '*/PKG-INFO')
+          if [ -z "$sdist_metadata" ]; then
+            echo "::error::Failed to extract sdist PKG-INFO (empty output)."
+            exit 1
+          fi
+          if echo "$sdist_metadata" | grep -E '^Requires-Dist:.*@ (file|git\+|https?)://'; then
+            echo "::error::Built sdist has a direct-URL dependency (shown above)."
+            exit 1
+          fi
+
+          echo "OK: no direct-URL dependencies in wheel or sdist metadata."
+
+      - name: Upload dist artefacts
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr-review-agent-dist
+          path: dist
+          retention-days: 7

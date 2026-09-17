@@ -90,11 +90,16 @@ trigger twice, and a subsequent push must not revive it.
 
 ## Development
 
+Dependencies are managed with [Poetry](https://python-poetry.org/docs/).
+
 ```bash
-python -m venv venv
-./venv/Scripts/python.exe -m pip install -e ".[dev]"   # POSIX: venv/bin/python
-./venv/Scripts/python.exe -m pytest -q
-./venv/Scripts/python.exe -m ruff check . && ./venv/Scripts/python.exe -m ruff format --check .
+pipx install poetry     # or: pip install poetry
+poetry install          # runtime + dev dependencies, into ./.venv
+poetry run pytest --cov --cov-report=term-missing
+poetry run ruff check . && poetry run ruff format --check .
+poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
+poetry run pyright src tests
+poetry build
 ```
 
 Copy `config.example.yaml` to `config.yaml` before running the daemon.
@@ -103,6 +108,12 @@ beside the agent's credentials.
 
 The trigger pipeline is pure functions over fixtures — the suite needs no
 network and spends no tokens.
+
+See [DEVELOPER.md](DEVELOPER.md) for the full development guide,
+[CLAUDE.md](CLAUDE.md) for the behavioural guidelines applied to changes, and
+[AGENTS.md](AGENTS.md) for the coding-assistant conventions. Every command
+above is also run by `.github/workflows/python-ci.yml`, so a CI failure is
+always reproducible locally.
 
 ## Budget governor
 
