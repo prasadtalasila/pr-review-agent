@@ -15,7 +15,7 @@ host.
 | 2 | **Classifier + allowlist** | Turn a polled payload into an accepted trigger or a reason code. | implemented — [TRIGGERS.md](TRIGGERS.md) |
 | 3 | **Store** | The watermarks, ETags and queue rows that must survive a restart, and the schema migrations that get them there. | implemented — [STORAGE.md](STORAGE.md) |
 | 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`) and a per-PR lease so reviews of one pull request never overlap. The `head_sha` re-check before posting belongs to the publisher, which is where the live head can be read. | implemented — [QUEUE.md](QUEUE.md) |
-| 5 | **Budget governor** | Five layers of spending control over one ledger. | not started — [BUDGET.md](BUDGET.md) |
+| 5 | **Budget governor** | Layers 4 and 5 of spending control over one ledger; layers 2 and 3 land with the engine. | implemented — [BUDGET.md](BUDGET.md) |
 | 6 | **Engine adapter** | A `ReviewEngine` protocol with `claude_sdk`, `claude_cli` and `generic_cli` implementations. | not started |
 | 7 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
 | 8 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |
@@ -49,7 +49,9 @@ state until the governor lands.
 
 The reservation is taken inside the *same* transaction as the queue claim —
 that is the invariant the whole storage choice rests on, and it is spelled out
-in [BUDGET.md](BUDGET.md#-reserve-then-settle).
+in [BUDGET.md](BUDGET.md#-reserve-then-settle). `budget.py` imports `queue.py`
+and never the reverse: the seam is an optional `admit` predicate on `claim()`,
+so the queue stays unaware of the governor.
 
 ## 📦 Package layout
 

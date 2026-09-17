@@ -139,13 +139,19 @@ GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
 
 It polls on the adaptive interval, classifies what changed, and enqueues what
 the classifier accepts. It claims nothing and calls no review engine, so it
-cannot spend allowance — the queue fills and nothing drains it until the
-[budget governor](docs/BUDGET.md) lands.
+cannot spend allowance — the queue fills and nothing drains it until the engine
+adapter lands. The [budget governor](docs/BUDGET.md) is already in place ahead
+of it, so the spending rails exist before anything can spend.
 
 Same conventions as the bootstrap checks: `GITHUB_TOKEN` from the environment,
 `--config` for a config file elsewhere, exit `2` when either is missing. Exit
 is `0` on `SIGINT` or `SIGTERM`, which are handled rather than waited out — a
 shutdown does not sit through the remainder of a 600 s idle interval.
+
+`SIGHUP` re-reads `config.yaml` and adopts its `budget` section without a
+restart, which is what makes `budget.enabled: false` an emergency brake. A
+broken file is logged and the previous configuration kept. Only `budget` is
+hot-swapped; see [docs/CONFIG.md](docs/CONFIG.md#-reload).
 
 The SQLite file comes from `store.path` in `config.yaml`, default `state.db`.
 The resolved absolute path is logged at startup: a relative path is resolved

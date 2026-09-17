@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
+from pr_review_agent.budget import Governor
 from pr_review_agent.config import Config
 from pr_review_agent.daemon import COMMENTS, EMPTY, PULL_REQUESTS, Daemon, main
 from pr_review_agent.poller.client import GitHubClient
@@ -22,10 +23,17 @@ RECENT = NOW - timedelta(minutes=5)
 ALICE_ID = 7
 ALICE = {"id": ALICE_ID, "login": "alice", "type": "User"}
 
+BUDGET = {
+    "session_tokens": 88_000,
+    "weekly_tokens": 1_500_000,
+    "max_run_tokens": 60_000,
+}
+
 CONFIG = Config.from_mapping(
     {
         "github": {"repo": "o/r", "agent_user_id": 42},
         "triggers": {"allowlist": [ALICE_ID], "handle": "claude"},
+        "budget": BUDGET,
     }
 )
 
@@ -92,7 +100,13 @@ def make_daemon(tmp_path, handler) -> Daemon:
         # Zero keeps run_forever's wait instant; run_once ignores it.
         interval=AdaptiveInterval(min_seconds=0, max_seconds=0),
     )
-    return Daemon(config=CONFIG, poller=poller, store=store, queue=ReviewQueue(store))
+    return Daemon(
+        config=CONFIG,
+        poller=poller,
+        store=store,
+        queue=ReviewQueue(store),
+        governor=Governor(store, CONFIG.budget),
+    )
 
 
 def queued(daemon: Daemon) -> int:
@@ -285,3 +299,58 @@ def test_main_with_an_unreadable_config_exits_two(tmp_path, monkeypatch, capsys)
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     assert main(["--config", str(tmp_path / "missing.yaml")]) == 2
     assert "cannot read config" in capsys.readouterr().err
+
+
+# -- SIGHUP: the kill switch must not need a restart ---------------------
+
+
+def config_yaml(enabled="true", repo="o/r"):
+    return (
+        f"github:\n  repo: {repo}\n  agent_user_id: 42\n"
+        f"triggers:\n  handle: claude\n  allowlist:\n    - {ALICE_ID}\n"
+        f"budget:\n  enabled: {enabled}\n"
+        "  session_tokens: 88000\n"
+        "  weekly_tokens: 1500000\n"
+        "  max_run_tokens: 60000\n"
+    )
+
+
+def daemon_with_config(tmp_path, text):
+    path = tmp_path / "config.yaml"
+    path.write_text(text, encoding="utf-8")
+    daemon = make_daemon(tmp_path, {})
+    daemon.config_path = path
+    return daemon, path
+
+
+def test_sighup_reloads_the_kill_switch(tmp_path):
+    daemon, path = daemon_with_config(tmp_path, config_yaml(enabled="true"))
+    assert daemon.governor.config.enabled is True
+
+    path.write_text(config_yaml(enabled="false"), encoding="utf-8")
+    daemon.reload_config()
+
+    assert daemon.governor.config.enabled is False
+    assert daemon.config.budget.enabled is False
+
+
+def test_sighup_with_a_broken_file_keeps_the_previous_config(tmp_path, caplog):
+    """A typo must not take the service down -- that is the brake, not a bomb."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml(enabled="true"))
+    path.write_text("github: [unclosed\n", encoding="utf-8")
+
+    daemon.reload_config()
+
+    assert daemon.governor.config.enabled is True
+    assert "keeping the previous configuration" in caplog.text
+
+
+def test_sighup_does_not_swap_a_changed_repository(tmp_path, caplog):
+    """Only budget is hot-swapped: the watermarks describe the old repo."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml())
+    path.write_text(config_yaml(repo="other/repo"), encoding="utf-8")
+
+    daemon.reload_config()
+
+    assert daemon.config.github.repo == "o/r"
+    assert "need a restart" in caplog.text

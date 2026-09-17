@@ -112,7 +112,7 @@ fills the queue; nothing drains it and nothing posts to GitHub yet.
 | Queue and per-pull-request lease | implemented |
 | Bootstrap checks (`python -m pr_review_agent.bootstrap`) | implemented |
 | Daemon loop (`python -m pr_review_agent.daemon`) | implemented |
-| Budget governor | not started |
+| Budget governor (windows, ladder, reserve-then-settle) | implemented |
 | Engine adapter (`ReviewEngine`) | not started |
 | Publisher | not started |
 | Retention sweep | not started |
@@ -159,9 +159,13 @@ GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
 ```
 
 It polls, classifies and enqueues. It does **not** review anything yet: the
-queue fills and nothing drains it until the [budget
-governor](docs/BUDGET.md) lands, so nothing it does can spend allowance. See
-[docs/DAEMON.md](docs/DAEMON.md).
+queue fills and nothing drains it until the engine adapter lands, so nothing
+it does can spend allowance. The [budget governor](docs/BUDGET.md) is already
+in place ahead of it, which is the point of the build order — the spending
+rails exist before anything can spend. See [docs/DAEMON.md](docs/DAEMON.md).
+
+`budget.enabled: false` in `config.yaml`, followed by a `SIGHUP`, is the
+emergency brake: it stops the agent reviewing without a restart.
 
 The suite needs no network and spends no tokens: the trigger pipeline is pure
 functions over fixtures, and the poller tests drive `httpx.MockTransport`.
@@ -180,7 +184,7 @@ the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key.
 | [docs/DAEMON.md](docs/DAEMON.md) | What runs continuously, and what is it careful not to do? The cycle, the cold-start spend bound, the two watermark ordering rules, and how it shuts down |
 | [docs/QUEUE.md](docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
 | [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
-| [docs/BUDGET.md](docs/BUDGET.md) | **Specification, not yet built.** The five enforcement layers, reserve-then-settle under concurrency, the degradation ladder, and the self-calibrating breaker |
+| [docs/BUDGET.md](docs/BUDGET.md) | The three rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, and what is deferred to the engine phase |
 | [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |
 | [DEVELOPER.md](DEVELOPER.md) | How do I set up, test, lint and build this? |

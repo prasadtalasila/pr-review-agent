@@ -33,13 +33,14 @@ import contextlib
 import logging
 import signal
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ._startup import StartupError, startup
-from .config import Config
+from .budget import Governor
+from .config import Config, ConfigError
 from .poller import payloads
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import Endpoint, RepoEndpoints
@@ -88,6 +89,45 @@ class Daemon:
     poller: Poller
     store: SqliteStore
     queue: ReviewQueue
+    governor: Governor
+    config_path: Path | None = None
+
+    def reload_config(self) -> None:
+        """Re-read ``config.yaml`` and adopt its ``budget`` section.
+
+        ``budget.enabled: false`` is the emergency brake, so it must take
+        effect without a restart. Only the budget section is swapped: a
+        changed repository or store path mid-flight would mean the daemon's
+        watermarks no longer describe what it is polling.
+
+        A broken file leaves the previous configuration in force. Crashing
+        here would turn the brake into a way to take the service down with a
+        typo.
+        """
+        if self.config_path is None:
+            return
+        try:
+            fresh = Config.load(self.config_path)
+        except ConfigError as exc:
+            logger.error("SIGHUP: keeping the previous configuration: %s", exc)
+            return
+        if (fresh.github, fresh.triggers, fresh.store) != (
+            self.config.github,
+            self.config.triggers,
+            self.config.store,
+        ):
+            logger.warning(
+                "SIGHUP: only the budget section is reloaded; changes to "
+                "github, triggers or store need a restart"
+            )
+        self.config = replace(self.config, budget=fresh.budget)
+        self.governor.reload(fresh.budget)
+        logger.info(
+            "SIGHUP: budget reloaded, enabled=%s session=%d weekly=%d",
+            fresh.budget.enabled,
+            fresh.budget.session_limit,
+            fresh.budget.weekly_limit,
+        )
 
     def seed_watermarks(self, *, now: datetime) -> None:
         """Bound a fresh database to ``now`` before the first poll.
@@ -188,12 +228,13 @@ async def _wait(stop: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
 
 
-def _install_signal_handlers(stop: asyncio.Event) -> None:
-    """Set ``stop`` on ``SIGINT`` or ``SIGTERM``.
+def _install_signal_handlers(stop: asyncio.Event, reload_config: Callable) -> None:
+    """Set ``stop`` on ``SIGINT``/``SIGTERM``, reload on ``SIGHUP``.
 
     ``add_signal_handler`` is the asyncio-aware route, and the one that wakes
     the loop immediately. It is unimplemented on Windows, which CI
-    spot-checks, so the plain handler is the fallback there.
+    spot-checks, so the plain handler is the fallback there -- and Windows
+    has no ``SIGHUP`` at all, so that one is skipped rather than faked.
     """
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -201,12 +242,18 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
             loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
             signal.signal(sig, lambda *_: stop.set())
+    sighup = getattr(signal, "SIGHUP", None)
+    if sighup is None:
+        return
+    try:
+        loop.add_signal_handler(sighup, reload_config)
+    except NotImplementedError:
+        signal.signal(sighup, lambda *_: reload_config())
 
 
-async def run(config: Config, token: str) -> None:
+async def run(config: Config, token: str, config_path: Path | None = None) -> None:
     """Build the daemon ``config`` describes, and run it until stopped."""
     stop = asyncio.Event()
-    _install_signal_handlers(stop)
     path = Path(config.store.path).resolve()
     # A relative path is resolved against the working directory, and pointing
     # at the wrong file costs the queue's memory of what has been reviewed.
@@ -223,7 +270,13 @@ async def run(config: Config, token: str) -> None:
                 ),
                 store=store,
                 queue=ReviewQueue(store),
+                # Built here even though nothing claims yet: the daemon owns
+                # the process, so it owns the governor a worker will claim
+                # through, and SIGHUP has something live to reload.
+                governor=Governor(store, config.budget),
+                config_path=config_path,
             )
+            _install_signal_handlers(stop, daemon.reload_config)
             daemon.seed_watermarks(now=datetime.now(timezone.utc))
             await daemon.run_forever(stop)
     finally:
@@ -244,7 +297,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except StartupError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    asyncio.run(run(config, token))
+    asyncio.run(run(config, token, Path(args.config)))
     return 0
 
 

@@ -125,3 +125,29 @@ def test_a_failed_transaction_rolls_back(tmp_path):
             conn.execute("DELETE FROM etags")
             raise RuntimeError("the worker died mid-claim")
         assert store.get("/p") == '"v1"'
+
+
+def test_the_ledger_arrives_at_schema_version_three(tmp_path):
+    with SqliteStore(tmp_path / "state.db") as store:
+        assert store.schema_version == SCHEMA_VERSION == 3
+        with store.transaction() as conn:
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
+            }
+    # usage_confidence exists because some engines report no tokens at all,
+    # and an operator has to be able to see when that was the case.
+    assert {"reserved_tokens", "used_tokens", "usage_confidence", "mode"} <= columns
+
+
+def test_an_existing_database_adopts_the_ledger(tmp_path):
+    """A store written before this migration gains the table, not an error."""
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store:
+        store.advance_watermark("comments", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        with store.transaction() as conn:
+            conn.execute("DROP TABLE ledger")
+            conn.execute("PRAGMA user_version = 2")
+
+    with SqliteStore(path) as reopened:
+        assert reopened.schema_version == 3
+        assert reopened.watermark("comments") is not None

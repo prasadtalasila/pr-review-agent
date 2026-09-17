@@ -11,8 +11,8 @@ claims it later.
 
 That indirection is what the spending rails need. A claim is the single point
 at which work becomes expensive, so it is the single point the [budget
-governor](BUDGET.md) has to guard — and the reservation is specified to be
-taken inside the *same* transaction as the claim.
+governor](BUDGET.md) has to guard — and the reservation is taken inside the
+*same* transaction as the claim, through the `admit` hook below.
 
 ## 🔑 A trigger is enqueued at most once
 
@@ -36,6 +36,41 @@ The claim is a read that picks a row followed by a write that leases it.
 SQLite has no `SKIP LOCKED`, so the pair runs inside one `BEGIN IMMEDIATE`
 transaction — the write lock is taken up front, which is what makes it atomic
 against another writer.
+
+## 🔌 The `admit` hook
+
+`claim(now=, owner=, admit=None)` takes an optional predicate
+`(connection, claim, now) -> bool`, called **inside** the claim's own
+transaction. That is what makes the budget reservation atomic with the lease:
+the governor writes its ledger row on the connection it is handed, and the row
+and the lease commit together or not at all.
+
+It is a plain predicate rather than anything richer, so no budget type appears
+in this signature and `queue.py` imports nothing from the governor.
+
+**A refused candidate is skipped, not final.** `_CLAIMABLE` has no `LIMIT 1`;
+`claim` walks the ordered candidates and leases the first one `admit` accepts.
+
+That matters at the ladder's 85 % rung, where fresh pull requests stop being
+auto-reviewed but an explicit `@claude` is still honoured. A refused pull
+request keeps its `pending` status and its attempt count — a refusal is about
+the allowance, not the trigger, and burning an attempt would let three
+refusals abandon a perfectly good one. So it correctly stays at the head of a
+FIFO queue, and without skipping it would block the maintainer's mention
+behind it until the window rolled: days.
+
+Every other condition in `_CLAIMABLE` is a fact about the row, which SQLite can
+already exclude on. A budget refusal is the first decision it cannot express,
+because it depends on the ledger, the rung and the trigger's kind.
+
+The candidates are read out with `fetchall` before one is leased, because
+committing with a half-consumed cursor still open raises "SQL statements in
+progress". The claimable set is bounded by the pending queue, which is small.
+
+**The hook is optional, and that is the known weakness of the seam.** Nothing
+in the type system stops a caller claiming without a governor;
+[DESIGN.md](DESIGN.md#-the-one-rule)'s one rule, review, and the fact that the
+only claimer will be the engine phase's worker are what hold it.
 
 ## ⏱ Leases expire; they are not renewed
 

@@ -3,10 +3,11 @@
 One SQLite file, in WAL mode, holding everything that has to survive a
 restart. Implemented in `src/pr_review_agent/store.py`.
 
-Three things live here: the **watermarks** and **ETags** below, and the
-**queue** rows whose claim protocol is described in [QUEUE.md](QUEUE.md).
-The schema is declared in one place — this module — because migration order
-has to be a single sequence.
+Four things live here: the **watermarks** and **ETags** below, the **queue**
+rows whose claim protocol is described in [QUEUE.md](QUEUE.md), and the
+**ledger** the [budget governor](BUDGET.md) computes its windows from. The
+schema is declared in one place — this module — because migration order has to
+be a single sequence.
 
 ## 🗄 Why SQLite
 
@@ -98,18 +99,42 @@ CREATE TABLE queue (
     leased_until TEXT,
     owner        TEXT
 );
+CREATE TABLE ledger (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedupe_key       TEXT NOT NULL,   -- the queue row this run is for
+    owner            TEXT NOT NULL,   -- the lease holder that reserved it
+    actor_id         INTEGER NOT NULL,
+    mode             TEXT NOT NULL,   -- the ladder rung it was admitted under
+    reserved_tokens  INTEGER NOT NULL,
+    used_tokens      INTEGER,         -- NULL until settled
+    usage_confidence TEXT,            -- exact|estimated|unavailable
+    engine           TEXT,            -- NULL until settled
+    model            TEXT,
+    reserved_at      TEXT NOT NULL,   -- aware UTC, ISO-8601
+    settled_at       TEXT
+);
 ```
 
-The ledger the [budget governor](BUDGET.md) needs is not here yet. It will be
-append-only and **never** pruned, because the rolling budget windows are
-computed from it — the retention split is *purge content, retain metrics*. See
+The ledger is append-only and **never** pruned, even when review content is
+purged after a merge: the rolling budget windows are computed from it, so
+deleting a row would silently hand back allowance that was genuinely spent.
+The retention split is *purge content, retain metrics*. See
 [DESIGN.md](DESIGN.md#-retention).
+
+Two columns it deliberately does **not** have. There is no `state`, because a
+row is reserved exactly when `settled_at IS NULL`. There is no `expires_at`,
+because an unsettled reservation stays charged until it ages out of its
+rolling window rather than being released when its lease lapses — see
+[BUDGET.md](BUDGET.md#a-crashed-workers-reservation-stays-charged).
+
+`repo` and `pr_number` are absent for the same reason: both dedupe-key
+namespaces already carry them, and `queue` rows are kept forever.
 
 ## 🔢 Migrations
 
 Schema changes are an ordered list applied on connect, with the file's
 `PRAGMA user_version` recording how many have run. Version 1 is the ETag and
-watermark tables; version 2 adds the queue.
+watermark tables; version 2 adds the queue; version 3 adds the ledger.
 
 Every statement is `IF NOT EXISTS`, for two reasons that both come down to
 re-runnability. A database created before the list existed already carries
@@ -124,5 +149,6 @@ write lock is taken up front rather than on first write, which is what makes a
 read-then-write sequence — the queue's [conditional claim](QUEUE.md#-one-pull-request-one-worker)
 — atomic against another writer.
 
-That is also where the budget reservation is specified to go, so that a claim
-and the allowance it spends commit together or not at all.
+That is also where the budget reservation goes, through `claim()`'s `admit`
+hook, so that a claim and the allowance it spends commit together or not at
+all.

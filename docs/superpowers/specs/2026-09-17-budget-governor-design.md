@@ -225,16 +225,24 @@ governor contributes statements that run inside them. `queue.py` gains no
 import from `budget.py`, so the dependency points one way, as
 [ARCHITECTURE.md](../../ARCHITECTURE.md#-layering) requires.
 
-The hook is `Callable[[sqlite3.Connection, Claim], bool]` — a plain predicate,
-because a truthy answer is all `claim()` needs and anything richer would put a
-budget type in the queue's signature. `Governor.admit` satisfies it.
+The hook is `Callable[[sqlite3.Connection, Claim, datetime], bool]` — a plain
+predicate, because a truthy answer is all `claim()` needs and anything richer
+would put a budget type in the queue's signature. `Governor.admit` satisfies
+it. The `datetime` is the `now` the claim is already working from: the
+governor has to measure its windows against the same instant the lease is
+computed from, and taking a fresh clock reading inside `admit` would also
+make the arithmetic untestable.
 
 `Governor` holds the `SqliteStore`, so `settle()` can open its own
 transaction; `admit` is the one method handed a connection from outside.
-`settle(claim, *, used_tokens, usage_confidence, engine, model, now)` finds
-its row by `(dedupe_key, owner)` where `settled_at IS NULL` — the same pair
-`queue._FINISH` is guarded on, so a worker whose lease lapsed cannot settle
-the row a later worker now holds.
+`settle(claim, usage, *, now)` finds its row by `(dedupe_key, owner)` where
+`settled_at IS NULL` — the same pair `queue._FINISH` is guarded on, so a
+worker whose lease lapsed cannot settle the row a later worker now holds.
+
+`Usage(tokens, confidence, engine, model)` is one frozen record rather than
+four keyword arguments. They are a single answer — what the run cost and how
+far that can be trusted — and it is what a posted comment must be traceable
+back to.
 
 The reserved row's `mode` is written but **not** read back in this branch: the
 engine adapter is what will need to know which rung a run was admitted under,
@@ -283,6 +291,15 @@ fixtures in `tests/test_config.py` gain it.
 zero, and utilisation an undefined `0 ÷ 0`; an operator who wants to stop the
 agent has `enabled: false`. Each limit is floored to a whole number of tokens
 after the share and the seventh are applied.
+
+`bool` is excluded from every numeric key explicitly, because it subclasses
+`int`: without that check `weekly_tokens: true` would validate as a
+one-token ceiling, silently.
+
+One cross-key check: `max_run_tokens` must fit inside the daily allowance.
+The daily window is the tightest of the three, so a run larger than it could
+never be admitted at all — an agent that reviews nothing, arrived at by
+arithmetic nobody did by hand. It fails at startup instead.
 
 **`enabled: false` stops reviewing; it does not stop checking.** The key name
 comes from `BUDGET.md` and cannot be renamed, but the two readings differ by

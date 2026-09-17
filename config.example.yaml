@@ -28,3 +28,31 @@ store:
   # service account's data directory in production: pointing at the wrong
   # file costs the queue's memory of what has already been reviewed.
   path: state.db
+
+budget:
+  # The spending rails. Nothing reaches a review engine except through them.
+  #
+  # false is the emergency brake: it STOPS REVIEWING. It does not turn the
+  # budget checks off. Takes effect on SIGHUP, without a restart.
+  enabled: true
+
+  # Your estimate of the PLAN's limits, in tokens. A subscription publishes
+  # no quota, so these are guesses and there are deliberately no defaults --
+  # a made-up spending ceiling is worse than being asked for one.
+  #
+  # Set them CONSERVATIVELY LOW. Until the circuit breaker lands with the
+  # engine adapter, nothing detects an over-estimate: the governor will
+  # report healthy utilisation while the real limit is already being hit.
+  session_tokens: 88000      # rolling 5-hour window
+  weekly_tokens: 1500000     # rolling 7-day window
+
+  # Reserved up front for every run, and released down to actual usage when
+  # the run settles. Must fit inside the daily allowance, which is a seventh
+  # of the weekly one.
+  max_run_tokens: 60000
+
+  # The share of each plan window the agent may use, never the whole
+  # allowance. This is what stops a runaway agent locking you out of your own
+  # interactive Claude Code sessions: its ceiling is deliberately below the
+  # plan's. Optional; 40 is the default.
+  reviewer_share_pct: 40

@@ -1,6 +1,7 @@
 """The SQLite state that has to survive a restart.
 
-Three things are kept here, all of them about *not repeating work*:
+Four things are kept here, and the first three are about *not repeating
+work*:
 
 **Watermarks.** The poller sees open pull requests and recent comments, not
 ``opened`` events, so the classifier needs a timestamp below which everything
@@ -15,6 +16,13 @@ It lives here because it is the same table shape and the same lifetime.
 leases that stop two workers reviewing one pull request at once. The table is
 declared here because this module owns the schema; the claim protocol that
 operates on it lives in :mod:`pr_review_agent.queue`.
+
+**The ledger.** Every reservation the budget governor takes and every run it
+settles. Unlike the other three it is a *record*, not a cache: the rolling
+windows are computed from it, so its rows are append-only and are never
+pruned -- not even when review content is purged after a merge. Deleting one
+would silently hand back allowance that was genuinely spent. The arithmetic
+over it lives in :mod:`pr_review_agent.budget`.
 
 A watermark only ever moves forward. A restart that read a stale row, or two
 cycles settling out of order, must not walk it backwards and re-admit events
@@ -69,6 +77,23 @@ _MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX IF NOT EXISTS queue_claimable ON queue (status, enqueued_at);
     CREATE INDEX IF NOT EXISTS queue_by_pr ON queue (repo, pr_number, status);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ledger (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        dedupe_key       TEXT NOT NULL,
+        owner            TEXT NOT NULL,
+        actor_id         INTEGER NOT NULL,
+        mode             TEXT NOT NULL,
+        reserved_tokens  INTEGER NOT NULL,
+        used_tokens      INTEGER,
+        usage_confidence TEXT,
+        engine           TEXT,
+        model            TEXT,
+        reserved_at      TEXT NOT NULL,
+        settled_at       TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ledger_window ON ledger (reserved_at);
     """,
 )
 

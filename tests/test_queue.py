@@ -211,3 +211,54 @@ def test_a_second_connection_cannot_double_lease(tmp_path):
 def test_a_naive_timestamp_is_rejected(queue):
     with pytest.raises(ValueError):
         queue.enqueue(opened(), now=datetime(2026, 9, 17, 12, 0))
+
+
+# -- the admit hook (the budget governor's seam) -------------------------
+
+
+def test_admit_runs_inside_the_claim_transaction(tmp_path):
+    """What it writes commits with the lease, which is the whole invariant."""
+    seen = {}
+
+    def admit(conn, claim, now):
+        conn.execute("CREATE TABLE IF NOT EXISTS probe (key TEXT)")
+        conn.execute("INSERT INTO probe VALUES (?)", (claim.trigger.dedupe_key,))
+        seen["in_transaction"] = conn.in_transaction
+        seen["now"] = now
+        return True
+
+    with SqliteStore(tmp_path / "state.db") as store:
+        queue = ReviewQueue(store)
+        queue.enqueue(opened(), now=NOON)
+        claim = queue.claim(now=NOON, owner="w", admit=admit)
+        assert claim is not None
+        assert seen["in_transaction"] is True
+        assert seen["now"] == NOON
+
+        with store.transaction() as conn:
+            assert conn.execute("SELECT count(*) FROM probe").fetchone()[0] == 1
+
+
+def test_a_refused_candidate_is_skipped_not_final(queue):
+    """The head-of-line rule: refusing one row must still offer the next."""
+    queue.enqueue(opened(pr=1), now=NOON)
+    queue.enqueue(mention(pr=2), now=NOON + timedelta(seconds=1))
+
+    claim = queue.claim(
+        now=NOON,
+        owner="w",
+        admit=lambda _conn, c, _now: c.trigger.kind is TriggerKind.MENTION,
+    )
+    assert claim is not None
+    assert claim.trigger.pr_number == 2
+
+
+def test_refusing_everything_claims_nothing_and_costs_no_attempt(queue):
+    queue.enqueue(opened(), now=NOON)
+
+    assert queue.claim(now=NOON, owner="w", admit=lambda *_: False) is None
+    assert queue.status(opened().dedupe_key) is QueueStatus.PENDING
+
+    claim = queue.claim(now=NOON, owner="w")
+    assert claim is not None
+    assert claim.attempts == 1  # the refusal did not count against the bound
