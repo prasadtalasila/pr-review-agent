@@ -22,6 +22,11 @@ class ConfigError(ValueError):
     """Raised when the configuration file is unusable."""
 
 
+#: Resolved against the working directory the daemon is started in, which is
+#: why the daemon logs the absolute path it settled on.
+DEFAULT_STORE_PATH = "state.db"
+
+
 def _section(data: dict, name: str, allowed: set[str]) -> dict:
     """Return section ``name``, rejecting unknown keys inside it."""
     value = data.get(name)
@@ -90,18 +95,34 @@ class TriggerConfig:
 
 
 @dataclass(frozen=True)
+class StoreConfig:
+    """Where the SQLite state file lives."""
+
+    path: str = DEFAULT_STORE_PATH
+
+    @classmethod
+    def parse(cls, data: dict) -> StoreConfig:
+        """Validate the ``store`` section."""
+        path = data.get("path", DEFAULT_STORE_PATH)
+        if not isinstance(path, str) or not path.strip():
+            raise ConfigError(f"store.path must be a non-empty path, got {path!r}")
+        return cls(path=path)
+
+
+@dataclass(frozen=True)
 class Config:
     """The whole configuration file."""
 
     github: GitHubConfig
     triggers: TriggerConfig
+    store: StoreConfig
 
     @classmethod
     def from_mapping(cls, data: Any) -> Config:
         """Validate an already-parsed YAML document."""
         if not isinstance(data, dict):
             raise ConfigError("configuration root must be a mapping")
-        unknown = sorted(set(data) - {"github", "triggers"})
+        unknown = sorted(set(data) - {"github", "triggers", "store"})
         if unknown:
             raise ConfigError(f"unknown top-level sections: {unknown}")
         return cls(
@@ -110,6 +131,13 @@ class Config:
             ),
             triggers=TriggerConfig.parse(
                 _section(data, "triggers", {"allowlist", "handle"})
+            ),
+            # The only optional section: its default cannot spend anything,
+            # because cold-start seeding bounds a fresh database to the
+            # moment the daemon started. Unknown keys inside it are still
+            # rejected, so a typo in a path is not silently ignored.
+            store=StoreConfig.parse(
+                _section(data, "store", {"path"}) if "store" in data else {}
             ),
         )
 

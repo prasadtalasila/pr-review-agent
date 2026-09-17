@@ -20,3 +20,11 @@ triggers:
   #     curl -s https://api.github.com/users/<login> | grep '"id"'
   allowlist:
     - 114395272  # 8ohamed (Mohamed Abdulkarim)
+
+store:
+  # The SQLite file holding watermarks, ETags and the review queue. Optional;
+  # this is the default. A relative path is resolved against the working
+  # directory the daemon starts in, so prefer an absolute path under a
+  # service account's data directory in production: pointing at the wrong
+  # file costs the queue's memory of what has already been reviewed.
+  path: state.db
