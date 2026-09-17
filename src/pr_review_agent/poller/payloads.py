@@ -85,8 +85,9 @@ def comments(repo: str, items: Iterable[dict]) -> Iterator[Comment]:
                 comment_id=int(item["id"]),
                 author=Actor.from_api(item.get("user")),
                 body=item.get("body") or "",
+                updated_at=parse_timestamp(item["updated_at"]),
             )
-        except (PayloadError, KeyError, TypeError, ValueError) as exc:
+        except (PayloadError, AttributeError, KeyError, TypeError, ValueError) as exc:
             _skip("comment", item, exc)
 
 

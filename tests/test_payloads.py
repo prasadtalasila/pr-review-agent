@@ -25,6 +25,7 @@ def issue_comment(**overrides) -> dict:
         "id": 555,
         "user": ALICE,
         "body": "@claude please look",
+        "updated_at": "2026-09-17T08:00:00Z",
         "issue_url": "https://api.github.com/repos/o/r/issues/12",
         "html_url": "https://github.com/o/r/pull/12#issuecomment-555",
     }
@@ -36,6 +37,7 @@ def review_comment(**overrides) -> dict:
         "id": 777,
         "user": ALICE,
         "body": "@claude here too",
+        "updated_at": "2026-09-17T09:00:00Z",
         "pull_request_url": "https://api.github.com/repos/o/r/pulls/12",
         "commit_id": "cafebabe",
     }
@@ -93,6 +95,17 @@ def test_comment_head_sha_is_left_for_claim_time():
     # comment's commit_id names the commit it was written against instead.
     assert next(iter(comments(REPO, [issue_comment()]))).head_sha is None
     assert next(iter(comments(REPO, [review_comment()]))).head_sha is None
+
+
+def test_comment_updated_at_is_mapped():
+    # It is what the comments watermark advances on.
+    (comment,) = comments(REPO, [issue_comment()])
+    assert comment.updated_at == datetime(2026, 9, 17, 8, 0, tzinfo=timezone.utc)
+
+
+def test_comment_without_a_usable_updated_at_is_skipped():
+    assert list(comments(REPO, [issue_comment(updated_at=None)])) == []
+    assert list(comments(REPO, [review_comment(updated_at="not a date")])) == []
 
 
 def test_comment_with_a_ghost_author_is_skipped():
