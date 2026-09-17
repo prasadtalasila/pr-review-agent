@@ -31,6 +31,10 @@ github:
   repo: INTO-CPS-Association/DTaaS
 triggers:
   allowlist: [114395272]
+budget:
+  session_tokens: 88000
+  weekly_tokens: 1500000
+  max_run_tokens: 60000
 """
 
 

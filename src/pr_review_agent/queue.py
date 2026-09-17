@@ -31,7 +31,8 @@ forever, and each attempt spends allowance before it fails.
 **The claim is atomic.** SQLite has no ``SKIP LOCKED``, so the read that
 picks a row and the write that leases it run inside one ``BEGIN IMMEDIATE``
 transaction (:meth:`~pr_review_agent.store.SqliteStore.transaction`). The
-budget reservation is specified to join that same transaction.
+budget reservation joins that same transaction through ``claim``'s ``admit``
+hook, so a claim and the allowance it spends commit together or not at all.
 
 ``Claim.trigger.head_sha`` is the head observed when the trigger was
 *classified*, and for a mention it may be ``None`` because the comment payload
@@ -43,12 +44,18 @@ is discarded rather than published late.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ._compat import StrEnum
 from .store import SqliteStore, to_utc
 from .triggers.models import Trigger, TriggerKind
+
+#: The budget governor's hook into :meth:`ReviewQueue.claim`. It is handed
+#: the claim's own transaction, so whatever it writes commits with the lease
+#: or not at all. Returning ``False`` skips the candidate.
+Admit = Callable[[sqlite3.Connection, "Claim", datetime], bool]
 
 # Comfortably above the per-run wall-clock ceiling the budget governor
 # enforces, so a live worker never loses its lease; see the module docstring.
@@ -97,8 +104,16 @@ WHERE attempts >= :max_attempts
   AND (status = :pending OR (status = :claimed AND leased_until <= :now))
 """
 
-# The oldest row that is waiting (or whose lease has lapsed), has attempts
-# left, and whose pull request nobody else is holding.
+# Every row that is waiting (or whose lease has lapsed), has attempts left,
+# and whose pull request nobody else is holding, oldest first.
+#
+# There is deliberately no ``LIMIT 1``. Every condition below is a fact about
+# the row -- attempts, status, lease, pull request -- so SQLite can already
+# exclude anything unclaimable, which is what made one row enough before
+# anything could refuse. A budget refusal is the first decision SQLite cannot
+# express: it depends on the ledger, the ladder rung and the trigger's kind,
+# so it happens in Python, by which point a single row would have discarded
+# every alternative. See ``claim``.
 _CLAIMABLE = """
 SELECT dedupe_key, kind, repo, pr_number, head_sha, actor_id, attempts
 FROM queue AS q
@@ -111,7 +126,6 @@ WHERE q.attempts < :max_attempts
         AND other.status = :claimed
         AND other.leased_until > :now)
 ORDER BY q.enqueued_at, q.rowid
-LIMIT 1
 """
 
 _TAKE_LEASE = """
@@ -158,8 +172,25 @@ class ReviewQueue:
         with self._store.transaction() as conn:
             return conn.execute(_ENQUEUE, params).rowcount == 1
 
-    def claim(self, *, now: datetime, owner: str) -> Claim | None:
-        """Lease the oldest claimable trigger, or ``None`` if there is none."""
+    def claim(
+        self, *, now: datetime, owner: str, admit: Admit | None = None
+    ) -> Claim | None:
+        """Lease the oldest claimable trigger ``admit`` accepts.
+
+        ``admit`` runs **inside** this transaction, which is what makes a
+        budget reservation atomic with the claim: two workers cannot both
+        observe the same allowance and both spend it. It is a plain
+        predicate, so no budget type appears in this signature and
+        :mod:`pr_review_agent.queue` imports nothing from the governor.
+
+        A refused candidate is skipped rather than ending the claim. It keeps
+        its ``pending`` status and its attempt count -- a refusal is about the
+        allowance, not about the trigger, and burning an attempt would let
+        three refusals abandon a perfectly good one. Without skipping, a
+        refused pull request would sit at the head of a FIFO queue and block a
+        maintainer's ``@claude`` behind it for as long as the window took to
+        roll.
+        """
         until = to_utc(now, "now") + self._lease
         common = {
             "now": _stamp(now, "now"),
@@ -172,11 +203,17 @@ class ReviewQueue:
                 _ABANDON_EXHAUSTED,
                 {**common, "abandoned": str(QueueStatus.ABANDONED)},
             )
-            row = conn.execute(_CLAIMABLE, common).fetchone()
-            if row is None:
-                return None
-            _take_lease(conn, key=row[0], owner=owner, until=until)
-        return _claim(row, owner=owner, leased_until=until)
+            # Read the candidates out before leasing one: committing with a
+            # half-consumed cursor still open raises "SQL statements in
+            # progress", and the claimable set is bounded by the pending
+            # queue, which is small.
+            for row in conn.execute(_CLAIMABLE, common).fetchall():
+                candidate = _claim(row, owner=owner, leased_until=until)
+                if admit is not None and not admit(conn, candidate, now):
+                    continue
+                _take_lease(conn, key=row[0], owner=owner, until=until)
+                return candidate
+            return None
 
     def complete(self, claim: Claim) -> bool:
         """Mark ``claim`` reviewed; ``False`` if its lease is no longer held."""

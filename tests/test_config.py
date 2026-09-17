@@ -7,10 +7,27 @@ import pytest
 from pr_review_agent.config import Config, ConfigError
 from pr_review_agent.triggers.models import Actor
 
+# Required, so every fixture below carries it. A config that names no
+# spending limits must not load: every one of these numbers is a guess the
+# operator has to make, and a default would be a ceiling nobody chose.
+BUDGET = {
+    "session_tokens": 88_000,
+    "weekly_tokens": 1_500_000,
+    "max_run_tokens": 60_000,
+}
+
 VALID = {
     "github": {"repo": "INTO-CPS-Association/DTaaS", "agent_user_id": 42},
     "triggers": {"handle": "claude", "allowlist": [114395272]},
+    "budget": BUDGET,
 }
+
+BUDGET_YAML = (
+    "budget:\n"
+    "  session_tokens: 88000\n"
+    "  weekly_tokens: 1500000\n"
+    "  max_run_tokens: 60000\n"
+)
 
 
 def test_valid_config_parses():
@@ -21,7 +38,7 @@ def test_valid_config_parses():
 
 
 def test_handle_defaults_to_claude():
-    data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}}
+    data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}, "budget": BUDGET}
     assert Config.from_mapping(data).triggers.handle == "claude"
 
 
@@ -29,12 +46,13 @@ def test_handle_accepts_leading_at():
     data = {
         "github": {"repo": "a/b"},
         "triggers": {"allowlist": [], "handle": "@aider"},
+        "budget": BUDGET,
     }
     assert Config.from_mapping(data).triggers.handle == "aider"
 
 
 def test_agent_user_id_is_optional():
-    data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}}
+    data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}, "budget": BUDGET}
     assert Config.from_mapping(data).github.agent_user_id is None
 
 
@@ -43,12 +61,18 @@ def test_agent_user_id_is_optional():
 )
 def test_invalid_repo_rejected(repo):
     with pytest.raises(ConfigError):
-        Config.from_mapping({"github": {"repo": repo}, "triggers": {"allowlist": []}})
+        Config.from_mapping(
+            {"github": {"repo": repo}, "triggers": {"allowlist": []}, "budget": BUDGET}
+        )
 
 
 def test_login_in_allowlist_fails_loudly():
     # Would otherwise never match, silently disabling every trigger.
-    data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": ["8ohamed"]}}
+    data = {
+        "github": {"repo": "a/b"},
+        "triggers": {"allowlist": ["8ohamed"]},
+        "budget": BUDGET,
+    }
     with pytest.raises(ConfigError, match="allowlist"):
         Config.from_mapping(data)
 
@@ -58,6 +82,8 @@ def test_login_in_allowlist_fails_loudly():
     [
         {"github": {"repo": "a/b"}},
         {"triggers": {"allowlist": []}},
+        # budget is required too: no limits means no reviews, not no bounds.
+        {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}},
         {},
     ],
 )
@@ -87,7 +113,11 @@ def test_typo_in_key_rejected(section, bad):
 
 
 def test_allowlist_must_be_a_list():
-    data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": 114395272}}
+    data = {
+        "github": {"repo": "a/b"},
+        "triggers": {"allowlist": 114395272},
+        "budget": BUDGET,
+    }
     with pytest.raises(ConfigError, match="must be a list"):
         Config.from_mapping(data)
 
@@ -96,7 +126,7 @@ def test_load_reads_yaml_file(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
         "github:\n  repo: INTO-CPS-Association/DTaaS\n"
-        "triggers:\n  allowlist:\n    - 114395272\n",
+        "triggers:\n  allowlist:\n    - 114395272\n" + BUDGET_YAML,
         encoding="utf-8",
     )
     assert Config.load(path).github.name == "DTaaS"
@@ -153,3 +183,68 @@ def test_classifier_is_built_from_config():
     assert classifier.agent_user_id == 42
     assert classifier.handle == "claude"
     assert classifier.allowlist.allows(Actor(114395272, "8ohamed"))
+
+
+# -- budget: every key here is a spending bound (CLAUDE.md §5) -----------
+
+
+def test_budget_defaults_to_the_documented_share():
+    budget = Config.from_mapping(VALID).budget
+    assert budget.enabled is True
+    assert budget.reviewer_share_pct == 40
+    assert budget.session_limit == 88_000 * 40 // 100
+    assert budget.weekly_limit == 1_500_000 * 40 // 100
+    assert budget.daily_limit == (1_500_000 * 40 // 100) // 7
+
+
+@pytest.mark.parametrize("key", ["session_tokens", "weekly_tokens", "max_run_tokens"])
+def test_a_missing_token_limit_is_rejected(key):
+    # No defaults: an invented spending ceiling is worse than being asked.
+    data = {**VALID, "budget": {k: v for k, v in BUDGET.items() if k != key}}
+    with pytest.raises(ConfigError, match=key):
+        Config.from_mapping(data)
+
+
+@pytest.mark.parametrize("value", [0, -1, "88000", None, 1.5, True])
+def test_an_unusable_token_limit_is_rejected(value):
+    # True is in this list on purpose: bool subclasses int, so without an
+    # explicit check "weekly_tokens: true" would parse as a one-token ceiling.
+    data = {**VALID, "budget": {**BUDGET, "weekly_tokens": value}}
+    with pytest.raises(ConfigError, match="weekly_tokens"):
+        Config.from_mapping(data)
+
+
+@pytest.mark.parametrize("value", [0, -1, 101, "40", None, True])
+def test_an_unusable_share_is_rejected(value):
+    data = {**VALID, "budget": {**BUDGET, "reviewer_share_pct": value}}
+    with pytest.raises(ConfigError, match="reviewer_share_pct"):
+        Config.from_mapping(data)
+
+
+def test_enabled_must_be_a_boolean():
+    data = {**VALID, "budget": {**BUDGET, "enabled": "false"}}
+    with pytest.raises(ConfigError, match="budget.enabled"):
+        Config.from_mapping(data)
+
+
+def test_a_run_larger_than_the_daily_allowance_is_rejected():
+    """A config that could never admit anything fails loudly at startup.
+
+    The daily window is the tightest of the three, so a run that cannot fit
+    inside it can never be admitted -- an agent that reviews nothing, arrived
+    at by arithmetic nobody did by hand.
+    """
+    data = {**VALID, "budget": {**BUDGET, "max_run_tokens": 1_000_000}}
+    with pytest.raises(ConfigError, match="no run could ever be admitted"):
+        Config.from_mapping(data)
+
+
+def test_unknown_key_in_budget_is_rejected():
+    data = {**VALID, "budget": {**BUDGET, "reviewer_share": 40}}
+    with pytest.raises(ConfigError, match="unknown keys in 'budget'"):
+        Config.from_mapping(data)
+
+
+def test_the_kill_switch_parses_off():
+    data = {**VALID, "budget": {**BUDGET, "enabled": False}}
+    assert Config.from_mapping(data).budget.enabled is False

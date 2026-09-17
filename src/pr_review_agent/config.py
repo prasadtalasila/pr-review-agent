@@ -94,6 +94,101 @@ class TriggerConfig:
         return cls(allowlist=allowlist, handle=handle.lstrip("@"))
 
 
+#: BUDGET.md's human-headroom default: the agent may use this percentage of
+#: each plan window, never the whole allowance.
+DEFAULT_REVIEWER_SHARE_PCT = 40
+
+
+def _tokens(data: dict, key: str) -> int:
+    """Read a required positive token count from the ``budget`` section.
+
+    ``bool`` is excluded explicitly because it is a subclass of ``int``, so
+    ``budget.weekly_tokens: true`` would otherwise validate as ``1`` -- a
+    spending ceiling of one token, arrived at silently.
+    """
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"budget.{key} must be a positive number of tokens")
+    return value
+
+
+@dataclass(frozen=True)
+class BudgetConfig:
+    """The spending rails: what the plan is assumed to allow, and our share.
+
+    ``session_tokens`` and ``weekly_tokens`` are the operator's estimate of
+    the *plan's* limits, because a subscription publishes no quota. The
+    agent's own ceiling is that times ``reviewer_share_pct``, which is what
+    keeps a runaway agent from locking a maintainer out of interactive Claude
+    Code.
+
+    ``enabled: false`` **stops reviewing**; it does not stop checking. The
+    two readings of a "kill switch" differ by catastrophe -- one is an
+    emergency brake, the other is unbounded spend -- so the governor refuses
+    every claim while it is false.
+    """
+
+    session_tokens: int
+    weekly_tokens: int
+    max_run_tokens: int
+    enabled: bool = True
+    reviewer_share_pct: int = DEFAULT_REVIEWER_SHARE_PCT
+
+    @property
+    def session_limit(self) -> int:
+        """The agent's share of the plan's rolling five-hour window."""
+        return self._share(self.session_tokens)
+
+    @property
+    def weekly_limit(self) -> int:
+        """The agent's share of the plan's rolling weekly window."""
+        return self._share(self.weekly_tokens)
+
+    @property
+    def daily_limit(self) -> int:
+        """A flat seventh of the weekly limit, over a trailing 24 hours.
+
+        A rolling weekly window never resets, so the ``weekly_remaining /
+        days_remaining`` pacing BUDGET.md describes has no divisor to use.
+        A seventh needs no week anchor and is stricter: an agent idle since
+        Monday cannot burn four days' allowance on Friday.
+        """
+        return self._share(self.weekly_tokens) // 7
+
+    def _share(self, plan_tokens: int) -> int:
+        return plan_tokens * self.reviewer_share_pct // 100
+
+    @classmethod
+    def parse(cls, data: dict) -> BudgetConfig:
+        """Validate the ``budget`` section."""
+        enabled = data.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigError("budget.enabled must be true or false")
+        share = data.get("reviewer_share_pct", DEFAULT_REVIEWER_SHARE_PCT)
+        if isinstance(share, bool) or not isinstance(share, int):
+            raise ConfigError("budget.reviewer_share_pct must be a whole percentage")
+        if not 1 <= share <= 100:
+            # Zero would make every limit zero and utilisation an undefined
+            # 0/0; an operator who wants the agent stopped has `enabled`.
+            raise ConfigError("budget.reviewer_share_pct must be between 1 and 100")
+        config = cls(
+            session_tokens=_tokens(data, "session_tokens"),
+            weekly_tokens=_tokens(data, "weekly_tokens"),
+            max_run_tokens=_tokens(data, "max_run_tokens"),
+            enabled=enabled,
+            reviewer_share_pct=share,
+        )
+        if config.daily_limit < config.max_run_tokens:
+            # The daily window is the tightest of the three, so a run that
+            # cannot fit inside it can never be admitted at all -- a config
+            # that reviews nothing, arrived at by arithmetic nobody did.
+            raise ConfigError(
+                f"budget.max_run_tokens ({config.max_run_tokens}) exceeds the daily "
+                f"allowance ({config.daily_limit}); no run could ever be admitted"
+            )
+        return config
+
+
 @dataclass(frozen=True)
 class StoreConfig:
     """Where the SQLite state file lives."""
@@ -115,6 +210,7 @@ class Config:
 
     github: GitHubConfig
     triggers: TriggerConfig
+    budget: BudgetConfig
     store: StoreConfig
 
     @classmethod
@@ -122,7 +218,7 @@ class Config:
         """Validate an already-parsed YAML document."""
         if not isinstance(data, dict):
             raise ConfigError("configuration root must be a mapping")
-        unknown = sorted(set(data) - {"github", "triggers", "store"})
+        unknown = sorted(set(data) - {"github", "triggers", "budget", "store"})
         if unknown:
             raise ConfigError(f"unknown top-level sections: {unknown}")
         return cls(
@@ -131,6 +227,25 @@ class Config:
             ),
             triggers=TriggerConfig.parse(
                 _section(data, "triggers", {"allowlist", "handle"})
+            ),
+            # Required, token counts and all, even when `enabled` is false:
+            # every one of them is a guess the operator has to make, and a
+            # guess that ships as a default is a spending ceiling nobody
+            # chose. Requiring them unconditionally also means flipping the
+            # kill switch back on over SIGHUP cannot fail on a key that was
+            # never supplied.
+            budget=BudgetConfig.parse(
+                _section(
+                    data,
+                    "budget",
+                    {
+                        "enabled",
+                        "session_tokens",
+                        "weekly_tokens",
+                        "max_run_tokens",
+                        "reviewer_share_pct",
+                    },
+                )
             ),
             # The only optional section: its default cannot spend anything,
             # because cold-start seeding bounds a fresh database to the

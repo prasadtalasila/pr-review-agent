@@ -11,10 +11,12 @@ fail at startup, not silently fall back to a default that spends tokens. That
 applies to unknown top-level sections and to unknown keys inside a section.
 
 Only the sections backed by implemented components are accepted today. The
-`budget`, `publish` and `engine` sections described in [BUDGET.md](BUDGET.md)
-will be added with the components that read them — adding them earlier would
-mean accepting settings that do nothing, which is the failure this rule exists
-to prevent.
+`publish` and `engine` sections described in [BUDGET.md](BUDGET.md) will be
+added with the components that read them — adding them earlier would mean
+accepting settings that do nothing, which is the failure this rule exists to
+prevent. The same rule is why `budget` carries `max_run_tokens` but not
+`max_turns`: the governor reserves against the first, and nothing yet reads
+the second.
 
 ## 🔐 What is *not* in this file
 
@@ -100,7 +102,17 @@ store:
 
 ## 🔁 Reload
 
-`SIGHUP` reload is specified for the budget settings and the two kill switches
-(`budget.enabled`, `publish.dry_run`) so that stopping the agent never requires
-a restart. It is not implemented yet — today `Config.load` runs once at
-startup.
+`SIGHUP` re-reads `config.yaml` and adopts its `budget` section, so stopping
+the agent never requires a restart.
+
+**Only `budget` is hot-swapped.** A changed `github`, `triggers` or `store`
+section is logged as needing a restart rather than half-applied: the daemon's
+watermarks describe the repository it started against, and swapping that
+mid-flight would make them meaningless.
+
+**A broken file leaves the previous configuration in force**, logged at
+`ERROR`. Crashing on a bad reload would turn the emergency brake into a way to
+take the service down with a typo.
+
+`publish.dry_run` is the other key specified as reloadable. It arrives with
+the publisher; this mechanism takes it without change.

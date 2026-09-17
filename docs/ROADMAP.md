@@ -16,7 +16,7 @@ they are reproduced here so they survive the issue being closed.
 | Queue and per-PR lease | implemented, unit tested |
 | Bootstrap checks for a new host | implemented, unit tested |
 | Daemon loop calling `poll_once()` on a schedule | implemented, unit tested |
-| Budget governor | not started |
+| Budget governor (windows, ladder, reserve-then-settle) | implemented, unit tested |
 | Engine adapter (`ReviewEngine`) | not started |
 | Publisher | not started |
 | Retention sweep | not started |
@@ -26,15 +26,16 @@ worker**, so the spending rails exist before anything can spend.
 
 ## 🧭 Next
 
-1. **Budget governor.** [BUDGET.md](BUDGET.md) is the specification. Its
-   reservation joins the transaction the [queue claim](QUEUE.md) already opens.
-2. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`,
-   with the `head_sha` re-check immediately before posting.
-3. **Retention sweep.** Purge content on merge; keep the ledger.
+1. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`,
+   with the `head_sha` re-check immediately before posting. It also carries the
+   budget pieces that need a running engine: the circuit breaker, layer 2's
+   diff caps, layer 3's per-turn enforcement, and the ladder's 60 % rung.
+2. **Retention sweep.** Purge content on merge; keep the ledger.
 
-The [daemon loop](DAEMON.md) is done. It fills the queue and nothing drains
-it, which is the intended state: the backlog is visible and none of it has
-cost anything.
+The [daemon loop](DAEMON.md) fills the queue and nothing drains it, which is
+still the intended state: the backlog is visible and none of it has cost
+anything. The [budget governor](BUDGET.md) is now in place ahead of the
+worker, so the spending rails exist before anything can spend.
 
 A second engine (PR-Agent via `pr_agent_litellm`) plus a shared conformance
 suite is deliberately last: the seam is worth defining early and filling late.
@@ -53,14 +54,16 @@ suite is deliberately last: the seam is worth defining early and filling late.
       duplicate review for an unchanged `head_sha`, and no trigger from
       `@claude` inside a code fence or a blockquote.
 - [ ] **Budget limits are enforced:** a synthetic concurrent load cannot breach
-      any configured window; per-run ceilings terminate an over-budget review;
-      the degradation ladder is observed at 60 / 85 / 100 %; daily pacing
-      prevents the weekly allowance being consumed in one day.
+      any configured window (**done**); daily pacing prevents the weekly
+      allowance being consumed in one day (**done**); the degradation ladder is
+      observed at 85 / 100 % (**done**) and at 60 % (with the engine); per-run
+      ceilings terminate an over-budget review (with the engine).
 - [ ] **Plan lockout is prevented:** with `reviewer_share_pct` configured,
-      agent usage never exceeds its share of the session or weekly window, and
-      a usage-limit error trips the breaker and decays the calibrated estimate.
-- [ ] `budget.enabled: false` and `publish.dry_run: true` both take effect
-      without a restart.
+      agent usage never exceeds its share of the session or weekly window
+      (**done**), and a usage-limit error trips the breaker and decays the
+      calibrated estimate (with the engine).
+- [ ] `budget.enabled: false` takes effect without a restart (**done**);
+      `publish.dry_run: true` does too, with the publisher.
 - [ ] **Every posted comment is traceable** to a ledger row recording engine,
       model, mode, token usage and `usage_confidence`.
 - [ ] **Operates entirely outbound:** no inbound port opened on the host,
@@ -98,3 +101,14 @@ bugs:
   is `None` for a mention. Resolving it, and re-checking it against the live
   head before posting, belongs to the publisher — see
   [QUEUE.md](QUEUE.md#-what-the-queue-does-not-do).
+- **Nothing validates the configured token limits.** They are the operator's
+  guess at a quota the plan does not publish, and until the circuit breaker
+  lands the governor will report healthy utilisation while the real limit is
+  being hit. Set them conservatively low. See
+  [BUDGET.md](BUDGET.md#-not-built-yet).
+- **No per-contributor cap.** It would ship inert against a one-person
+  allowlist, so it is deferred; `actor_id` is recorded on every ledger row
+  meanwhile, because an append-only ledger cannot backfill attribution.
+- `claim()`'s `admit` hook is optional, so "nothing spends outside the
+  governor" is held by review rather than by the type system. The only caller
+  that will ever claim is the worker the engine phase adds.
