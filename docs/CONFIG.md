@@ -16,6 +16,13 @@ will be added with the components that read them — adding them earlier would
 mean accepting settings that do nothing, which is the failure this rule exists
 to prevent.
 
+## 🔐 What is *not* in this file
+
+Credentials. The GitHub token is read from the `GITHUB_TOKEN` environment
+variable, so it can come from a systemd `EnvironmentFile`, a secret manager or
+the shell without ever being a file the repository could swallow. `config.yaml`
+is gitignored regardless, because it names real accounts.
+
 ## 📖 Sections
 
 ### `github`

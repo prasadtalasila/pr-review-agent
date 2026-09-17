@@ -52,7 +52,10 @@ locally-hosted PR review agent.
 ```text
 src/pr_review_agent/          importable package (src layout)
   _compat.py                  stdlib shims for the oldest supported Python
+  bootstrap.py                pre-flight egress checks for a new host
   config.py                   config.yaml loader and validation
+  queue.py                    claim protocol and per-pull-request leases
+  store.py                    SQLite schema, watermarks, ETags, queue table
   triggers/                   allowlist, @mention parsing, classifier
   poller/                     GitHub REST polling, ETags, adaptive interval
 tests/                        pytest suite, one test_*.py per module

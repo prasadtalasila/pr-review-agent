@@ -3,6 +3,11 @@
 One SQLite file, in WAL mode, holding everything that has to survive a
 restart. Implemented in `src/pr_review_agent/store.py`.
 
+Three things live here: the **watermarks** and **ETags** below, and the
+**queue** rows whose claim protocol is described in [QUEUE.md](QUEUE.md).
+The schema is declared in one place — this module — because migration order
+has to be a single sequence.
+
 ## 🗄 Why SQLite
 
 The topology is **one writer on one host**. PostgreSQL's multi-client
@@ -74,10 +79,44 @@ CREATE TABLE watermarks (
     name TEXT PRIMARY KEY,
     at   TEXT NOT NULL      -- aware UTC, ISO-8601
 );
+CREATE TABLE queue (
+    dedupe_key   TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    repo         TEXT NOT NULL,
+    pr_number    INTEGER NOT NULL,
+    head_sha     TEXT,               -- NULL for a mention
+    actor_id     INTEGER NOT NULL,
+    status       TEXT NOT NULL,      -- pending|claimed|done|abandoned
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    enqueued_at  TEXT NOT NULL,      -- aware UTC, ISO-8601
+    leased_until TEXT,
+    owner        TEXT
+);
 ```
 
-Both tables are `CREATE TABLE IF NOT EXISTS` at connection time, so there is
-no migration step yet. That changes when the queue, lease and ledger tables
-land; the ledger in particular is append-only and **never** pruned, because the
-rolling budget windows are computed from it. See
+The ledger the [budget governor](BUDGET.md) needs is not here yet. It will be
+append-only and **never** pruned, because the rolling budget windows are
+computed from it — the retention split is *purge content, retain metrics*. See
 [DESIGN.md](DESIGN.md#-retention).
+
+## 🔢 Migrations
+
+Schema changes are an ordered list applied on connect, with the file's
+`PRAGMA user_version` recording how many have run. Version 1 is the ETag and
+watermark tables; version 2 adds the queue.
+
+Every statement is `IF NOT EXISTS`, for two reasons that both come down to
+re-runnability. A database created before the list existed already carries
+version 1's tables at `user_version = 0`, and has to be able to adopt it. And a
+crash between applying a migration and bumping the version must leave the
+migration re-runnable rather than the file wedged.
+
+## 🔐 Write transactions
+
+`SqliteStore.transaction()` runs a block inside one `BEGIN IMMEDIATE`. The
+write lock is taken up front rather than on first write, which is what makes a
+read-then-write sequence — the queue's [conditional claim](QUEUE.md#-one-pull-request-one-worker)
+— atomic against another writer.
+
+That is also where the budget reservation is specified to go, so that a claim
+and the allowance it spends commit together or not at all.
