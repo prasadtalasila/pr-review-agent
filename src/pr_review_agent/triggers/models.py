@@ -67,6 +67,13 @@ class Comment:
     to a commit. Resolving it here would cost one extra API call per comment
     on every poll, so it is left unresolved and read at claim time instead --
     which is also the only moment at which it is still correct.
+
+    ``updated_at`` is what the ``comments`` watermark advances on. Both
+    comment endpoints are sorted by it and it only ever moves forward, so a
+    single high-water mark cannot hide a comment that surfaces later. An edit
+    bumps it, which is deliberate: editing ``@claude`` into an existing
+    comment is a request. A comment that was already a mention is stopped
+    from being reviewed twice by its dedupe key, not by the watermark.
     """
 
     repo: str
@@ -74,6 +81,7 @@ class Comment:
     comment_id: int
     author: Actor
     body: str
+    updated_at: datetime
     head_sha: str | None = None
 
 

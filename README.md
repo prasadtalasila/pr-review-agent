@@ -56,7 +56,7 @@ Everything else is rejected with a reason code that says which rule fired:
 | Any bot | `bot_author` / `bot_commenter` |
 | The agent's own account | `self_author` / `self_commenter` |
 | `@claude` in a fence, code span or blockquote | `no_mention` |
-| Already-open pull request below the watermark | `not_fresh` |
+| Already-open pull request, or a comment last updated, below the watermark | `not_fresh` |
 
 Two decisions carry most of the weight:
 
@@ -67,9 +67,11 @@ rather than never matching.
 
 **The cold-start watermark is load-bearing.** The poller sees *open* pull
 requests, not `opened` events, so without a watermark the first poll would
-treat the entire open backlog as fresh and review all of it at once — burning
-the weekly allowance in a single pass. It is persisted, and only ever moves
-forward.
+treat the entire open backlog as fresh and review all of it at once — and
+replay every historical `@claude` alongside it — burning the weekly allowance
+in a single pass. It is persisted, only ever moves forward, and on a fresh
+database is seeded to the moment the daemon started, so nothing that pre-dates
+the first start is ever queued.
 
 [docs/TRIGGERS.md](docs/TRIGGERS.md) has the rest, including what counts as a
 mention and why the dedupe keys are shaped the way they are.
@@ -96,8 +98,9 @@ rests on, the retry rules, and why the notifications API was not used.
 
 ## 📊 Status
 
-Early. The trigger pipeline, the poller, the persistence layer and the
-queue are implemented and unit tested; nothing posts to GitHub yet.
+Early. The trigger pipeline, the poller, the persistence layer, the queue and
+the daemon loop that drives them are implemented and unit tested. The daemon
+fills the queue; nothing drains it and nothing posts to GitHub yet.
 
 | Component | State |
 | :-- | :-- |
@@ -108,7 +111,7 @@ queue are implemented and unit tested; nothing posts to GitHub yet.
 | SQLite store (watermarks, ETags, migrations) | implemented |
 | Queue and per-pull-request lease | implemented |
 | Bootstrap checks (`python -m pr_review_agent.bootstrap`) | implemented |
-| Daemon loop | not started |
+| Daemon loop (`python -m pr_review_agent.daemon`) | implemented |
 | Budget governor | not started |
 | Engine adapter (`ReviewEngine`) | not started |
 | Publisher | not started |
@@ -149,6 +152,17 @@ It fetches the three watched endpoints, proves a repeat request still comes
 back `304`, and checks the route to Anthropic. See
 [DEVELOPER.md](DEVELOPER.md#-bootstrap-checks).
 
+Then run the daemon:
+
+```bash
+GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
+```
+
+It polls, classifies and enqueues. It does **not** review anything yet: the
+queue fills and nothing drains it until the [budget
+governor](docs/BUDGET.md) lands, so nothing it does can spend allowance. See
+[docs/DAEMON.md](docs/DAEMON.md).
+
 The suite needs no network and spends no tokens: the trigger pipeline is pure
 functions over fixtures, and the poller tests drive `httpx.MockTransport`.
 
@@ -160,9 +174,10 @@ the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key.
 | Document | Answers |
 | :-- | :-- |
 | [docs/DESIGN.md](docs/DESIGN.md) | Why does this exist and why is it shaped like this? The four constraints, every alternative considered and rejected, the billing-mode question that is still open, and how prompt injection is handled |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | What actually runs? The seven components, the path an event takes, the package layout, and which layer may import which |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | What actually runs? The components, the path an event takes, the package layout, and which layer may import which |
 | [docs/TRIGGERS.md](docs/TRIGGERS.md) | What starts a review and what does not? Every reason code and its log level, what counts as a mention, the dedupe keys, and why identity is a number |
 | [docs/POLLER.md](docs/POLLER.md) | How does it learn something happened without an inbound port? The three endpoints, the rate-limit arithmetic, the adaptive interval, the retry rules, and how a comment payload is mapped to a pull request |
+| [docs/DAEMON.md](docs/DAEMON.md) | What runs continuously, and what is it careful not to do? The cycle, the cold-start spend bound, the two watermark ordering rules, and how it shuts down |
 | [docs/QUEUE.md](docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
 | [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
 | [docs/BUDGET.md](docs/BUDGET.md) | **Specification, not yet built.** The five enforcement layers, reserve-then-settle under concurrency, the degradation ladder, and the self-calibrating breaker |

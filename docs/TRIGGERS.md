@@ -27,6 +27,7 @@ outside contributions still get reviewed when we want them to".
 | The agent's own account | `self_author` / `self_commenter` | `INFO` |
 | `@claude` in a fence, code span or blockquote | `no_mention` | `DEBUG` |
 | Already-open pull request seen below the watermark | `not_fresh` | `DEBUG` |
+| Comment last updated at or below the watermark | `not_fresh` | `DEBUG` |
 
 Every decision is logged, accepted or not — it is the only observability the
 daemon has into *why wasn't this reviewed*. The two levels matter: at a blanket
@@ -119,6 +120,28 @@ Two properties follow:
   construction instead.
 - **It must survive a restart, and only move forward.** See
   [STORAGE.md](STORAGE.md).
+
+### Comments are watermarked too
+
+The same argument applies to mentions, and the cost of getting it wrong is
+higher: a pull request below the watermark is merely re-offered, whereas every
+historical `@claude` in the newest hundred comments would be replayed as a
+fresh request. A comment is therefore compared against the `comments`
+watermark on `updated_at`, and rejected `not_fresh` at or below it.
+
+Two consequences are deliberate:
+
+- **An edit summons a review.** Editing `@claude` into an existing comment
+  bumps `updated_at`, so the comment becomes fresh and is accepted. That is
+  the right reading of an allowlisted maintainer's intent.
+- **A re-review is stopped by the dedupe key, not by the watermark.** An
+  edited comment that was *already* a mention carries the same
+  `mention:<repo>:<pr>:<comment_id>` key, so re-classifying it enqueues
+  nothing.
+
+Both comment endpoints share the single `comments` watermark. GitHub's
+`updated` only ever moves forward, so one high-water mark cannot hide a
+comment that surfaces later on the other endpoint.
 
 ## 👻 Unmappable events
 

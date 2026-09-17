@@ -124,6 +124,28 @@ def test_shipped_example_config_is_valid():
     assert config.triggers.allowlist.allows(Actor(114395272, "8ohamed"))
 
 
+def test_store_path_defaults_when_the_section_is_absent():
+    assert Config.from_mapping(VALID).store.path == "state.db"
+
+
+def test_store_path_is_read_from_the_section():
+    data = {**VALID, "store": {"path": "/var/lib/agent/state.db"}}
+    assert Config.from_mapping(data).store.path == "/var/lib/agent/state.db"
+
+
+@pytest.mark.parametrize("path", ["   ", "", None, 7])
+def test_an_unusable_store_path_is_rejected(path):
+    data = {**VALID, "store": {"path": path}}
+    with pytest.raises(ConfigError, match="store.path"):
+        Config.from_mapping(data)
+
+
+def test_unknown_key_in_store_is_rejected():
+    data = {**VALID, "store": {"paht": "state.db"}}
+    with pytest.raises(ConfigError, match="unknown keys in 'store'"):
+        Config.from_mapping(data)
+
+
 def test_classifier_is_built_from_config():
     classifier = Config.from_mapping(VALID).classifier(
         since=datetime(2026, 1, 1, tzinfo=timezone.utc)

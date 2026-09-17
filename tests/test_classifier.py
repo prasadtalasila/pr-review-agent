@@ -43,13 +43,14 @@ def make_pr(author=ALICE, created_at=LATER, is_draft=False, head_sha="abc123"):
     )
 
 
-def make_comment(author=ALICE, body="@claude review", comment_id=99):
+def make_comment(author=ALICE, body="@claude review", comment_id=99, updated_at=LATER):
     return Comment(
         repo="INTO-CPS-Association/DTaaS",
         pr_number=7,
         comment_id=comment_id,
         author=author,
         body=body,
+        updated_at=updated_at,
     )
 
 
@@ -99,12 +100,22 @@ def test_maintainer_can_summon_review_of_an_outsider_pr(classifier):
         (make_comment(body="```\n@claude\n```"), "no_mention"),
         (make_comment(body="> @claude review"), "no_mention"),
         (make_comment(body="use `@claude` to summon"), "no_mention"),
+        (make_comment(updated_at=EARLIER), "not_fresh"),
+        (make_comment(updated_at=SINCE), "not_fresh"),
     ],
 )
 def test_ineligible_comments_are_rejected(classifier, comment, reason):
     decision = classifier.classify_comment(comment)
     assert not decision.accepted
     assert decision.reason == reason
+
+
+def test_a_comment_edited_after_the_watermark_is_accepted(classifier):
+    # Editing "@claude" into an old comment bumps updated_at, and is a
+    # maintainer asking for a review.
+    decision = classifier.classify_comment(make_comment(updated_at=LATER))
+    assert decision.accepted
+    assert decision.trigger.kind is TriggerKind.MENTION
 
 
 def test_agents_own_comment_never_loops(classifier):

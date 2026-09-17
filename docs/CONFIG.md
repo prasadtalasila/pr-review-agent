@@ -62,6 +62,26 @@ An empty allowlist is valid and allows nobody. It is the safe starting state.
 `handle` is what makes the pipeline reusable for a different agent: set it to
 `aider` and `@aider` becomes the trigger.
 
+### `store`
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `path` | string | no (default `state.db`) | The SQLite file holding watermarks, ETags and the review queue. |
+
+The whole section is optional, which is the one exception to "only the
+sections backed by implemented components are accepted" being paired with a
+required section. The exception is affordable because the default cannot spend
+anything: a database that does not exist yet has its watermarks
+[seeded to the moment the daemon started](DAEMON.md#-cold-start-is-the-spend-bound),
+so a fresh file reviews nothing from the backlog. Unknown keys inside `store`
+are still rejected.
+
+A relative path is resolved against the working directory the daemon is
+started in, so the daemon logs the absolute path it settled on at `INFO`.
+Prefer an absolute path under a service account's data directory in
+production — pointing at the wrong file costs the queue's memory of what has
+already been reviewed.
+
 ## 📄 A minimal file
 
 ```yaml
@@ -73,6 +93,9 @@ triggers:
   handle: claude
   allowlist:
     - 114395272
+
+store:
+  path: state.db
 ```
 
 ## 🔁 Reload

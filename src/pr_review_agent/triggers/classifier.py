@@ -88,6 +88,12 @@ class Classifier:
         an allowlisted human typing ``@claude`` on a draft *is* the ask, and
         refusing it would make the handle unreliable exactly when a
         contributor wants early feedback.
+
+        Freshness *is* checked, against the same ``since`` watermark the
+        pull-request path uses. Without it, a fresh database replays every
+        historical mention as a new request. An edit bumps ``updated_at``, so
+        editing ``@claude`` into an old comment does summon a review -- which
+        is the correct reading of an allowlisted maintainer's intent.
         """
         decision = self._decide_comment(comment)
         self._log(
@@ -100,6 +106,8 @@ class Classifier:
             return Decision(None, "self_commenter")
         if comment.author.is_bot:
             return Decision(None, "bot_commenter")
+        if comment.updated_at <= self.since:
+            return Decision(None, "not_fresh")
         if not has_mention(comment.body, self.handle):
             return Decision(None, "no_mention")
         if not self.allowlist.allows(comment.author):

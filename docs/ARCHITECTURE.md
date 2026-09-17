@@ -3,13 +3,14 @@
 What runs, what each part is responsible for, and how much of it exists
 today. For *why* the shape is this one, see [DESIGN.md](DESIGN.md).
 
-## 🧩 The seven components
+## 🧩 The components
 
 A single Python asyncio daemon with a SQLite (WAL) store, running on a private
 host.
 
 | # | Component | Responsibility | State |
 | :-- | :-- | :-- | :-- |
+| 0 | **Daemon loop** | Poll on the adaptive interval, classify what changed, enqueue what is accepted, advance the watermarks. Stops at `enqueue`. | implemented — [DAEMON.md](DAEMON.md) |
 | 1 | **Poller** | Outbound-only conditional GETs against three repo-wide GitHub REST endpoints. | implemented — [POLLER.md](POLLER.md) |
 | 2 | **Classifier + allowlist** | Turn a polled payload into an accepted trigger or a reason code. | implemented — [TRIGGERS.md](TRIGGERS.md) |
 | 3 | **Store** | The watermarks, ETags and queue rows that must survive a restart, and the schema migrations that get them there. | implemented — [STORAGE.md](STORAGE.md) |
@@ -41,7 +42,10 @@ GitHub REST ──► Poller ──► payload mapping ──► Classifier ─�
                                                              Publisher
 ```
 
-Everything down to the queue exists today. Everything below it does not.
+Everything down to the queue exists today, and the [daemon
+loop](DAEMON.md) is what drives it on a schedule. Everything below the queue
+does not exist: the queue fills and nothing drains it, which is the intended
+state until the governor lands.
 
 The reservation is taken inside the *same* transaction as the queue claim —
 that is the invariant the whole storage choice rests on, and it is spelled out
@@ -52,8 +56,10 @@ in [BUDGET.md](BUDGET.md#-reserve-then-settle).
 ```text
 src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
+├── _startup.py        # token + config, shared by both entry points
 ├── bootstrap.py       # pre-flight egress checks for a new host
 ├── config.py          # config.yaml → frozen dataclasses
+├── daemon.py          # the poll-classify-enqueue loop, and its entry point
 ├── queue.py           # claim protocol and per-pull-request leases
 ├── store.py           # SQLite: schema, watermarks, ETags, queue table
 ├── triggers/
@@ -107,5 +113,6 @@ rate-limit backoff. Migrating later would have meant touching every poller test
 through `MockTransport`, so it was done before anything was built on top.
 
 The loop that calls `poll_once()` on a schedule, and the wiring that feeds
-classified triggers into the queue, are the remaining gap between the poller
-and the queue phase.
+classified triggers into the queue, are in `daemon.py` — see
+[DAEMON.md](DAEMON.md) for the ordering rules it has to keep and the
+cold-start bound that stops a fresh database paying for the backlog.

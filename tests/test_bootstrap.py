@@ -3,8 +3,8 @@
 import httpx
 
 from pr_review_agent import bootstrap
+from pr_review_agent._startup import TOKEN_ENV
 from pr_review_agent.bootstrap import (
-    TOKEN_ENV,
     CheckResult,
     check_anthropic,
     check_github,
