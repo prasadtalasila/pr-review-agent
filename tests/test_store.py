@@ -1,10 +1,11 @@
 """SqliteStore: what has to survive a restart, and what must never go back."""
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from pr_review_agent.store import SqliteStore
+from pr_review_agent.store import SCHEMA_VERSION, SqliteStore
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 
@@ -77,3 +78,50 @@ def test_non_utc_watermark_is_normalised(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
         store.advance_watermark("comments", NOON.astimezone(berlin))
         assert store.watermark("comments") == NOON
+
+
+def test_a_fresh_database_is_at_the_current_schema_version(tmp_path):
+    with SqliteStore(tmp_path / "state.db") as store:
+        assert store.schema_version == SCHEMA_VERSION
+
+
+def test_a_pre_versioning_database_adopts_the_migrations(tmp_path):
+    # The store shipped before the migration list existed, so a database in
+    # the wild already has the first migration's tables at user_version 0.
+    path = tmp_path / "state.db"
+    legacy = sqlite3.connect(path, isolation_level=None)
+    legacy.executescript(
+        "CREATE TABLE etags (path TEXT PRIMARY KEY, etag TEXT NOT NULL);"
+        "CREATE TABLE watermarks (name TEXT PRIMARY KEY, at TEXT NOT NULL);"
+        "INSERT INTO etags VALUES ('/p', '\"v1\"');"
+    )
+    legacy.close()
+
+    with SqliteStore(path) as store:
+        assert store.schema_version == SCHEMA_VERSION
+        assert store.get("/p") == '"v1"'
+
+
+def test_reopening_does_not_lose_data_to_a_re_migration(tmp_path):
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store:
+        store.set("/p", '"v1"')
+    with SqliteStore(path) as store:
+        assert store.schema_version == SCHEMA_VERSION
+        assert store.get("/p") == '"v1"'
+
+
+def test_a_transaction_commits(tmp_path):
+    with SqliteStore(tmp_path / "state.db") as store:
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO etags VALUES ('/p', '\"v1\"')")
+        assert store.get("/p") == '"v1"'
+
+
+def test_a_failed_transaction_rolls_back(tmp_path):
+    with SqliteStore(tmp_path / "state.db") as store:
+        store.set("/p", '"v1"')
+        with pytest.raises(RuntimeError), store.transaction() as conn:
+            conn.execute("DELETE FROM etags")
+            raise RuntimeError("the worker died mid-claim")
+        assert store.get("/p") == '"v1"'

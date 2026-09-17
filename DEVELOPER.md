@@ -109,6 +109,28 @@ before claiming a change is done.
 Async tests need no decorator — `asyncio_mode = "auto"` means an
 `async def test_*` is collected and run on a fresh event loop.
 
+## 🚦 Bootstrap checks
+
+Before the daemon runs on a host for the first time, confirm the host can
+reach what it needs:
+
+```bash
+GITHUB_TOKEN=... poetry run python -m pr_review_agent.bootstrap
+```
+
+It fetches the three watched endpoints with the same client the poller uses,
+re-fetches one conditionally and insists on a `304`, and checks the route to
+`api.anthropic.com`. Exit status is `0` when every check passes, `1` when one
+fails and `2` when the token or the config file is missing.
+
+The conditional check is the one worth running even where egress obviously
+works: the whole rate-limit budget rests on conditional requests being free,
+and a proxy that strips `ETag` turns every poll into a full `200` — silently,
+and visibly only once the budget runs out mid-week.
+
+The token is read from the environment, never from `config.yaml`, and is never
+printed. `--config` points at a config file other than `./config.yaml`.
+
 ## 🔍 Linting and formatting
 
 ```bash

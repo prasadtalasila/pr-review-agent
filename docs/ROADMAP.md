@@ -12,9 +12,10 @@ they are reproduced here so they survive the issue being closed.
 | Config loader (`config.yaml`) | implemented, unit tested |
 | Poller (async, ETag conditional requests) | implemented, unit tested |
 | Payload mapping (REST dicts → trigger models) | implemented, unit tested |
-| SQLite watermark and ETag store | implemented, unit tested |
+| SQLite store (watermarks, ETags, migrations) | implemented, unit tested |
+| Queue and per-PR lease | implemented, unit tested |
+| Bootstrap checks for a new host | implemented, unit tested |
 | Daemon loop calling `poll_once()` on a schedule | not started |
-| Queue and per-PR lease | not started |
 | Budget governor | not started |
 | Engine adapter (`ReviewEngine`) | not started |
 | Publisher | not started |
@@ -26,13 +27,14 @@ worker**, so the spending rails exist before anything can spend.
 ## 🧭 Next
 
 1. **Daemon loop.** Wire `poll_once()` to the adaptive interval, feed
-   `payloads.py` output through the classifier, and advance the watermarks in
-   [`SqliteStore`](STORAGE.md). Pure wiring around what exists.
-2. **Queue and lease.** Atomic conditional claim, per-PR lease, `head_sha`
-   re-check before posting.
-3. **Budget governor.** [BUDGET.md](BUDGET.md) is the specification.
-4. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`.
-5. **Retention sweep.** Purge content on merge; keep the ledger.
+   `payloads.py` output through the classifier, advance the watermarks in
+   [`SqliteStore`](STORAGE.md) and enqueue what the classifier accepts. Pure
+   wiring around what exists.
+2. **Budget governor.** [BUDGET.md](BUDGET.md) is the specification. Its
+   reservation joins the transaction the [queue claim](QUEUE.md) already opens.
+3. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`,
+   with the `head_sha` re-check immediately before posting.
+4. **Retention sweep.** Purge content on merge; keep the ledger.
 
 A second engine (PR-Agent via `pr_agent_litellm`) plus a shared conformance
 suite is deliberately last: the seam is worth defining early and filling late.
@@ -92,5 +94,7 @@ bugs:
 - The primary GitHub rate limit carries `x-ratelimit-reset` but no
   `Retry-After`, so the client raises rather than sleeping to the reset. See
   [POLLER.md](POLLER.md#-rate-limits-and-retries).
-- There is no schema migration step. Both tables are created on connect; that
-  changes when the queue and ledger tables land.
+- A claimed trigger's `head_sha` is the head seen at classification time, and
+  is `None` for a mention. Resolving it, and re-checking it against the live
+  head before posting, belongs to the publisher — see
+  [QUEUE.md](QUEUE.md#-what-the-queue-does-not-do).

@@ -12,8 +12,8 @@ host.
 | :-- | :-- | :-- | :-- |
 | 1 | **Poller** | Outbound-only conditional GETs against three repo-wide GitHub REST endpoints. | implemented — [POLLER.md](POLLER.md) |
 | 2 | **Classifier + allowlist** | Turn a polled payload into an accepted trigger or a reason code. | implemented — [TRIGGERS.md](TRIGGERS.md) |
-| 3 | **Store** | The watermarks and ETags that must survive a restart. | partial — [STORAGE.md](STORAGE.md) |
-| 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`), a per-PR lease so reviews of one pull request never overlap, and a `head_sha` re-check immediately before posting so a review of an older commit can never land after a newer one. | not started |
+| 3 | **Store** | The watermarks, ETags and queue rows that must survive a restart, and the schema migrations that get them there. | implemented — [STORAGE.md](STORAGE.md) |
+| 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`) and a per-PR lease so reviews of one pull request never overlap. The `head_sha` re-check before posting belongs to the publisher, which is where the live head can be read. | implemented — [QUEUE.md](QUEUE.md) |
 | 5 | **Budget governor** | Five layers of spending control over one ledger. | not started — [BUDGET.md](BUDGET.md) |
 | 6 | **Engine adapter** | A `ReviewEngine` protocol with `claude_sdk`, `claude_cli` and `generic_cli` implementations. | not started |
 | 7 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
@@ -41,7 +41,7 @@ GitHub REST ──► Poller ──► payload mapping ──► Classifier ─�
                                                              Publisher
 ```
 
-Everything left of the queue exists today. Everything right of it does not.
+Everything down to the queue exists today. Everything below it does not.
 
 The reservation is taken inside the *same* transaction as the queue claim —
 that is the invariant the whole storage choice rests on, and it is spelled out
@@ -52,8 +52,10 @@ in [BUDGET.md](BUDGET.md#-reserve-then-settle).
 ```text
 src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
+├── bootstrap.py       # pre-flight egress checks for a new host
 ├── config.py          # config.yaml → frozen dataclasses
-├── store.py           # SQLite: watermarks and ETags
+├── queue.py           # claim protocol and per-pull-request leases
+├── store.py           # SQLite: schema, watermarks, ETags, queue table
 ├── triggers/
 │   ├── models.py      # payload-shaped dataclasses; PayloadError
 │   ├── allowlist.py   # numeric-user-id membership

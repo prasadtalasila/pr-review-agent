@@ -5,24 +5,6 @@
 be summoned by a stranger.</b>
 </p>
 
-<p align="center">
-Outbound-only: the host receives no webhooks and opens no inbound port.
-Reviews are triggered by polling the GitHub REST API.
-</p>
-
-## 🔑 The one rule
-
-> **Nothing may call a review engine outside the budget governor.**
-
-The backend is a subscription plan, and **all Claude surfaces share one usage
-pool**. An unbounded reviewer does not merely overspend — it locks maintainers
-out of their own interactive Claude Code sessions until the window resets.
-
-So the agent is capped at a *share* of each plan window, never the whole
-allowance, and the phase order puts the **budget governor before the review
-worker**: the spending rails exist before anything can spend. Everything in
-[docs/BUDGET.md](docs/BUDGET.md) follows from that one sentence.
-
 - [What it is](#-what-it-is)
 - [What starts a review](#-what-starts-a-review)
 - [How it finds out](#-how-it-finds-out)
@@ -114,8 +96,8 @@ rests on, the retry rules, and why the notifications API was not used.
 
 ## 📊 Status
 
-Early. The trigger pipeline, the poller and the persistence layer are
-implemented and unit tested; nothing posts to GitHub yet.
+Early. The trigger pipeline, the poller, the persistence layer and the
+queue are implemented and unit tested; nothing posts to GitHub yet.
 
 | Component | State |
 | :-- | :-- |
@@ -123,8 +105,10 @@ implemented and unit tested; nothing posts to GitHub yet.
 | Config loader (`config.yaml`) | implemented |
 | Poller (async, ETag conditional requests) | implemented |
 | Payload mapping (REST dicts → trigger models) | implemented |
-| SQLite watermark and ETag store | implemented |
-| Daemon loop, queue and per-PR lease | not started |
+| SQLite store (watermarks, ETags, migrations) | implemented |
+| Queue and per-pull-request lease | implemented |
+| Bootstrap checks (`python -m pr_review_agent.bootstrap`) | implemented |
+| Daemon loop | not started |
 | Budget governor | not started |
 | Engine adapter (`ReviewEngine`) | not started |
 | Publisher | not started |
@@ -155,6 +139,16 @@ poetry run pytest
 cp config.example.yaml config.yaml      # then edit: repo, allowlist, agent id
 ```
 
+Before deploying on a new host, confirm it can reach what the daemon needs:
+
+```bash
+GITHUB_TOKEN=... poetry run python -m pr_review_agent.bootstrap
+```
+
+It fetches the three watched endpoints, proves a repeat request still comes
+back `304`, and checks the route to Anthropic. See
+[DEVELOPER.md](DEVELOPER.md#-bootstrap-checks).
+
 The suite needs no network and spends no tokens: the trigger pipeline is pure
 functions over fixtures, and the poller tests drive `httpx.MockTransport`.
 
@@ -169,6 +163,7 @@ the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | What actually runs? The seven components, the path an event takes, the package layout, and which layer may import which |
 | [docs/TRIGGERS.md](docs/TRIGGERS.md) | What starts a review and what does not? Every reason code and its log level, what counts as a mention, the dedupe keys, and why identity is a number |
 | [docs/POLLER.md](docs/POLLER.md) | How does it learn something happened without an inbound port? The three endpoints, the rate-limit arithmetic, the adaptive interval, the retry rules, and how a comment payload is mapped to a pull request |
+| [docs/QUEUE.md](docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
 | [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
 | [docs/BUDGET.md](docs/BUDGET.md) | **Specification, not yet built.** The five enforcement layers, reserve-then-settle under concurrency, the degradation ladder, and the self-calibrating breaker |
 | [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |

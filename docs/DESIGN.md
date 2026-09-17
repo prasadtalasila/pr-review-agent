@@ -159,7 +159,9 @@ deletion guarantee.
 ## ✅ Prerequisites still to confirm
 
 1. **Outbound HTTPS from the deployment host** to `api.github.com`,
-   `github.com`, `codeload.github.com` and `api.anthropic.com`. On an
+   `github.com`, `codeload.github.com` and `api.anthropic.com`. Run
+   `python -m pr_review_agent.bootstrap` on the host to check the two that
+   matter most ([DEVELOPER.md](../DEVELOPER.md#-bootstrap-checks)). On an
    allowlist-based firewall this should be confirmed before implementation
    continues; it is the most common cause of schedule slip in this kind of
    deployment. The poller alone needs only `api.github.com`.
