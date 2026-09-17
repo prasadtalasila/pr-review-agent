@@ -131,6 +131,30 @@ and visibly only once the budget runs out mid-week.
 The token is read from the environment, never from `config.yaml`, and is never
 printed. `--config` points at a config file other than `./config.yaml`.
 
+## 🔄 Running the daemon
+
+```bash
+GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
+```
+
+It polls on the adaptive interval, classifies what changed, and enqueues what
+the classifier accepts. It claims nothing and calls no review engine, so it
+cannot spend allowance — the queue fills and nothing drains it until the
+[budget governor](docs/BUDGET.md) lands.
+
+Same conventions as the bootstrap checks: `GITHUB_TOKEN` from the environment,
+`--config` for a config file elsewhere, exit `2` when either is missing. Exit
+is `0` on `SIGINT` or `SIGTERM`, which are handled rather than waited out — a
+shutdown does not sit through the remainder of a 600 s idle interval.
+
+The SQLite file comes from `store.path` in `config.yaml`, default `state.db`.
+The resolved absolute path is logged at startup: a relative path is resolved
+against the working directory the daemon starts in, and pointing at the wrong
+file costs the queue's memory of what has already been reviewed.
+
+[docs/DAEMON.md](docs/DAEMON.md) has the ordering rules the loop has to keep
+and the cold-start bound that stops a fresh database paying for the backlog.
+
 ## 🔍 Linting and formatting
 
 ```bash

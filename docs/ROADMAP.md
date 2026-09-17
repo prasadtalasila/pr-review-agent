@@ -15,7 +15,7 @@ they are reproduced here so they survive the issue being closed.
 | SQLite store (watermarks, ETags, migrations) | implemented, unit tested |
 | Queue and per-PR lease | implemented, unit tested |
 | Bootstrap checks for a new host | implemented, unit tested |
-| Daemon loop calling `poll_once()` on a schedule | not started |
+| Daemon loop calling `poll_once()` on a schedule | implemented, unit tested |
 | Budget governor | not started |
 | Engine adapter (`ReviewEngine`) | not started |
 | Publisher | not started |
@@ -26,15 +26,15 @@ worker**, so the spending rails exist before anything can spend.
 
 ## 🧭 Next
 
-1. **Daemon loop.** Wire `poll_once()` to the adaptive interval, feed
-   `payloads.py` output through the classifier, advance the watermarks in
-   [`SqliteStore`](STORAGE.md) and enqueue what the classifier accepts. Pure
-   wiring around what exists.
-2. **Budget governor.** [BUDGET.md](BUDGET.md) is the specification. Its
+1. **Budget governor.** [BUDGET.md](BUDGET.md) is the specification. Its
    reservation joins the transaction the [queue claim](QUEUE.md) already opens.
-3. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`,
+2. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`,
    with the `head_sha` re-check immediately before posting.
-4. **Retention sweep.** Purge content on merge; keep the ledger.
+3. **Retention sweep.** Purge content on merge; keep the ledger.
+
+The [daemon loop](DAEMON.md) is done. It fills the queue and nothing drains
+it, which is the intended state: the backlog is visible and none of it has
+cost anything.
 
 A second engine (PR-Agent via `pr_agent_litellm`) plus a shared conformance
 suite is deliberately last: the seam is worth defining early and filling late.

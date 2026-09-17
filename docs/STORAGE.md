@@ -43,7 +43,13 @@ later of the stored and the offered value and returns whichever is in force.
 
 Watermarks are namespaced by name (`pull_requests`, `comments`) because the two
 streams advance independently: comments are sorted by `updated`, pull requests
-by `created`.
+by `created`. Both comment endpoints share the one `comments` mark — `updated`
+only ever moves forward, so a single high-water mark cannot hide a comment that
+surfaces later on the other endpoint.
+
+The [daemon loop](DAEMON.md) is what advances them, to the newest timestamp it
+saw in a payload rather than to wall-clock now, and only after the enqueue that
+the timestamp accounts for.
 
 Values are stored as aware UTC ISO-8601 strings. A naive datetime is rejected
 at the boundary for the same reason `Classifier.since` rejects one — a naive
