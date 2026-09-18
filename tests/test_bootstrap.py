@@ -1,12 +1,16 @@
 """Bootstrap checks: can this host actually reach what the daemon needs?"""
 
+import sys
+
 import httpx
+import pytest
 
 from pr_review_agent import bootstrap
 from pr_review_agent._startup import TOKEN_ENV
 from pr_review_agent.bootstrap import (
     CheckResult,
     check_anthropic,
+    check_git,
     check_github,
     main,
 )
@@ -170,7 +174,22 @@ async def test_a_rate_limited_revisit_fails_the_conditional_check():
     assert conditional.ok is False and "403" in conditional.detail
 
 
-async def test_run_checks_covers_github_and_anthropic(monkeypatch, tmp_path):
+def _stub_git_checks(monkeypatch, results: list[CheckResult]) -> None:
+    """Replace the git checks, which would otherwise reach github.com.
+
+    Every other check here is driven through a MockTransport. `check_git`
+    shells out instead, so without this the test would perform real network
+    egress -- passing on a runner with internet and failing on one without,
+    which is precisely the kind of test that lies.
+    """
+
+    async def canned(repo: str, base_url: str = "") -> list[CheckResult]:
+        return results
+
+    monkeypatch.setattr(bootstrap, "check_git", canned)
+
+
+async def test_run_checks_covers_github_git_and_anthropic(monkeypatch, tmp_path):
     handler = serve(httpx.Response(200, json=[], headers=HEALTHY), httpx.Response(304))
     # Both clients are built before httpx.AsyncClient is patched out, since
     # GitHubClient constructs one of its own.
@@ -180,9 +199,39 @@ async def test_run_checks_covers_github_and_anthropic(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(bootstrap, "GitHubClient", lambda token: github)
     monkeypatch.setattr(bootstrap.httpx, "AsyncClient", lambda: anthropic)
+    _stub_git_checks(
+        monkeypatch,
+        [
+            CheckResult("git version", True, "found 2.43, need at least 2.32"),
+            CheckResult("git fetch route", True, "answers"),
+        ],
+    )
+
     results = await bootstrap.run_checks(config(tmp_path), "fake-token")
-    assert [result.name for result in results][-1] == "anthropic reachable"
+
+    names = [result.name for result in results]
+    assert names[-1] == "anthropic reachable"
+    # The checkout's route is a different host from the API's, so it has to
+    # be its own line in the report rather than assumed from the poller's.
+    assert "git version" in names and "git fetch route" in names
     assert all(result.ok for result in results)
+
+
+async def test_a_failed_git_check_fails_the_run(monkeypatch, tmp_path):
+    handler = serve(httpx.Response(200, json=[], headers=HEALTHY), httpx.Response(304))
+    github = make_client(handler)
+    anthropic = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(401))
+    )
+    monkeypatch.setattr(bootstrap, "GitHubClient", lambda token: github)
+    monkeypatch.setattr(bootstrap.httpx, "AsyncClient", lambda: anthropic)
+    _stub_git_checks(
+        monkeypatch, [CheckResult("git version", False, "found 2.25, need 2.32")]
+    )
+
+    results = await bootstrap.run_checks(config(tmp_path), "fake-token")
+
+    assert not all(result.ok for result in results)
 
 
 def test_main_reports_each_check_and_succeeds(monkeypatch, capsys, tmp_path):
@@ -207,3 +256,37 @@ def test_main_exits_non_zero_when_a_check_fails(monkeypatch, capsys, tmp_path):
     captured = capsys.readouterr()
     assert "FAIL  anthropic reachable" in captured.out
     assert "1 check(s) failed" in captured.err
+
+
+# -- the git route, which the poller's route says nothing about ----------
+
+git_checks = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the daemon is deployed on POSIX hosts; Git for Windows differs",
+)
+
+
+@git_checks
+async def test_the_git_version_is_checked_first():
+    """Below 2.32 GIT_CONFIG_GLOBAL is ignored without an error, so the
+    checkout's hardening would be absent while appearing to be in force."""
+    results = await check_git("owner/name", base_url="https://127.0.0.1:1")
+    assert results[0].name == "git version"
+    assert results[0].ok is True  # whatever git is installed here
+
+
+@git_checks
+async def test_an_unreachable_remote_is_reported_not_raised():
+    # A blocked route is the commonest deployment failure, and an operator
+    # needs to be told which check failed, not handed a traceback.
+    results = await check_git("owner/name", base_url="https://127.0.0.1:1")
+    route = next(result for result in results if result.name == "git fetch route")
+    assert route.ok is False
+    assert route.detail
+
+
+@git_checks
+async def test_a_reachable_remote_passes(git_remote, monkeypatch):
+    monkeypatch.setenv("GIT_SSL_CAINFO", str(git_remote.ca))
+    results = await check_git(git_remote.repo, base_url=git_remote.base_url)
+    assert [result.ok for result in results] == [True, True]

@@ -16,7 +16,7 @@ worker: the spending rails exist before anything can spend.
 | Layer | Mechanism | State |
 | :-- | :-- | :-- |
 | 1 | Allowlist, bot filter, draft skip, cold-start watermark | done — [TRIGGERS.md](TRIGGERS.md) |
-| 2 | Path exclusions, diff-size caps, pre-flight token estimate | with the engine adapter |
+| 2 | Path exclusions, diff-size caps, pre-flight token estimate | diff-size caps **done** — [WORKSPACE.md](WORKSPACE.md); the rest with the engine adapter |
 | 3 | Per-run ceiling: max tokens, max turns, wall-clock timeout | `max_run_tokens` done; enforcement with the engine |
 | 4 | Rolling windows and pacing, by reserve-then-settle | **done** |
 | 5 | A degradation ladder rather than a hard stop | **done** |
@@ -24,12 +24,29 @@ worker: the spending rails exist before anything can spend.
 Layer 1 is the classifier — it *is* the first budget layer, which is why its
 rejections are logged at a level an operator actually sees.
 
-Layers 2 and 3 need a diff in hand and a running turn to abort, so they belong
-to the phase that has both. `max_run_tokens` lands here because the governor
-reserves against it; `max_turns` and `wall_clock_seconds` do not, because
-nothing would read them and
+Layer 3, and the rest of layer 2, need a diff in hand and a running turn to
+abort, so they belong to the phase that has both. `max_run_tokens` lands
+here because the governor reserves against it; `max_turns` and
+`wall_clock_seconds` do not, because nothing would read them and
 [CONFIG.md](CONFIG.md#-the-rule-the-loader-follows)'s rule is that a setting
 which does nothing is exactly the failure to avoid.
+
+**Layer 2's diff-size caps arrived early**, with the
+[workspace](WORKSPACE.md): the checkout is the first thing that needs them,
+because it has to decide whether to fetch a pull request at all.
+`max_changed_files` and `max_changed_lines` are enforced before the first
+git invocation, and both exist because neither bounds the other — two
+thousand one-line files pass a line cap and still bury the engine.
+
+They are in this section, rather than beside the code that reads them,
+because every spending cap belongs in one place. Being here also makes them
+reloadable on `SIGHUP`, which is why the workspace is handed them per
+checkout rather than holding a snapshot.
+
+Be clear about what they bound: **the engine's input, not the disk**. A
+fetch pulls every object reachable from the head, so a commit that adds a
+large blob and a later one that removes it still downloads it while
+reporting no changed lines at all.
 
 ## 🧍 Human headroom
 

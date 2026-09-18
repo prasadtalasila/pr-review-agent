@@ -113,6 +113,7 @@ fills the queue; nothing drains it and nothing posts to GitHub yet.
 | Bootstrap checks (`python -m pr_review_agent.bootstrap`) | implemented |
 | Daemon loop (`python -m pr_review_agent.daemon`) | implemented |
 | Budget governor (windows, ladder, reserve-then-settle) | implemented |
+| Workspace (fetch, checkout, merge-base diff, teardown) | implemented |
 | Engine adapter (`ReviewEngine`) | not started |
 | Publisher | not started |
 | Retention sweep | not started |
@@ -139,7 +140,7 @@ command -v poetry                       # must print <repo>/.venv/bin/poetry
 poetry install
 poetry run pytest
 
-cp config.example.yaml config.yaml      # then edit: repo, allowlist, agent id
+cp config.minimal.example.yaml config.yaml   # then edit: repo, allowlist, budget
 ```
 
 Before deploying on a new host, confirm it can reach what the daemon needs:

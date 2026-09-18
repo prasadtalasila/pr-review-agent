@@ -81,7 +81,9 @@ class PollResult:
     """The outcome of one conditional GET against one endpoint."""
 
     changed: bool
-    data: list[dict] | None
+    #: A list for the three watched collection endpoints, and a single
+    #: object for a one-off read such as ``/pulls/{n}``. Callers narrow it.
+    data: list[dict] | dict | None
     etag: str | None
     rate_limit: RateLimit | None
 

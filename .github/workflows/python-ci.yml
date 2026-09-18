@@ -6,6 +6,11 @@ name: CI
       - main
   pull_request:
   workflow_dispatch:
+  # A published release rebuilds from its own tag and attaches the wheel and
+  # sdist to it, beside the source zip GitHub generates. Installing a
+  # release should not require a clone and a build.
+  release:
+    types: [published]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -130,6 +135,10 @@ jobs:
     needs: [test, quality]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      # Only this job writes, and only to attach the built artefacts to a
+      # published release. Everything else keeps the read-only default.
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -181,10 +190,47 @@ jobs:
 
           echo "OK: no direct-URL dependencies in wheel or sdist metadata."
 
+      - name: Name the artefact after the version it contains
+        id: dist
+        run: |
+          version=$(poetry version --short)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          ls -l dist
+
       - name: Upload dist artefacts
         # v7.0.1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: pr-review-agent-dist
+          name: pr-review-agent-${{ steps.dist.outputs.version }}-dist
           path: dist
-          retention-days: 1
+          # Long enough to investigate a failed run, and these are
+          # reproducible from the tag anyway.
+          retention-days: 14
+          if-no-files-found: error
+
+      # Only on a published release. The wheel and sdist are attached to the
+      # release itself, so `pip install <url>` works without a clone; the
+      # source zip and tar.gz GitHub attaches automatically are left alone.
+      - name: Attach the wheel and sdist to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -o pipefail
+
+          # The tag has to describe what was built, or the release would
+          # carry artefacts from a different version than it claims.
+          version=$(poetry version --short)
+          case "$TAG" in
+            "v$version"|"$version") ;;
+            *)
+              echo "::error::tag $TAG does not match pyproject version $version"
+              exit 1
+              ;;
+          esac
+
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          echo "Attached to $TAG:"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name'

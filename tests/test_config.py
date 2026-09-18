@@ -1,8 +1,10 @@
 """Config loading: reject anything that could silently weaken a safety rule."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
+import yaml
 
 from pr_review_agent.config import Config, ConfigError
 from pr_review_agent.triggers.models import Actor
@@ -248,3 +250,126 @@ def test_unknown_key_in_budget_is_rejected():
 def test_the_kill_switch_parses_off():
     data = {**VALID, "budget": {**BUDGET, "enabled": False}}
     assert Config.from_mapping(data).budget.enabled is False
+
+
+def test_size_caps_default_to_the_pinned_values():
+    """Asserted by value, not against the constants they come from.
+
+    These are layer 2's diff-size caps, so widening one has to be a visible
+    diff rather than a changed default nobody reviewed.
+    """
+    budget = Config.from_mapping(VALID).budget
+    assert budget.max_changed_files == 100
+    assert budget.max_changed_lines == 5000
+
+
+def test_size_caps_can_be_tightened():
+    data = {
+        **VALID,
+        "budget": {**BUDGET, "max_changed_files": 10, "max_changed_lines": 200},
+    }
+    budget = Config.from_mapping(data).budget
+    assert budget.max_changed_files == 10
+    assert budget.max_changed_lines == 200
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "500", 2.5, None])
+def test_a_cap_that_is_not_a_positive_integer_is_rejected(value):
+    # True is here for the same reason as in the token limits: bool
+    # subclasses int, so "max_changed_lines: true" would be a cap of one.
+    data = {**VALID, "budget": {**BUDGET, "max_changed_lines": value}}
+    with pytest.raises(ConfigError, match="max_changed_lines"):
+        Config.from_mapping(data)
+
+
+# -- workspace: a path and nothing else ----------------------------------
+
+
+def test_workspace_section_is_optional():
+    assert Config.from_mapping(VALID).workspace.cache_dir == ".cache/repos"
+
+
+def test_workspace_cache_dir_is_read():
+    data = {**VALID, "workspace": {"cache_dir": "/srv/agent/repos"}}
+    assert Config.from_mapping(data).workspace.cache_dir == "/srv/agent/repos"
+
+
+def test_unknown_key_in_workspace_is_rejected():
+    data = {**VALID, "workspace": {"cachedir": "/srv"}}
+    with pytest.raises(ConfigError, match="unknown keys in 'workspace'"):
+        Config.from_mapping(data)
+
+
+@pytest.mark.parametrize("value", ["", "   ", 42, None])
+def test_an_unusable_cache_dir_is_rejected(value):
+    data = {**VALID, "workspace": {"cache_dir": value}}
+    with pytest.raises(ConfigError, match="workspace.cache_dir"):
+        Config.from_mapping(data)
+
+
+# -- the shipped examples, which documentation has already got wrong once --
+
+EXAMPLES = Path(__file__).resolve().parent.parent
+
+
+def test_the_minimal_example_loads():
+    """It is the file the quickstart tells people to copy.
+
+    CONFIG.md once showed a "minimal file" with no budget section, which
+    would not have loaded at all. Parsing the real file is what stops the
+    documentation and the loader drifting apart again.
+    """
+    config = Config.load(EXAMPLES / "config.minimal.example.yaml")
+    assert config.github.repo == "INTO-CPS-Association/DTaaS"
+    assert config.budget.enabled is True
+
+
+def test_the_minimal_example_carries_only_required_keys():
+    """Minimal has to mean minimal: every key in it must be load-bearing."""
+    data = yaml.safe_load((EXAMPLES / "config.minimal.example.yaml").read_text())
+    assert set(data) == {"github", "triggers", "budget"}
+    assert set(data["github"]) == {"repo"}
+    assert set(data["triggers"]) == {"allowlist"}
+    assert set(data["budget"]) == {
+        "session_tokens",
+        "weekly_tokens",
+        "max_run_tokens",
+    }
+
+
+def test_the_comprehensive_example_loads():
+    config = Config.load(EXAMPLES / "config.example.yaml")
+    assert config.store.path == "state.db"
+    assert config.workspace.cache_dir == ".cache/repos"
+
+
+def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
+    """A key the loader takes but the example omits is undiscoverable."""
+    data = yaml.safe_load((EXAMPLES / "config.example.yaml").read_text())
+    assert set(data) == {"github", "triggers", "budget", "store", "workspace"}
+    assert set(data["github"]) == {"repo", "agent_user_id"}
+    assert set(data["triggers"]) == {"allowlist", "handle"}
+    assert set(data["budget"]) == {
+        "enabled",
+        "session_tokens",
+        "weekly_tokens",
+        "max_run_tokens",
+        "reviewer_share_pct",
+        "max_changed_files",
+        "max_changed_lines",
+    }
+    assert set(data["store"]) == {"path"}
+    assert set(data["workspace"]) == {"cache_dir"}
+
+
+def test_the_comprehensive_example_states_the_real_defaults():
+    """Its optional values are advertised as the defaults, so they must be."""
+    shown = Config.load(EXAMPLES / "config.example.yaml")
+    defaults = Config.load(EXAMPLES / "config.minimal.example.yaml")
+    assert shown.triggers.handle == defaults.triggers.handle
+    assert shown.budget.enabled == defaults.budget.enabled
+    assert shown.budget.reviewer_share_pct == defaults.budget.reviewer_share_pct
+    assert shown.budget.max_changed_files == defaults.budget.max_changed_files
+    assert shown.budget.max_changed_lines == defaults.budget.max_changed_lines
+    assert shown.store.path == defaults.store.path
+    assert shown.workspace.cache_dir == defaults.workspace.cache_dir

@@ -31,7 +31,19 @@ The agent supports **Python 3.10 through 3.14** and uses:
 - [Pyright](https://github.com/microsoft/pyright) — static type checking,
   configured in _pyproject.toml_ under `[tool.pyright]`.
 
+- [cryptography](https://cryptography.io/) — **dev only**. It generates the
+  certificate for the loopback HTTPS server the git tests fetch from. The
+  agent refuses every transport but https, so a `file://` fixture would not
+  work; see [docs/WORKSPACE.md](docs/WORKSPACE.md).
+
 `sqlite3` is in the standard library, so the store adds no dependency.
+
+**`git` 2.32 or later must be on `PATH`.** The
+[checkout](docs/WORKSPACE.md) shells out to it, and 2.32 is where
+`GIT_CONFIG_GLOBAL` arrived — below that it is ignored without an error,
+taking the checkout's hardening with it. The git-backed tests fail rather
+than skip when it is missing, except on Windows, where they skip: the daemon
+is deployed on Linux and Git for Windows differs in exec-path layout.
 
 ## ⚙️ Setup
 
@@ -82,7 +94,12 @@ environment in `.venv/` inside the repository, so editors and CI find the same
 interpreter. Prefix commands with `poetry run`, or open a subshell with
 `poetry env activate`.
 
-Copy `config.example.yaml` to `config.yaml` before running the daemon.
+Copy `config.minimal.example.yaml` to `config.yaml` before running the
+daemon — it carries the required keys and nothing else.
+`config.example.yaml` is the comprehensive one: every key the loader
+accepts, with the reasoning behind each and the defaults shown. Both are
+parsed by the test suite, so neither can drift from the loader.
+
 `config.yaml` is gitignored: it names real accounts and will later sit beside
 the agent's credentials. Every key is documented in
 [docs/CONFIG.md](docs/CONFIG.md).

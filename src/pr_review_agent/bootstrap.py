@@ -19,6 +19,14 @@ conditional requests being free, and an intercepting proxy that strips or
 rewrites `ETag` turns every poll into a full 200 -- silently, and only
 visibly once the budget runs out mid-week.
 
+**Git can fetch, and is new enough.** The review needs the code on disk, and
+that is a different host from the API -- `github.com`, not `api.github.com`
+-- so on an allowlist-based firewall it is a different rule, and the
+poller's route answering proves nothing about it. The version is checked
+first because below 2.32 `GIT_CONFIG_GLOBAL` is ignored *without an error*,
+which would leave the checkout's whole hardening absent while appearing to
+be in force.
+
 **Anthropic is reachable.** No API key is sent and none is needed: any HTTP
 status proves the route exists, and only a transport error is a failure.
 
@@ -40,11 +48,18 @@ from ._startup import StartupError, startup
 from .config import Config
 from .poller.client import GitHubClient, GitHubClientError, PollResult
 from .poller.endpoints import RepoEndpoints
+from .workspace.gitcmd import MINIMUM_GIT_VERSION, WorkspaceError, git_version, run_git
+from .workspace.repo import GITHUB_BASE
 
 # Unauthenticated, so it answers 401; that is a route, which is all we ask.
 ANTHROPIC_PROBE_URL = "https://api.anthropic.com/v1/models"
 
 _CONDITIONAL = "github conditional GET"
+_GIT_VERSION = "git version"
+_GIT_ROUTE = "git fetch route"
+#: An `ls-remote` that has not answered in half a minute is a blocked route,
+#: not a slow one, and the operator is waiting at a terminal.
+_LS_REMOTE_TIMEOUT = 30.0
 
 
 @dataclass(frozen=True)
@@ -76,6 +91,46 @@ async def check_github(
     return results
 
 
+async def check_git(repo: str, base_url: str = GITHUB_BASE) -> list[CheckResult]:
+    """Is git new enough, and does the fetch route work?
+
+    The version comes first because it is what makes the rest of the
+    checkout's hardening real: below 2.32, ``GIT_CONFIG_GLOBAL`` is ignored
+    *without an error*, so the control that neutralises the host's gitconfig
+    is simply absent while appearing to be in force.
+
+    The route is a second question from the poller's. `github.com` and
+    `api.github.com` are different hosts and, on an allowlist-based
+    firewall, different rules -- so the poller's route answering says
+    nothing at all about this one.
+    """
+    results: list[CheckResult] = []
+    try:
+        version = await git_version()
+    except WorkspaceError as exc:
+        results.append(CheckResult(_GIT_VERSION, False, str(exc)))
+        return results
+
+    found = ".".join(str(part) for part in version)
+    wanted = ".".join(str(part) for part in MINIMUM_GIT_VERSION)
+    results.append(
+        CheckResult(
+            _GIT_VERSION,
+            version >= MINIMUM_GIT_VERSION,
+            f"found {found}, need at least {wanted}",
+        )
+    )
+
+    url = f"{base_url.rstrip('/')}/{repo}.git"
+    try:
+        await run_git("ls-remote", "--heads", url, timeout=_LS_REMOTE_TIMEOUT)
+    except WorkspaceError as exc:
+        results.append(CheckResult(_GIT_ROUTE, False, str(exc)))
+    else:
+        results.append(CheckResult(_GIT_ROUTE, True, f"{url} answers"))
+    return results
+
+
 async def check_anthropic(client: httpx.AsyncClient) -> CheckResult:
     """Prove the route to Anthropic exists; any HTTP status counts."""
     name = "anthropic reachable"
@@ -93,6 +148,7 @@ async def run_checks(config: Config, token: str) -> list[CheckResult]:
     anthropic = httpx.AsyncClient()
     try:
         results = await check_github(github, endpoints)
+        results.extend(await check_git(config.github.repo))
         results.append(await check_anthropic(anthropic))
     finally:
         await github.aclose()

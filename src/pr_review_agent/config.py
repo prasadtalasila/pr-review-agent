@@ -26,6 +26,10 @@ class ConfigError(ValueError):
 #: why the daemon logs the absolute path it settled on.
 DEFAULT_STORE_PATH = "state.db"
 
+#: Where the bare mirrors and the per-run checkouts live. Resolved the same
+#: way, and logged absolute for the same reason.
+DEFAULT_CACHE_DIR = ".cache/repos"
+
 
 def _section(data: dict, name: str, allowed: set[str]) -> dict:
     """Return section ``name``, rejecting unknown keys inside it."""
@@ -98,6 +102,13 @@ class TriggerConfig:
 #: each plan window, never the whole allowance.
 DEFAULT_REVIEWER_SHARE_PCT = 40
 
+#: BUDGET.md layer 2's diff-size caps. Unlike the plan token counts these do
+#: have defaults: a plan's allowance is unpublished, so any default would be
+#: a fabricated ceiling, whereas a diff-size cap is an ordinary engineering
+#: choice. `tests/test_config.py` pins both by value.
+DEFAULT_MAX_CHANGED_FILES = 100
+DEFAULT_MAX_CHANGED_LINES = 5000
+
 
 def _tokens(data: dict, key: str) -> int:
     """Read a required positive token count from the ``budget`` section.
@@ -109,6 +120,14 @@ def _tokens(data: dict, key: str) -> int:
     value = data.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ConfigError(f"budget.{key} must be a positive number of tokens")
+    return value
+
+
+def _cap(data: dict, key: str, default: int) -> int:
+    """Read an optional positive diff-size cap from the ``budget`` section."""
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"budget.{key} must be a positive integer")
     return value
 
 
@@ -133,6 +152,8 @@ class BudgetConfig:
     max_run_tokens: int
     enabled: bool = True
     reviewer_share_pct: int = DEFAULT_REVIEWER_SHARE_PCT
+    max_changed_files: int = DEFAULT_MAX_CHANGED_FILES
+    max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES
 
     @property
     def session_limit(self) -> int:
@@ -177,6 +198,12 @@ class BudgetConfig:
             max_run_tokens=_tokens(data, "max_run_tokens"),
             enabled=enabled,
             reviewer_share_pct=share,
+            max_changed_files=_cap(
+                data, "max_changed_files", DEFAULT_MAX_CHANGED_FILES
+            ),
+            max_changed_lines=_cap(
+                data, "max_changed_lines", DEFAULT_MAX_CHANGED_LINES
+            ),
         )
         if config.daily_limit < config.max_run_tokens:
             # The daily window is the tightest of the three, so a run that
@@ -205,6 +232,27 @@ class StoreConfig:
 
 
 @dataclass(frozen=True)
+class WorkspaceConfig:
+    """Where a pull request is checked out.
+
+    A path and nothing else. The cap that bounds what a checkout may cost
+    lives in ``budget`` with every other spending rail.
+    """
+
+    cache_dir: str = DEFAULT_CACHE_DIR
+
+    @classmethod
+    def parse(cls, data: dict) -> WorkspaceConfig:
+        """Validate the ``workspace`` section."""
+        cache_dir = data.get("cache_dir", DEFAULT_CACHE_DIR)
+        if not isinstance(cache_dir, str) or not cache_dir.strip():
+            raise ConfigError(
+                f"workspace.cache_dir must be a non-empty path, got {cache_dir!r}"
+            )
+        return cls(cache_dir=cache_dir)
+
+
+@dataclass(frozen=True)
 class Config:
     """The whole configuration file."""
 
@@ -212,13 +260,16 @@ class Config:
     triggers: TriggerConfig
     budget: BudgetConfig
     store: StoreConfig
+    workspace: WorkspaceConfig
 
     @classmethod
     def from_mapping(cls, data: Any) -> Config:
         """Validate an already-parsed YAML document."""
         if not isinstance(data, dict):
             raise ConfigError("configuration root must be a mapping")
-        unknown = sorted(set(data) - {"github", "triggers", "budget", "store"})
+        unknown = sorted(
+            set(data) - {"github", "triggers", "budget", "store", "workspace"}
+        )
         if unknown:
             raise ConfigError(f"unknown top-level sections: {unknown}")
         return cls(
@@ -244,6 +295,8 @@ class Config:
                         "weekly_tokens",
                         "max_run_tokens",
                         "reviewer_share_pct",
+                        "max_changed_files",
+                        "max_changed_lines",
                     },
                 )
             ),
@@ -253,6 +306,14 @@ class Config:
             # rejected, so a typo in a path is not silently ignored.
             store=StoreConfig.parse(
                 _section(data, "store", {"path"}) if "store" in data else {}
+            ),
+            # Optional for the same reason as `store`, though not the same
+            # argument: it holds a path and nothing else, because the cap
+            # that could spend lives in `budget`.
+            workspace=WorkspaceConfig.parse(
+                _section(data, "workspace", {"cache_dir"})
+                if "workspace" in data
+                else {}
             ),
         )
 

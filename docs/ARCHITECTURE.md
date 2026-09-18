@@ -16,9 +16,10 @@ host.
 | 3 | **Store** | The watermarks, ETags and queue rows that must survive a restart, and the schema migrations that get them there. | implemented — [STORAGE.md](STORAGE.md) |
 | 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`) and a per-PR lease so reviews of one pull request never overlap. The `head_sha` re-check before posting belongs to the publisher, which is where the live head can be read. | implemented — [QUEUE.md](QUEUE.md) |
 | 5 | **Budget governor** | Layers 4 and 5 of spending control over one ledger; layers 2 and 3 land with the engine. | implemented — [BUDGET.md](BUDGET.md) |
-| 6 | **Engine adapter** | A `ReviewEngine` protocol with `claude_sdk`, `claude_cli` and `generic_cli` implementations. | not started |
-| 7 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
-| 8 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |
+| 6 | **Workspace** | Fetch a pull request head into a bare mirror, check it out into an isolated worktree, diff it against the merge base, tear it down. Executes nothing from the tree. | implemented — [WORKSPACE.md](WORKSPACE.md) |
+| 7 | **Engine adapter** | A `ReviewEngine` protocol with `claude_sdk`, `claude_cli` and `generic_cli` implementations. | not started |
+| 8 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
+| 9 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |
 
 The ordering is deliberate rather than convenient: **the budget governor lands
 before the review worker**, so the spending rails exist before anything can
@@ -69,13 +70,17 @@ src/pr_review_agent/
 │   ├── allowlist.py   # numeric-user-id membership
 │   ├── mention.py     # @claude in *prose* only
 │   └── classifier.py  # PullRequest | Comment → Decision
-└── poller/
-    ├── endpoints.py   # the three repo-wide request paths
-    ├── client.py      # async conditional GET, rate-limit handling
-    ├── etag_store.py  # the ETagCache protocol + in-memory cache
-    ├── interval.py    # adaptive poll delay
-    ├── payloads.py    # raw GitHub dicts → trigger models
-    └── poller.py      # one sweep across all three endpoints
+├── poller/
+│   ├── endpoints.py   # the three repo-wide request paths, and /pulls/{n}
+│   ├── client.py      # async conditional GET, rate-limit handling
+│   ├── etag_store.py  # the ETagCache protocol + in-memory cache
+│   ├── interval.py    # adaptive poll delay
+│   ├── payloads.py    # raw GitHub dicts → trigger models
+│   ├── pulls.py       # one pull request → PullRequestFacts
+│   └── poller.py      # one sweep across all three endpoints
+└── workspace/
+    ├── gitcmd.py      # the one hardened `git` invocation
+    └── repo.py        # bare mirror, per-run worktree, diff, teardown
 ```
 
 ## ⬇ Layering
@@ -85,9 +90,14 @@ Dependencies point one way only:
 - `config` builds a `Classifier`; it knows nothing about HTTP.
 - `poller/payloads.py` imports `triggers/models.py`, never the reverse.
 - Nothing in `triggers/` imports `poller/`.
+- `poller/pulls.py` imports `workspace`, never the reverse. `workspace/` is
+  pure git and filesystem, so its suite runs with no HTTP at all.
 
 That is what keeps the trigger suite free of HTTP: it is pure functions over
-fixtures, needs no network and spends no tokens.
+fixtures, needs no network and spends no tokens. The same rule is why
+`PullRequestFacts` is defined in `workspace/` and mapped in `poller/`: the
+module that issues the request depends on the module that consumes it, not
+the other way round.
 
 `poller/payloads.py` is the seam where every quirk of the GitHub REST shape is
 resolved — the three that shaped it are documented in

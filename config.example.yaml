@@ -1,44 +1,84 @@
-# Copy to config.yaml and edit. config.yaml is gitignored: it names real
-# accounts and, later, will sit beside the agent's credentials.
+# The comprehensive configuration: EVERY key the loader accepts, with the
+# reasoning behind each. Values shown for optional keys are the defaults.
+#
+# Starting out? Copy config.minimal.example.yaml instead -- it has only the
+# required keys. Use this file as the reference for what else exists.
+#
+#     cp config.example.yaml config.yaml
+#
+# docs/CONFIG.md is the prose version of this file.
+#
+# Two rules worth knowing before you edit:
+#
+#   UNKNOWN KEYS ARE REJECTED, not ignored. A typo in a safety setting has
+#   to fail at startup rather than fall back to a default that spends
+#   tokens. That applies to unknown sections and to unknown keys inside a
+#   section -- including plausible-looking near-misses like `reviewer_share`
+#   for `reviewer_share_pct`.
+#
+#   ONLY SETTINGS SOMETHING READS ARE ACCEPTED. There is no `engine` or
+#   `publish` section yet because those components do not exist; they arrive
+#   with the code that reads them. A setting that quietly does nothing is
+#   the failure this rule prevents.
+#
+# CREDENTIALS ARE NOT IN THIS FILE. The GitHub token is read from the
+# GITHUB_TOKEN environment variable, so it can come from a systemd
+# EnvironmentFile or a secret manager without ever being a file the
+# repository could swallow. config.yaml is gitignored regardless, because it
+# names real accounts.
 
+# ---------------------------------------------------------------------------
+# github -- REQUIRED. What to watch, and who the agent is.
+# ---------------------------------------------------------------------------
 github:
-  # The repository to poll. Reviews are posted here.
+  # REQUIRED. The repository to poll. Reviews are posted here. Exactly one
+  # "/", both halves non-empty.
   repo: INTO-CPS-Association/DTaaS
 
-  # The numeric id of the account the agent posts as. Its own comments are
-  # then ignored, so a posted review can never re-trigger a review.
-  # Fill this in once the reviewer account exists on the host.
+  # Optional (default null). The numeric id of the account the agent posts
+  # as. Once set, the agent ignores its own comments, so a posted review can
+  # never re-trigger a review. Until then the self_author / self_commenter
+  # rejections never fire -- fill it in as soon as the reviewer account
+  # exists on the host.
   agent_user_id: null
 
+# ---------------------------------------------------------------------------
+# triggers -- REQUIRED. Who may start a review, and what summons one.
+# ---------------------------------------------------------------------------
 triggers:
-  # The handle that summons a review: "@claude review this".
-  handle: claude
-
-  # Numeric GitHub user ids, never logins. A login can be renamed and the
-  # freed name registered by somebody else, which would hand eligibility to
-  # a stranger. Look an id up with:
+  # REQUIRED. Numeric GitHub user ids, NEVER logins. A login can be renamed
+  # and the freed name registered by somebody else, which would hand
+  # eligibility to a stranger. A login in this list raises an error at
+  # startup rather than silently never matching -- as does a non-positive
+  # number, and a string like "--5" that only looks numeric.
+  #
   #     curl -s https://api.github.com/users/<login> | grep '"id"'
+  #
+  # An empty list is valid and allows nobody. It is the safe starting state.
   allowlist:
     - 114395272  # 8ohamed (Mohamed Abdulkarim)
 
-store:
-  # The SQLite file holding watermarks, ETags and the review queue. Optional;
-  # this is the default. A relative path is resolved against the working
-  # directory the daemon starts in, so prefer an absolute path under a
-  # service account's data directory in production: pointing at the wrong
-  # file costs the queue's memory of what has already been reviewed.
-  path: state.db
+  # Optional (default "claude"). The handle that summons a review:
+  # "@claude review this". A leading "@" is stripped. This is what makes the
+  # pipeline reusable for a different agent -- set it to "aider" and "@aider"
+  # becomes the trigger.
+  handle: claude
 
+# ---------------------------------------------------------------------------
+# budget -- REQUIRED. The spending rails. Nothing reaches a review engine
+# except through them. This is the only section SIGHUP reloads.
+# ---------------------------------------------------------------------------
 budget:
-  # The spending rails. Nothing reaches a review engine except through them.
-  #
-  # false is the emergency brake: it STOPS REVIEWING. It does not turn the
-  # budget checks off. Takes effect on SIGHUP, without a restart.
+  # Optional (default true). The emergency brake. false STOPS REVIEWING; it
+  # does not turn the budget checks off. The two readings of "kill switch"
+  # differ by catastrophe -- one is a brake, the other is unbounded spend --
+  # so the governor refuses every claim while this is false.
   enabled: true
 
-  # Your estimate of the PLAN's limits, in tokens. A subscription publishes
-  # no quota, so these are guesses and there are deliberately no defaults --
-  # a made-up spending ceiling is worse than being asked for one.
+  # REQUIRED, all three. Your estimate of the PLAN's limits, in tokens, plus
+  # the ceiling for a single run. No defaults, deliberately: a subscription
+  # publishes no quota, so any default would be a spending ceiling nobody
+  # chose.
   #
   # Set them CONSERVATIVELY LOW. Until the circuit breaker lands with the
   # engine adapter, nothing detects an over-estimate: the governor will
@@ -46,13 +86,63 @@ budget:
   session_tokens: 88000      # rolling 5-hour window
   weekly_tokens: 1500000     # rolling 7-day window
 
-  # Reserved up front for every run, and released down to actual usage when
-  # the run settles. Must fit inside the daily allowance, which is a seventh
-  # of the weekly one.
+  # Reserved up front for every run and released down to actual usage when
+  # the run settles. Must fit inside the daily allowance -- a seventh of the
+  # weekly limit -- or the loader refuses the file, because a run that
+  # cannot fit in the tightest window could never be admitted at all.
   max_run_tokens: 60000
 
-  # The share of each plan window the agent may use, never the whole
-  # allowance. This is what stops a runaway agent locking you out of your own
-  # interactive Claude Code sessions: its ceiling is deliberately below the
-  # plan's. Optional; 40 is the default.
+  # Optional (default 40). The share of each plan window the agent may use,
+  # never the whole allowance. This is what stops a runaway agent locking
+  # you out of your own interactive Claude Code sessions: its ceiling is
+  # deliberately below the plan's. Between 1 and 100; use `enabled: false`
+  # to stop the agent rather than setting this to zero.
   reviewer_share_pct: 40
+
+  # Optional (defaults 100 / 5000). Layer 2's diff-size caps: a pull request
+  # over either is refused before anything is fetched. Both exist because
+  # neither bounds the other -- 2000 one-line files pass a line cap and
+  # still bury the engine, and one 50000-line generated file passes a file
+  # cap.
+  #
+  # They bound WHAT THE REVIEWER READS, not the disk. A fetch pulls every
+  # object reachable from the head, so a commit that adds a large blob and a
+  # later one that deletes it still downloads it while reporting no changed
+  # lines at all.
+  #
+  # They are here rather than beside the code that reads them so that every
+  # spending cap lives in one section -- which also means they reload on
+  # SIGHUP.
+  max_changed_files: 100
+  max_changed_lines: 5000
+
+# ---------------------------------------------------------------------------
+# store -- optional. Where the daemon's memory lives.
+# ---------------------------------------------------------------------------
+store:
+  # Optional (default state.db). The SQLite file holding watermarks, ETags
+  # and the review queue. A relative path is resolved against the working
+  # directory the daemon starts in, so it logs the absolute path it settled
+  # on at INFO.
+  #
+  # Prefer an absolute path under a service account's data directory in
+  # production: pointing at the wrong file costs the queue's memory of what
+  # has already been reviewed, and the agent would review it all again.
+  path: state.db
+
+# ---------------------------------------------------------------------------
+# workspace -- optional. Where pull requests are checked out.
+# ---------------------------------------------------------------------------
+workspace:
+  # Optional (default .cache/repos). Holds one bare mirror per repository
+  # plus the per-run checkouts, created 0700. Resolved and logged the same
+  # way as store.path.
+  #
+  # Unlike budget, this is NOT reloaded on SIGHUP: moving the cache under a
+  # running daemon would orphan the mirror it is fetching into. A change
+  # here needs a restart, and the daemon says so rather than half-applying
+  # it.
+  #
+  # The setting that bounds what a checkout may COST is not here -- it is
+  # budget.max_changed_files / max_changed_lines, with every other cap.
+  cache_dir: .cache/repos

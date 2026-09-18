@@ -1,6 +1,6 @@
 [project]
 name = "pr-review-agent"
-version = "0.3.0"
+version = "0.4.0"
 description = "Locally-hosted LLM-based PR review agent with enforced usage budgets"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -36,6 +36,7 @@ ruff = "^0.9"
 pylint = "^3.3"
 pyright = "^1.1"
 pytest-asyncio = "^0.24"
+cryptography = ">=42"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

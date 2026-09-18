@@ -1,8 +1,19 @@
 # Configuration reference
 
-One file, `config.yaml`, next to the daemon. Copy `config.example.yaml` and
-edit. `config.yaml` is gitignored: it names real accounts and will later sit
-beside the agent's credentials.
+One file, `config.yaml`, next to the daemon. `config.yaml` is gitignored: it
+names real accounts and will later sit beside the agent's credentials.
+
+Two examples ship with the repository, and both are parsed by the test suite
+so neither can drift out of step with the loader:
+
+| File | What it is |
+| :-- | :-- |
+| [`config.minimal.example.yaml`](../config.minimal.example.yaml) | The smallest file that loads — every required key and nothing else. Start here. |
+| [`config.example.yaml`](../config.example.yaml) | Every key the loader accepts, with the reasoning behind each. Values shown for optional keys are the defaults. |
+
+```bash
+cp config.minimal.example.yaml config.yaml
+```
 
 ## 🧾 The rule the loader follows
 
@@ -64,16 +75,65 @@ An empty allowlist is valid and allows nobody. It is the safe starting state.
 `handle` is what makes the pipeline reusable for a different agent: set it to
 `aider` and `@aider` becomes the trigger.
 
+### `budget`
+
+Required, and the only section `SIGHUP` reloads. The full specification is
+[BUDGET.md](BUDGET.md); this is the key list.
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `session_tokens` | integer | yes | Your estimate of the plan's rolling 5-hour allowance. |
+| `weekly_tokens` | integer | yes | Your estimate of the plan's rolling 7-day allowance. |
+| `max_run_tokens` | integer | yes | Reserved up front for one review, released down to actual usage when it settles. |
+| `enabled` | boolean | no (default `true`) | `false` **stops reviewing**. It does not turn the budget checks off. |
+| `reviewer_share_pct` | integer 1–100 | no (default `40`) | The share of each plan window the agent may use, never the whole allowance. |
+| `max_changed_files` | integer | no (default `100`) | A pull request touching more files is refused before anything is fetched. |
+| `max_changed_lines` | integer | no (default `5000`) | The same, for additions plus deletions. |
+
+**The three token counts have no defaults, deliberately.** A subscription
+publishes no quota, so every one of them is a guess the operator has to
+make, and a guess that shipped as a default would be a spending ceiling
+nobody chose. They are required even when `enabled` is `false`, so that
+flipping the kill switch back on over `SIGHUP` cannot fail on a key that was
+never supplied.
+
+Set them **conservatively low**. Until the circuit breaker lands with the
+engine adapter, nothing detects an over-estimate: the governor reports
+healthy utilisation while the real plan limit is already being hit.
+
+`max_run_tokens` must fit inside the daily allowance — a seventh of the
+weekly limit, after `reviewer_share_pct` — or the file is refused. A run
+that cannot fit in the tightest window could never be admitted at all, which
+is a configuration that reviews nothing, arrived at by arithmetic nobody did
+by hand.
+
+The two diff-size caps are layer 2 of the budget, enforced by the
+[workspace](WORKSPACE.md) but configured here so that every spending cap
+lives in one section. Unlike the token counts they *do* have defaults: a
+plan's allowance is unpublished, whereas a diff-size cap is an ordinary
+engineering choice. `tests/test_config.py` pins both by value, so widening
+one is a visible diff.
+
+Be clear about what they bound: **the reviewer's input, not the disk.** A
+fetch pulls every object reachable from the head, so a commit that adds a
+large blob and a later one that removes it still downloads it while
+reporting no changed lines.
+
+`max_turns` and `wall_clock_seconds` appear in `BUDGET.md` but are **not**
+accepted here: nothing reads them yet, and a setting that does nothing is
+the failure the loader's rule exists to prevent. They arrive with the engine
+adapter.
+
 ### `store`
 
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
 | `path` | string | no (default `state.db`) | The SQLite file holding watermarks, ETags and the review queue. |
 
-The whole section is optional, which is the one exception to "only the
-sections backed by implemented components are accepted" being paired with a
-required section. The exception is affordable because the default cannot spend
-anything: a database that does not exist yet has its watermarks
+The whole section is optional, which is one of the two exceptions to "only
+the sections backed by implemented components are accepted" being paired with
+a required section. The exception is affordable because the default cannot
+spend anything: a database that does not exist yet has its watermarks
 [seeded to the moment the daemon started](DAEMON.md#-cold-start-is-the-spend-bound),
 so a fresh file reviews nothing from the backlog. Unknown keys inside `store`
 are still rejected.
@@ -84,31 +144,60 @@ Prefer an absolute path under a service account's data directory in
 production — pointing at the wrong file costs the queue's memory of what has
 already been reviewed.
 
+### `workspace`
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `cache_dir` | string | no (default `.cache/repos`) | Where the bare mirror and the per-run checkouts live. Created `0700`. |
+
+The **second** optional section, and the argument differs from `store`'s. It
+is affordable because the section holds a path and nothing else: the setting
+that bounds what a checkout may cost lives in `budget`, with every other
+spending cap. Unknown keys inside `workspace` are still rejected.
+
+A relative path is resolved against the working directory the daemon starts
+in, and logged absolute at `INFO`, exactly as `store.path` is.
+
 ## 📄 A minimal file
+
+Every key below is required; everything else has a default. This is
+[`config.minimal.example.yaml`](../config.minimal.example.yaml), and
+`tests/test_config.py` loads it, so it cannot drift.
 
 ```yaml
 github:
   repo: INTO-CPS-Association/DTaaS
-  agent_user_id: null
 
 triggers:
-  handle: claude
   allowlist:
     - 114395272
 
-store:
-  path: state.db
+budget:
+  session_tokens: 88000
+  weekly_tokens: 1500000
+  max_run_tokens: 60000
 ```
+
+An earlier version of this page showed a minimal file with no `budget`
+section at all. It would not have loaded — `budget` is required, and its
+three token counts have no defaults on purpose.
 
 ## 🔁 Reload
 
 `SIGHUP` re-reads `config.yaml` and adopts its `budget` section, so stopping
 the agent never requires a restart.
 
-**Only `budget` is hot-swapped.** A changed `github`, `triggers` or `store`
-section is logged as needing a restart rather than half-applied: the daemon's
-watermarks describe the repository it started against, and swapping that
-mid-flight would make them meaningless.
+**Only `budget` is hot-swapped.** A changed `github`, `triggers`, `store` or
+`workspace` section is logged as needing a restart rather than half-applied:
+the daemon's watermarks describe the repository it started against, and
+swapping that mid-flight would make them meaningless. `workspace.cache_dir`
+is in that list for a neighbouring reason — moving the cache under a running
+daemon would orphan the mirror it is fetching into.
+
+The checkout's two caps *are* reloaded, because they are `budget` keys. That
+is why the workspace is handed them per checkout rather than reading them
+once at startup: a copy taken at construction would ignore the reload
+silently.
 
 **A broken file leaves the previous configuration in force**, logged at
 `ERROR`. Crashing on a bad reload would turn the emergency brake into a way to
