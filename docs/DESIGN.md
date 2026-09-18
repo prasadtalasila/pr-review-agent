@@ -207,15 +207,24 @@ deletion guarantee.
 
 1. **Outbound HTTPS from the deployment host** to `api.github.com`,
    `github.com`, `codeload.github.com` and `api.anthropic.com`. Run
-   `python -m pr_review_agent.bootstrap` on the host to check the two that
-   matter most ([DEVELOPER.md](../DEVELOPER.md#-bootstrap-checks)). On an
-   allowlist-based firewall this should be confirmed before implementation
+   `python -m pr_review_agent.bootstrap` on the host
+   ([DEVELOPER.md](../DEVELOPER.md#-bootstrap-checks)); it now probes the
+   git fetch route as well as the API, because `github.com` and
+   `api.github.com` are different hosts and, on an allowlist-based firewall,
+   different rules. This should be confirmed before implementation
    continues; it is the most common cause of schedule slip in this kind of
    deployment. The poller alone needs only `api.github.com`.
-2. **The reviewer account** the agent posts as. Its numeric id goes in
+2. **The `git` binary, version 2.32 or later**, on the host's `PATH`. The
+   [checkout](WORKSPACE.md) shells out to it, and 2.32 is where
+   `GIT_CONFIG_GLOBAL` arrived — below that it is ignored *without an
+   error*, so the control that neutralises the host's own gitconfig would be
+   absent while appearing to be in force. Bootstrap checks the version
+   before it checks the route, for that reason.
+3. **The reviewer account** the agent posts as. Its numeric id goes in
    `github.agent_user_id`; until it is set, the agent cannot recognise and
    skip its own comments.
-3. **The remaining allowlist members.**
-4. **A GitHub token for the poller.** Read-only access to the three endpoints
+4. **The remaining allowlist members.**
+5. **A GitHub token for the poller.** Read-only access to the three endpoints
    is enough for polling; write scope is only needed once the publisher
-   exists.
+   exists. The checkout deliberately does **not** use it: the fetch is
+   anonymous, so no credential can reach the git command line or `.git/config`.

@@ -17,6 +17,7 @@ they are reproduced here so they survive the issue being closed.
 | Bootstrap checks for a new host | implemented, unit tested |
 | Daemon loop calling `poll_once()` on a schedule | implemented, unit tested |
 | Budget governor (windows, ladder, reserve-then-settle) | implemented, unit tested |
+| Workspace (fetch, checkout, merge-base diff, teardown) | implemented, unit tested |
 | Engine adapter (`ReviewEngine`) | not started |
 | Publisher | not started |
 | Retention sweep | not started |
@@ -28,14 +29,19 @@ worker**, so the spending rails exist before anything can spend.
 
 1. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`,
    with the `head_sha` re-check immediately before posting. It also carries the
-   budget pieces that need a running engine: the circuit breaker, layer 2's
-   diff caps, layer 3's per-turn enforcement, and the ladder's 60 % rung.
+   budget pieces that need a running engine: the circuit breaker, layer 3's
+   per-turn enforcement, the ladder's 60 % rung, and the rest of layer 2 —
+   path exclusions and the pre-flight token estimate. Layer 2's diff-size
+   caps already landed with the [workspace](WORKSPACE.md), which is the first
+   thing that needed them. The code to review is now on disk for it.
 2. **Retention sweep.** Purge content on merge; keep the ledger.
 
 The [daemon loop](DAEMON.md) fills the queue and nothing drains it, which is
 still the intended state: the backlog is visible and none of it has cost
 anything. The [budget governor](BUDGET.md) is now in place ahead of the
-worker, so the spending rails exist before anything can spend.
+worker, so the spending rails exist before anything can spend, and the
+[workspace](WORKSPACE.md) can put a pull request on disk without anything
+yet reading it.
 
 A second engine (PR-Agent via `pr_agent_litellm`) plus a shared conformance
 suite is deliberately last: the seam is worth defining early and filling late.

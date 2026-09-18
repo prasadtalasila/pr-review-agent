@@ -70,10 +70,10 @@ An empty allowlist is valid and allows nobody. It is the safe starting state.
 | :-- | :-- | :-- | :-- |
 | `path` | string | no (default `state.db`) | The SQLite file holding watermarks, ETags and the review queue. |
 
-The whole section is optional, which is the one exception to "only the
-sections backed by implemented components are accepted" being paired with a
-required section. The exception is affordable because the default cannot spend
-anything: a database that does not exist yet has its watermarks
+The whole section is optional, which is one of the two exceptions to "only
+the sections backed by implemented components are accepted" being paired with
+a required section. The exception is affordable because the default cannot
+spend anything: a database that does not exist yet has its watermarks
 [seeded to the moment the daemon started](DAEMON.md#-cold-start-is-the-spend-bound),
 so a fresh file reviews nothing from the backlog. Unknown keys inside `store`
 are still rejected.
@@ -83,6 +83,36 @@ started in, so the daemon logs the absolute path it settled on at `INFO`.
 Prefer an absolute path under a service account's data directory in
 production — pointing at the wrong file costs the queue's memory of what has
 already been reviewed.
+
+### `workspace`
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `cache_dir` | string | no (default `.cache/repos`) | Where the bare mirror and the per-run checkouts live. Created `0700`. |
+
+The **second** optional section, and the argument differs from `store`'s. It
+is affordable because the section holds a path and nothing else: the setting
+that bounds what a checkout may cost lives in `budget`, with every other
+spending cap. Unknown keys inside `workspace` are still rejected.
+
+A relative path is resolved against the working directory the daemon starts
+in, and logged absolute at `INFO`, exactly as `store.path` is.
+
+### The checkout's two caps live in `budget`
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `max_changed_files` | integer | no (default `100`) | A pull request touching more files than this is refused before anything is fetched. |
+| `max_changed_lines` | integer | no (default `5000`) | The same, for additions plus deletions. |
+
+They are read by the [workspace](WORKSPACE.md) but configured here, because
+[BUDGET.md](BUDGET.md#-five-layers-cheapest-first) is the single
+specification for every spending cap and layer 2 is where these belong.
+
+Unlike the token limits they have defaults, and the difference is real: a
+plan's allowance is unpublished, so a default there would be a fabricated
+ceiling, whereas a diff-size cap is an ordinary engineering choice.
+`tests/test_config.py` pins both by value, so widening one is a visible diff.
 
 ## 📄 A minimal file
 
@@ -105,10 +135,17 @@ store:
 `SIGHUP` re-reads `config.yaml` and adopts its `budget` section, so stopping
 the agent never requires a restart.
 
-**Only `budget` is hot-swapped.** A changed `github`, `triggers` or `store`
-section is logged as needing a restart rather than half-applied: the daemon's
-watermarks describe the repository it started against, and swapping that
-mid-flight would make them meaningless.
+**Only `budget` is hot-swapped.** A changed `github`, `triggers`, `store` or
+`workspace` section is logged as needing a restart rather than half-applied:
+the daemon's watermarks describe the repository it started against, and
+swapping that mid-flight would make them meaningless. `workspace.cache_dir`
+is in that list for a neighbouring reason — moving the cache under a running
+daemon would orphan the mirror it is fetching into.
+
+The checkout's two caps *are* reloaded, because they are `budget` keys. That
+is why the workspace is handed them per checkout rather than reading them
+once at startup: a copy taken at construction would ignore the reload
+silently.
 
 **A broken file leaves the previous configuration in force**, logged at
 `ERROR`. Crashing on a bad reload would turn the emergency brake into a way to
