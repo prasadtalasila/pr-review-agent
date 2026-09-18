@@ -100,9 +100,10 @@ rests on, the retry rules, and why the notifications API was not used.
 
 Early. The trigger pipeline, the poller, the persistence layer, the queue,
 the budget governor, the checkout and the daemon loop that drives them are
-implemented and unit tested, as is the seam a review engine plugs into. The
-daemon fills the queue; nothing drains it, and nothing posts to GitHub or
-spends anything yet.
+implemented and unit tested, as is the seam a review engine plugs into and
+the first adapter behind it. The daemon fills the queue; nothing drains it,
+so nothing posts to GitHub or spends anything yet -- the adapter *can* spend,
+but the worker that would call it does not exist.
 
 | Component | State |
 | :-- | :-- |
@@ -117,7 +118,7 @@ spends anything yet.
 | Budget governor (windows, ladder, reserve-then-settle) | implemented |
 | Workspace (fetch, checkout, merge-base diff, teardown) | implemented |
 | Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented |
-| Engine adapter (a `claude` CLI implementation) | not started |
+| Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented; nothing calls it yet |
 | Publisher | not started |
 | Retention sweep | not started |
 
@@ -164,8 +165,9 @@ GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
 ```
 
 It polls, classifies and enqueues. It does **not** review anything yet: the
-queue fills and nothing drains it until the worker and the first engine
-adapter land, so nothing it does can spend allowance. The [budget governor](docs/BUDGET.md) is already
+queue fills and nothing drains it until the worker lands, so nothing it does
+can spend allowance. The engine adapter exists and can spend; what is missing
+is anything that calls it. The [budget governor](docs/BUDGET.md) is already
 in place ahead of it, which is the point of the build order — the spending
 rails exist before anything can spend. See [docs/DAEMON.md](docs/DAEMON.md).
 

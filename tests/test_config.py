@@ -376,6 +376,58 @@ def test_a_cap_that_is_not_a_positive_integer_is_rejected(value):
         Config.from_mapping(data)
 
 
+# -- engine: which coding agent reviews -----------------------------------
+
+
+ENGINE = {
+    "model": "claude-sonnet-5",
+    "expected_version": "2.1.274",
+    "timeout_seconds": 900,
+}
+
+
+def test_engine_section_is_absent_rather_than_defaulted():
+    """There is no model an operator could be assumed to have chosen."""
+    assert Config.from_mapping(VALID).engine is None
+
+
+def test_engine_section_is_read():
+    data = {**VALID, "engine": {**ENGINE, "standards_paths": ["AGENTS.md"]}}
+    engine = Config.from_mapping(data).engine
+    assert engine is not None
+    assert engine.model == "claude-sonnet-5"
+    assert engine.binary == "claude"
+    assert engine.timeout_seconds == 900.0
+    assert engine.standards_paths == ("AGENTS.md",)
+
+
+@pytest.mark.parametrize("key", ["model", "expected_version"])
+def test_a_key_that_decides_a_cost_has_no_default(key):
+    data = {**VALID, "engine": {k: v for k, v in ENGINE.items() if k != key}}
+    with pytest.raises(ConfigError, match=f"engine.{key}"):
+        Config.from_mapping(data)
+
+
+@pytest.mark.parametrize("value", [0, -1, "soon", True, None])
+def test_the_wall_clock_must_be_a_positive_number(value):
+    data = {**VALID, "engine": {**ENGINE, "timeout_seconds": value}}
+    with pytest.raises(ConfigError, match="engine.timeout_seconds"):
+        Config.from_mapping(data)
+
+
+@pytest.mark.parametrize("value", ["AGENTS.md", [""], [3], {}])
+def test_standards_paths_must_be_a_list_of_paths(value):
+    data = {**VALID, "engine": {**ENGINE, "standards_paths": value}}
+    with pytest.raises(ConfigError, match="engine.standards_paths"):
+        Config.from_mapping(data)
+
+
+def test_unknown_key_in_engine_is_rejected():
+    data = {**VALID, "engine": {**ENGINE, "mdoel": "sonnet"}}
+    with pytest.raises(ConfigError, match="unknown keys in 'engine'"):
+        Config.from_mapping(data)
+
+
 # -- workspace: a path and nothing else ----------------------------------
 
 
@@ -450,7 +502,14 @@ def test_the_comprehensive_example_loads():
 def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
     """A key the loader takes but the example omits is undiscoverable."""
     data = yaml.safe_load((EXAMPLES / "config.example.yaml").read_text())
-    assert set(data) == {"github", "triggers", "budget", "store", "workspace"}
+    assert set(data) == {
+        "github",
+        "triggers",
+        "budget",
+        "store",
+        "workspace",
+        "engine",
+    }
     assert set(data["github"]) == {"repo", "agent_user_id"}
     assert set(data["triggers"]) == {"allowlist", "handle"}
     assert set(data["budget"]) == {
@@ -465,6 +524,13 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
     }
     assert set(data["store"]) == {"path"}
     assert set(data["workspace"]) == {"cache_dir"}
+    assert set(data["engine"]) == {
+        "binary",
+        "model",
+        "timeout_seconds",
+        "standards_paths",
+        "expected_version",
+    }
 
 
 def test_the_comprehensive_example_states_the_real_defaults():

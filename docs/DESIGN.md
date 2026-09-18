@@ -136,8 +136,8 @@ agent-agnostic; only the "run a review" step is Claude-specific. A
 `ReviewEngine` protocol with a declared `Capabilities` record
 (`structured_output`, `usage_reporting`, `read_only_sandbox`, `subagents`,
 `prompt_caching`) admits adapters for opencode, GitHub Copilot CLI, aider,
-Codex CLI and Gemini CLI. The protocol and the record are implemented —
-see [ENGINE.md](ENGINE.md); the adapters are not.
+Codex CLI and Gemini CLI. The protocol, the record and the first adapter —
+`claude` — are implemented; see [ENGINE.md](ENGINE.md).
 
 **Every adapter is a command-line tool, invoked as a subprocess. No vendor
 SDK is linked.** That is a decision, not an accident of what shipped first:
@@ -223,10 +223,35 @@ vector. Three mitigations, none of which relies on the model behaving:
    concludes — output is always event `COMMENT`, never `REQUEST_CHANGES`, so a
    machine's judgement can neither block nor authorise a merge.
 
+Under a CLI adapter the first two stop being prompt wording and become argv
+the tool itself enforces — `--tools` naming a read-only set, `--restricted`
+removing the command-running tools and ignoring the tree's own settings files,
+`--permission-prompts none` so nothing can escalate by asking. They are pinned
+by tests that assert the argv element by element; see [ENGINE.md](ENGINE.md).
+
 The same rule governs the code: untrusted input may never widen what the agent
 is allowed to do. Allowlisting in particular is on the numeric user id and
 never the login, because a login can be renamed and the freed name registered
 by a stranger.
+
+### Where review standards may come from
+
+The engine is generic and the standards are per-repository, so the standards
+are read out of the repository under review — **at the merge base, never at
+the pull request head.** A pull request that can rewrite the reviewer's
+instructions has talked its way past every other control here, and the head is
+writable by anyone who can open one.
+
+What that trusts, stated plainly rather than implied: **anyone who can merge
+to the base branch can change what the reviewer is told to do.** That is a
+much smaller set than "anyone who can open a pull request", and it is not an
+empty one. It is the same set that already controls the repository's CI, so
+it is a trust boundary the project has accepted elsewhere.
+
+The agent's own environment is kept out of reach by the same logic. The child
+process gets an allowlisted environment rather than the daemon's own: a
+process reading an attacker's tree and feeding a public comment is the wrong
+place for the agent's GitHub credential.
 
 ## 🗑 Retention
 

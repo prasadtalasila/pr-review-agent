@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..budget import Usage, UsageConfidence
-from .models import Capabilities, Finding, ReviewRequest, ReviewResult
+from .models import Capabilities, Finding, Outcome, ReviewRequest, ReviewResult
 
 #: What a well-behaved engine looks like: reports its tokens, emits
 #: structured output, runs read-only. An adapter that cannot do one of these
@@ -43,6 +43,7 @@ class FakeEngine:
     )
     capabilities: Capabilities = FULL
     name: str = "fake"
+    outcome: Outcome = Outcome.COMPLETED
     #: Every request handed to this engine, in order, so a test can assert
     #: what the worker passed rather than that it passed something.
     requests: list[ReviewRequest] = field(default_factory=list)
@@ -50,4 +51,6 @@ class FakeEngine:
     async def review(self, request: ReviewRequest) -> ReviewResult:
         """Record the request and return the canned result."""
         self.requests.append(request)
-        return ReviewResult(findings=self.findings, usage=self.usage)
+        return ReviewResult(
+            findings=self.findings, usage=self.usage, outcome=self.outcome
+        )

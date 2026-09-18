@@ -35,6 +35,25 @@ class Severity(StrEnum):
     NIT = "nit"
 
 
+class Outcome(StrEnum):
+    """How a run ended, which decides whether its findings may be posted.
+
+    A run that was cut off and a run that cleanly found nothing produce the
+    same empty ``findings`` tuple, and the difference matters: one reviewed
+    the pull request, the other did not finish looking. Collapsing them is
+    the same mistake ``UsageConfidence`` refuses to make by keeping
+    ``unavailable`` distinct from zero.
+
+    ``TRUNCATED`` is a run cut off with work outstanding -- worth retrying
+    with a tighter scope. ``FAILED`` is anything else that went wrong, which
+    is not.
+    """
+
+    COMPLETED = "completed"
+    TRUNCATED = "truncated"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class Finding:
     """One line-anchored remark, in the shape a review comment needs.
@@ -100,11 +119,14 @@ class ReviewResult:
 
     ``usage`` is ``budget.Usage`` itself rather than a parallel type, so
     "carries everything ``Governor.settle`` needs" holds by construction:
-    ``settle`` takes exactly this object.
+    ``settle`` takes exactly this object. Usage is carried on every outcome,
+    including the failed ones: a run that spent money and produced nothing
+    still has to settle.
     """
 
     findings: tuple[Finding, ...]
     usage: Usage
+    outcome: Outcome = Outcome.COMPLETED
 
     def __post_init__(self) -> None:
         # An unknown cost and a number are mutually exclusive answers. A
@@ -118,6 +140,11 @@ class ReviewResult:
             )
         if not self.usage.engine:
             raise ValueError("ReviewResult.usage must name the engine that ran")
+        # Findings from a run that did not finish are not publishable, so a
+        # result cannot carry both. Enforced here rather than left to each
+        # adapter: "the publisher may post these" is a property of the seam.
+        if self.findings and self.outcome is not Outcome.COMPLETED:
+            raise ValueError(f"a {self.outcome} run cannot carry publishable findings")
 
 
 @runtime_checkable
