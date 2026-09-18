@@ -8,6 +8,10 @@ against git 2.43. Three findings changed the design rather than polishing it:
 symlinks, the protocol whitelist, and two safety tests that could not fail.
 They are marked **[review]** where they land.
 
+Revised again to serve the test fixtures over **https** rather than `file://`.
+That removed the last test-shaped knob from production code and made "no
+credential reaches the wire" an assertion rather than a claim.
+
 ## 🎯 Goal
 
 Put a pull request's code **on disk at an exact commit**, with a merge-base
@@ -33,6 +37,7 @@ In:
   section holding only `cache_dir`.
 - Two added checks in `bootstrap.py`: the git version, and that the fetch
   route works.
+- One dev-only dependency for certificate generation in the test fixture.
 - `docs/WORKSPACE.md`; the layer-2 row in `BUDGET.md`; status rows in
   `ARCHITECTURE.md`, `ROADMAP.md`, `CONFIG.md`, `README.md` and
   `config.example.yaml`.
@@ -208,9 +213,9 @@ inherited:
 | Variable | Why |
 | :-- | :-- |
 | `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null` | The host's gitconfig is where `core.hooksPath`, `core.fsmonitor`, `diff.external`, credential helpers and smudge filters all live. Neutralising it disables every one of them at once. Requires **git ≥ 2.32**; on older git the variables are ignored silently, which is why the version is checked at startup. |
-| `GIT_ALLOW_PROTOCOL` | **[review]** A whitelist that overrides all `protocol.*` config. The `-c protocol.allow=never` approach does *not* survive a specific `protocol.ext.allow=always`, and an `ext::` submodule URL is the shortest path from "checked out untrusted code" to "ran it". Set to `https` in production. |
+| `GIT_ALLOW_PROTOCOL=https` | **[review]** A whitelist that overrides all `protocol.*` config. The `-c protocol.allow=never` approach does *not* survive a specific `protocol.ext.allow=always`, and an `ext::` submodule URL is the shortest path from "checked out untrusted code" to "ran it". A hard-coded constant, with no way for a caller or an operator to widen it. |
 | `GIT_TERMINAL_PROMPT=0` | An unreadable repository fails in a second instead of blocking the daemon on a password prompt. |
-| `PATH`, `HOME`, `https_proxy`, `no_proxy`, `SSL_CERT_FILE` | Passed through. `PATH` is needed to find `git-remote-https`; the proxy and CA variables are exactly what the allowlist-firewall hosts `DESIGN.md` worries about depend on. `HOME` is safe to pass because `GIT_CONFIG_GLOBAL` overrides `$HOME/.gitconfig` — and passing it is what lets the safety tests plant a hostile config where git would really look. |
+| `PATH`, `HOME`, `https_proxy`, `no_proxy`, `GIT_SSL_CAINFO` | Passed through. `PATH` is needed to find `git-remote-https`; the proxy and CA variables are exactly what the allowlist-firewall hosts `DESIGN.md` worries about depend on, since a TLS-inspecting proxy presents its own certificate. `HOME` is safe to pass because `GIT_CONFIG_GLOBAL` overrides `$HOME/.gitconfig` — and passing it is what lets the safety tests plant a hostile config where git would really look. |
 
 **Per-invocation `-c` flags** are redundancy, not the primary control, except
 for the first two, which stop things config-nulling does not:
@@ -318,10 +323,11 @@ already is. It is **not** hot-swapped: moving the cache under a running daemon
 would orphan the mirror, so a change is logged as needing a restart, like
 `github`, `triggers` and `store`.
 
-The allowed-protocol whitelist is a `Workspace` constructor argument, not a
-config key — `https` in production, `https:file` in the tests, which is what
-lets the fixtures use `file://` remotes while the production path still
-refuses everything but https. It is deliberately not operator-tunable.
+There is **no protocol setting**, at any layer. An earlier draft made the
+allowed-protocol set a `Workspace` constructor argument so the tests could use
+`file://` remotes; the tests now speak https to a local double instead, so the
+whitelist is a constant and production has no widening knob for a test's
+benefit.
 
 ## 🛑 Errors
 
@@ -348,11 +354,35 @@ hosts and, on an allowlist firewall, different rules.
 
 ## 🧪 What the tests must pin
 
-Fixtures build a real repository in `tmp_path`, served over `file://`,
-including a commit reachable **only** from `refs/pull/7/head` and from no
-branch. That is precisely the shape a fork pull request has, so the fork
-criterion is met offline rather than approximated. No test touches the
-network.
+### The remote is an HTTPS double, not a `file://` path
+
+Fixtures build a real repository in `tmp_path` containing a commit reachable
+**only** from `refs/pull/7/head` and from no branch — precisely the shape a
+fork pull request has, so the fork criterion is met offline rather than
+approximated.
+
+It is served by `git http-backend` behind a `ThreadingHTTPServer` wrapped in
+TLS with a generated certificate, bound to `127.0.0.1:0`. Tests reach it at
+`https://127.0.0.1:<port>/owner/name.git`, with `GIT_SSL_CAINFO` pointing at
+the fixture CA — a variable the runner passes through for production reasons
+of its own.
+
+Three things follow, and the third is why it is worth the fixture code:
+
+1. **No test-only knob in production.** A `file://` remote is refused by
+   `GIT_ALLOW_PROTOCOL=https` (verified: `fatal: transport 'file' not
+   allowed`), which is what forced the earlier constructor argument. Speaking
+   https removes the argument entirely.
+2. **The tests exercise the production transport** — `git-remote-https` and
+   real smart-HTTP — rather than a local path that skips it.
+3. **The wire is observable.** The double records every request, so "no
+   credential reaches git" stops being a claim about argv and becomes an
+   assertion about what was actually sent.
+
+Loopback is not network access: nothing leaves the host, and no test needs
+egress. The cost is honest — roughly eighty lines of fixture and one dev
+dependency (`trustme`, or `cryptography` directly) for certificate
+generation.
 
 Behaviour:
 
@@ -363,6 +393,12 @@ Behaviour:
 - a force-pushed base branch still fetches;
 - two concurrent checkouts of different pull requests both succeed and neither
   sees the other's files.
+
+The wire, now that it can be inspected:
+
+- no request carries an `Authorization` or `Proxy-Authorization` header;
+- the mirror's `config` holds no remote URL, so nothing about the remote
+  persists to disk.
 
 Bounds (`CLAUDE.md` §5):
 
@@ -384,7 +420,7 @@ not fail. Each of these was checked to fail when its mitigation is removed:
 | A hostile `.gitconfig` planted at `HOME`/`XDG_CONFIG_HOME` defining `core.hooksPath`, a smudge filter, `core.fsmonitor` and `diff.external` → none fire | The original planted `GIT_CONFIG_GLOBAL` in `os.environ`, which an explicitly-built child environment never passes on. Deleting the mitigation just removed the variable, and git read `$HOME/.gitconfig` anyway. |
 | A symlink pointing outside the worktree checks out as a **regular file** containing the target path | New; the hazard was missed entirely. |
 | A pull request adding `*.py -diff` still produces a textual diff containing the added line | New; the hazard was missed entirely. |
-| A `Workspace` built with `https` only refuses a `file://` remote | The `ext::`-submodule test it replaces passes with *every* mitigation removed: `worktree add` never populates submodules, so nothing was ever pinned. |
+| The production environment refuses a `file://` and an `http://` remote, while the https double succeeds | The `ext::`-submodule test it replaces passes with *every* mitigation removed: `worktree add` never populates submodules, so nothing was ever pinned. This one fails the moment `GIT_ALLOW_PROTOCOL` is dropped. |
 
 The gitlink case stays only as a plain behavioural assertion — a submodule
 directory is left empty — with no claim that it pins a mitigation.
@@ -420,4 +456,4 @@ append-style conflicts; no shared function is modified by both.
 | Hooks, submodules, LFS disabled, pinned by tests | The hardened runner; the safety table above |
 | Oversized pull request refused before disk | Step 1, asserted on `cache_dir` |
 | Torn down; repeated runs do not grow disk | Step 7 and the startup sweep; baseline worktree- and ref-count test |
-| No test requires network | `file://` fixtures, reachable because the protocol whitelist is a constructor argument |
+| No test requires network | A loopback TLS double serving `git http-backend`; nothing leaves the host |
