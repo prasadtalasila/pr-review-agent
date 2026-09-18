@@ -17,18 +17,50 @@ worker: the spending rails exist before anything can spend.
 | :-- | :-- | :-- |
 | 1 | Allowlist, bot filter, draft skip, cold-start watermark | done — [TRIGGERS.md](TRIGGERS.md) |
 | 2 | Path exclusions, diff-size caps, pre-flight token estimate | **done** — [WORKSPACE.md](WORKSPACE.md) and below |
-| 3 | Per-run ceiling: max tokens, max turns, wall-clock timeout | `max_run_tokens` done; enforcement with the engine |
+| 3 | Per-run ceiling: max tokens, turn cap, wall-clock timeout | **done**, with one gap — see below |
 | 4 | Rolling windows and pacing, by reserve-then-settle | **done** |
 | 5 | A degradation ladder rather than a hard stop | **done** |
 
 Layer 1 is the classifier — it *is* the first budget layer, which is why its
 rejections are logged at a level an operator actually sees.
 
-Layer 3 needs a *running turn* to abort, so it belongs to the phase that has
-one. `max_run_tokens` lands here because the governor reserves against it;
-`max_turns` and `wall_clock_seconds` do not, because nothing would read them
-and [CONFIG.md](CONFIG.md#-the-rule-the-loader-follows)'s rule is that a
-setting which does nothing is exactly the failure to avoid.
+### Where layer 3's three ceilings ended up
+
+This layer was specified against an SDK, and the move to
+[a subprocess seam](ENGINE.md) scattered it. None of the three is a
+`budget` key, and one of them is not enforced at all.
+
+**Max tokens** is `max_run_tokens`, reserved up front by `admit`. Done.
+
+**The turn cap** is ours, not a flag. Inside one run the CLI ends an
+over-long conversation itself, with `error_max_turns`, which the adapter maps
+to `TRUNCATED`. Across runs, `queue.DEFAULT_MAX_ATTEMPTS` bounds how often a
+single trigger can reach an engine at all, and each attempt reserves again
+through `admit`. A `budget.max_turns` key would be a second bound on an
+already-bounded quantity.
+
+**The wall clock** is `engine.timeout_seconds`, enforced by the subprocess
+boundary and — since layer 3 — validated at startup as strictly below
+`queue.DEFAULT_LEASE`. That relationship used to be a comment. It matters
+because the lease carries an expiry rather than a heartbeat *precisely*
+because a run cannot outlive its clock: break it and the lease lapses under a
+live worker, a second worker reserves against the same windows, and the first
+one's `settle` discards a review that was paid for.
+
+**The gap: a reservation is still a forecast, not a ceiling.** Nothing stops a
+run spending more than it reserved, which is why
+[the `exhausted` rung](#-the-degradation-ladder) is reachable only by an
+overrun. Every way to close it assumes the engine reports tokens —
+`--max-budget-usd` is denominated in dollars, a wall-clock-to-token conversion
+is a fabricated rate, and watching usage stream by needs an engine that
+streams usage — while [`Capabilities.usage_reporting`](ENGINE.md#-capabilities)
+exists because some engine will not report any. Building the strong control
+first and the universal one never is the wrong order, so the clock ships and
+the token ceiling goes to
+[#20](https://github.com/prasadtalasila/pr-review-agent/issues/20), whose
+breaker is the right shape for a bound nobody can enforce mid-run. The
+argument is recorded in
+[the layer 3 design note](superpowers/specs/2026-09-18-budget-layer-3-design.md).
 
 Layer 2 needs only a *diff*, which is why it lands before the engine rather
 than with it.
@@ -438,5 +470,17 @@ exclusions half of layer 2:
 - an excluded path appears in neither the size count nor the diff;
 - a binary file counts as one file and no lines.
 
-Per-run ceilings terminating an over-budget review is layer 3, and lands with
-the engine adapter.
+And in `tests/test_config.py`, `tests/test_store.py` and
+`tests/test_worker.py`, for layer 3:
+
+- a review wall clock at or above the queue lease fails startup, pinned
+  against `DEFAULT_LEASE` itself rather than against `1800`, so changing the
+  lease cannot leave the check behind;
+- a run killed on the wall clock is distinguishable in the ledger from one
+  whose engine merely fell over, and both still settle at the full
+  reservation with `unavailable` confidence;
+- a pre-flight refusal reads as `refused` rather than as a failure.
+
+Terminating a review that is *over budget*, as opposed to over time, is the
+[gap named above](#where-layer-3s-three-ceilings-ended-up). It is not tested
+here because it is not built.

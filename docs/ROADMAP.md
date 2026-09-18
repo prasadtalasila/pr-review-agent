@@ -31,11 +31,15 @@ worker**, so the spending rails exist before anything can spend.
 ## 🧭 Next
 
 1. **The budget pieces that still need a running engine:** the circuit
-   breaker, layer 3's per-run enforcement and the ladder's 60 % rung. The
-   worker has landed and settled the question the adapter named and could not
-   answer — a review killed on its wall clock leaves tokens spent and no
-   envelope to measure them, so it settles at its full reservation with
-   `unavailable` confidence. See [WORKER.md](WORKER.md#-what-a-failed-run-settles-at).
+   breaker and the ladder's 60 % rung. The worker has landed and settled the
+   question the adapter named and could not answer — a review killed on its
+   wall clock leaves tokens spent and no envelope to measure them, so it
+   settles at its full reservation with `unavailable` confidence. See
+   [WORKER.md](WORKER.md#-what-a-failed-run-settles-at). Layer 3's wall clock
+   has landed too, validated below the queue lease; its *token* ceiling did
+   not, because every way to build one assumes an engine that reports tokens,
+   and it belongs with the breaker. See
+   [BUDGET.md](BUDGET.md#where-layer-3s-three-ceilings-ended-up).
 2. **Publisher.** One line-anchored review, event `COMMENT`, with the
    `head_sha` re-check immediately before posting. It is also the consumer
    `ReviewResult.outcome` is waiting for: findings are publishable only from a
@@ -80,8 +84,9 @@ linked.
       `per_contributor_pct` bounds one contributor's share of the week
       (**done**); path exclusions keep a vendored-only change from being
       refused on size, and a pre-flight estimate over `max_run_tokens`
-      refuses a run and releases its reservation (**done**); per-run ceilings
-      terminate an over-budget review (with the engine).
+      refuses a run and releases its reservation (**done**); a review wall
+      clock above the queue lease fails startup (**done**); per-run ceilings
+      terminate an over-*budget* review (with the breaker).
 - [ ] **Plan lockout is prevented:** with `reviewer_share_pct` configured,
       agent usage never exceeds its share of the session or weekly window
       (**done**), and a usage-limit error trips the breaker and decays the
