@@ -38,8 +38,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
-from .budget import Governor, Usage, UsageConfidence
-from .engine import Outcome, ReviewEngine, ReviewRequest, ReviewResult
+from .budget import Governor, StopReason, Usage, UsageConfidence
+from .engine import EngineTimeout, Outcome, ReviewEngine, ReviewRequest, ReviewResult
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
 from .poller.pulls import fetch_pull_request_facts
@@ -56,6 +56,16 @@ logger = logging.getLogger(__name__)
 #: write some 720 identical lines an hour into an operator's journal.
 WORKER_IDLE = 30.0
 
+#: How a finished run's outcome reads on the ledger. Kept apart from
+#: ``_finish_for``, which decides the queue row's fate: what happened and what
+#: to do about it are different questions, and one mapping answering both
+#: would tie them together for no reason.
+_REASON_FOR = {
+    Outcome.COMPLETED: StopReason.COMPLETED,
+    Outcome.TRUNCATED: StopReason.TRUNCATED,
+    Outcome.FAILED: StopReason.FAILED,
+}
+
 
 class EngineError(RuntimeError):
     """A review engine failed, whatever it failed at.
@@ -67,7 +77,17 @@ class EngineError(RuntimeError):
     Narrowing the boundary to this one call is what keeps a bug in the
     *worker* propagating to the supervisor instead of being retried three
     times in silence.
+
+    One distinction survives the flattening, and only for the ledger: a run
+    killed by its own wall clock is the agent's per-run ceiling doing its
+    job, and a run whose tool fell over is not. The retry decision does not
+    branch on it -- both are retried -- but an operator counting rows needs
+    to know which of the two they are looking at.
     """
+
+    def __init__(self, message: str, reason: StopReason) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass
@@ -129,6 +149,9 @@ class ReviewWorker:
             return
 
         usage = Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name)
+        # Everything that can fail before the engine starts is infrastructure,
+        # so it stands as the answer until something narrows it.
+        reason = StopReason.INFRASTRUCTURE
         finish = self.queue.complete
         try:
             facts = await fetch_pull_request_facts(
@@ -160,6 +183,7 @@ class ReviewWorker:
                     )
                 )
             usage, finish = result.usage, self._finish_for(result.outcome)
+            reason = _REASON_FOR[result.outcome]
             if result.outcome is Outcome.COMPLETED:
                 self.completed += 1
             logger.info(
@@ -176,13 +200,21 @@ class ReviewWorker:
                 "giving up on %s permanently", claim.trigger.dedupe_key, exc_info=True
             )
             finish = self.queue.abandon
-        except (GitHubClientError, WorkspaceError, EngineError):
+        except EngineError as exc:
+            logger.warning(
+                "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
+            )
+            # The only handler that narrows the reason: the adapter already
+            # told us whether its own wall clock stopped it.
+            reason = exc.reason
+            finish = self.queue.release
+        except (GitHubClientError, WorkspaceError):
             logger.warning(
                 "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
             )
             finish = self.queue.release
 
-        self._settle_and_finish(claim, usage, finish)
+        self._settle_and_finish(claim, usage, reason, finish)
 
     def _finish_for(self, outcome: Outcome) -> Callable[[Claim], bool]:
         """Which queue verb closes a row whose run ended this way.
@@ -202,11 +234,22 @@ class ReviewWorker:
         """Run the engine, converting any failure of it into ``EngineError``."""
         try:
             return await self.engine.review(request)
+        except EngineTimeout as exc:
+            raise EngineError(
+                f"{self.engine.name} outlived its wall clock: {exc}",
+                StopReason.TIMEOUT,
+            ) from exc
         except Exception as exc:  # the adapter is a foreign tool; see EngineError
-            raise EngineError(f"{self.engine.name} failed: {exc}") from exc
+            raise EngineError(
+                f"{self.engine.name} failed: {exc}", StopReason.ENGINE_ERROR
+            ) from exc
 
     def _settle_and_finish(
-        self, claim: Claim, usage: Usage, finish: Callable[[Claim], bool]
+        self,
+        claim: Claim,
+        usage: Usage,
+        reason: StopReason,
+        finish: Callable[[Claim], bool],
     ) -> None:
         """Record what the run cost, then close its row -- in that order.
 
@@ -214,7 +257,7 @@ class ReviewWorker:
         gets ``False`` from ``settle`` and stops there, which is how it
         learns to discard a result it is no longer entitled to publish.
         """
-        if not self.governor.settle(claim, usage, now=_now()):
+        if not self.governor.settle(claim, usage, now=_now(), stop_reason=reason):
             logger.warning(
                 "no reservation to settle for %s: discarding the run",
                 claim.trigger.dedupe_key,

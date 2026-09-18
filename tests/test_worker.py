@@ -13,9 +13,15 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from pr_review_agent.budget import Governor, Mode, Usage, UsageConfidence
+from pr_review_agent.budget import Governor, Mode, StopReason, Usage, UsageConfidence
 from pr_review_agent.config import BudgetConfig
-from pr_review_agent.engine import FULL, Capabilities, FakeEngine, ReviewRequest
+from pr_review_agent.engine import (
+    FULL,
+    Capabilities,
+    EngineTimeout,
+    FakeEngine,
+    ReviewRequest,
+)
 from pr_review_agent.engine.models import Outcome, ReviewResult
 from pr_review_agent.poller.client import GitHubClient, GitHubClientError
 from pr_review_agent.poller.endpoints import RepoEndpoints
@@ -91,7 +97,13 @@ def client_returning(body: dict | None, status: int = 200) -> GitHubClient:
 
 @dataclass
 class ExplodingEngine:
-    """An engine that fails the way a timed-out CLI adapter would."""
+    """An engine that falls over mid-run, having plausibly already spent.
+
+    It raises a bare ``TimeoutError`` rather than ``EngineTimeout``: the
+    adapter did not report its own wall clock, so the worker cannot tell this
+    from any other way a foreign tool can die. ``TimingOutEngine`` is the one
+    that did report it.
+    """
 
     name: str = "exploding"
     capabilities: Capabilities = FULL
@@ -101,6 +113,20 @@ class ExplodingEngine:
         """Fail, having plausibly already spent tokens."""
         self.calls += 1
         raise TimeoutError("the engine did not finish in time")
+
+
+@dataclass
+class TimingOutEngine:
+    """An engine killed by its wall clock, as ``CliEngine.run`` kills one."""
+
+    name: str = "timing-out"
+    capabilities: Capabilities = FULL
+    calls: int = 0
+
+    async def review(self, request: ReviewRequest) -> ReviewResult:
+        """Outlive the clock, having plausibly already spent tokens."""
+        self.calls += 1
+        raise EngineTimeout("timing-out exceeded 900.0s and was killed")
 
 
 @dataclass
@@ -135,6 +161,13 @@ def ledger_rows(store: SqliteStore) -> list[tuple]:
             "SELECT dedupe_key, mode, reserved_tokens, used_tokens, "
             "usage_confidence, engine, model FROM ledger ORDER BY id"
         ).fetchall()
+
+
+def stop_reasons(store: SqliteStore) -> list[str]:
+    with store.transaction() as conn:
+        return [
+            row[0] for row in conn.execute("SELECT stop_reason FROM ledger ORDER BY id")
+        ]
 
 
 @pytest.fixture(name="wired")
@@ -187,6 +220,49 @@ async def test_a_claim_is_taken_only_through_the_governor(wired):
 
     assert isinstance(fixture.queue, SpyQueue)
     assert fixture.queue.admits == [fixture.governor.admit]
+
+
+async def test_a_timed_out_run_is_distinguishable_from_a_crashed_one(wired):
+    """The one per-run ceiling the agent enforces is the one worth counting."""
+    fixture = wired(engine=TimingOutEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert stop_reasons(fixture.store) == [str(StopReason.TIMEOUT)]
+    (row,) = ledger_rows(fixture.store)
+    _, _, reserved, used, confidence, _, _ = row
+    # Unchanged by the stop_reason work: a killed process printed nothing, so
+    # the run is charged its ceiling at a confidence that says we did not
+    # measure it.
+    assert (used, confidence) == (reserved, str(UsageConfidence.UNAVAILABLE))
+
+
+async def test_an_engine_that_fell_over_reads_as_an_engine_error(wired):
+    fixture = wired(engine=ExplodingEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert stop_reasons(fixture.store) == [str(StopReason.ENGINE_ERROR)]
+
+
+async def test_a_clean_review_reads_as_completed(wired):
+    fixture = wired()
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert stop_reasons(fixture.store) == [str(StopReason.COMPLETED)]
+
+
+async def test_a_github_failure_before_the_engine_reads_as_infrastructure(wired):
+    fixture = wired(client=client_returning(None, status=500))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert stop_reasons(fixture.store) == [str(StopReason.INFRASTRUCTURE)]
 
 
 async def test_nothing_to_claim_runs_nothing(wired):
@@ -530,6 +606,7 @@ class StealingEngine(FakeEngine):
             self.claim,
             Usage(7, UsageConfidence.EXACT, engine="other", model="other-1"),
             now=NOW,
+            stop_reason=StopReason.COMPLETED,
         )
         return await super().review(request)
 

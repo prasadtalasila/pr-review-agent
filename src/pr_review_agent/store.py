@@ -106,6 +106,14 @@ _MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE ledger ADD COLUMN reviewed_lines INTEGER;
     """,
+    # Why a run stopped, which is a different question from how far its
+    # recorded cost can be trusted. A run killed on the wall clock and one
+    # whose envelope would not parse both settle `unavailable` at the full
+    # reservation, so without this column nothing says which control bound
+    # the run.
+    """
+    ALTER TABLE ledger ADD COLUMN stop_reason TEXT;
+    """,
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)
