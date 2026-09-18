@@ -33,6 +33,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+from pr_review_agent.workspace import Workspace
+
 #: The pull request the fixture repository publishes.
 PR_NUMBER = 7
 
@@ -200,6 +202,22 @@ def _build_fixture_repo(root: pathlib.Path) -> tuple[pathlib.Path, str]:
     git("clone", "-q", "--bare", str(build), str(serve))
     git("update-ref", f"refs/pull/{PR_NUMBER}/head", head_sha, cwd=serve)
     return serve, head_sha
+
+
+@pytest.fixture
+def workspace(git_remote: GitRemote, tmp_path, monkeypatch) -> Workspace:
+    """A workspace pointed at the double.
+
+    ``GIT_SSL_CAINFO`` is how the fixture's certificate reaches git, and the
+    runner passes that variable through for production reasons of its own: a
+    TLS-inspecting proxy presents its own certificate too.
+    """
+    monkeypatch.setenv("GIT_SSL_CAINFO", str(git_remote.ca))
+    return Workspace(
+        repo=git_remote.repo,
+        cache_dir=tmp_path / "cache",
+        base_url=git_remote.base_url,
+    )
 
 
 @pytest.fixture

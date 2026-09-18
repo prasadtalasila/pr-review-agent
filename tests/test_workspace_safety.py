@@ -22,7 +22,7 @@ import sys
 import pytest
 from conftest import PR_NUMBER, git
 
-from pr_review_agent.workspace import PullRequestFacts, Workspace
+from pr_review_agent.workspace import PullRequestFacts
 from pr_review_agent.workspace.gitcmd import GitCommandError, run_git
 
 pytestmark = pytest.mark.skipif(
@@ -31,16 +31,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 CAPS = {"max_changed_files": 100, "max_changed_lines": 5000}
-
-
-@pytest.fixture
-def workspace(git_remote, tmp_path, monkeypatch) -> Workspace:
-    monkeypatch.setenv("GIT_SSL_CAINFO", str(git_remote.ca))
-    return Workspace(
-        repo=git_remote.repo,
-        cache_dir=tmp_path / "cache",
-        base_url=git_remote.base_url,
-    )
 
 
 def facts(remote) -> PullRequestFacts:

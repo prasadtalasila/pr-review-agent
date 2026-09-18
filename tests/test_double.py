@@ -8,7 +8,6 @@ import subprocess
 import sys
 
 import pytest
-
 from conftest import PR_NUMBER
 
 pytestmark = pytest.mark.skipif(

@@ -44,7 +44,6 @@ async def fetch_pull_request_facts(
     """
     result = await client.get(endpoints.pull(number))
     if not isinstance(result.data, dict):
-        raise PayloadError(
-            f"pull request {number} returned {type(result.data).__name__}, not an object"
-        )
+        shape = type(result.data).__name__
+        raise PayloadError(f"pull request {number} returned {shape}, not an object")
     return pull_request_facts(result.data)

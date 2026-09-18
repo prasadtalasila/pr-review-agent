@@ -6,11 +6,7 @@ import sys
 import pytest
 from conftest import PR_NUMBER, git
 
-from pr_review_agent.workspace import (
-    PullRequestFacts,
-    PullRequestTooLarge,
-    Workspace,
-)
+from pr_review_agent.workspace import PullRequestFacts, PullRequestTooLarge
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -31,16 +27,6 @@ def facts(remote, **overrides) -> PullRequestFacts:
     }
     values.update(overrides)
     return PullRequestFacts(**values)
-
-
-@pytest.fixture
-def workspace(git_remote, tmp_path, monkeypatch) -> Workspace:
-    monkeypatch.setenv("GIT_SSL_CAINFO", str(git_remote.ca))
-    return Workspace(
-        repo=git_remote.repo,
-        cache_dir=tmp_path / "cache",
-        base_url=git_remote.base_url,
-    )
 
 
 async def test_a_fork_shaped_head_is_checked_out_at_its_exact_sha(
