@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from .queue import DEFAULT_LEASE
 from .triggers.allowlist import Allowlist, AllowlistConfigError
 from .triggers.classifier import Classifier
 
@@ -419,10 +420,31 @@ def _text(data: dict, key: str) -> str:
 
 
 def _timeout(data: dict) -> float:
-    """Read the wall clock one review may not outlive."""
+    """Read the wall clock one review may not outlive.
+
+    Bounded above by the queue lease. ``queue.py`` calls ``DEFAULT_LEASE``
+    "comfortably above the per-run wall-clock ceiling the budget governor
+    enforces", and its module docstring goes further: a lease carries an
+    expiry rather than a heartbeat *because* a run has a ceiling, so a
+    renewal "would be machinery for a case that cannot arise". An operator
+    who sets an hour makes that case arise -- the lease lapses under a live
+    worker, a second worker claims the same pull request and reserves against
+    the same windows, and the first worker's ``settle`` returns ``False`` and
+    discards a review that was paid for. Until now the invariant was a
+    comment.
+
+    Strictly below, not equal: at exactly the lease the two expire together
+    and which one wins is a scheduling race.
+    """
     value = data.get("timeout_seconds")
     if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
         raise ConfigError("engine.timeout_seconds must be a positive number")
+    lease = DEFAULT_LEASE.total_seconds()
+    if value >= lease:
+        raise ConfigError(
+            f"engine.timeout_seconds ({value:g}) must be below the queue lease "
+            f"({lease:g}s); a run that outlives its lease loses it mid-review"
+        )
     return float(value)
 
 
