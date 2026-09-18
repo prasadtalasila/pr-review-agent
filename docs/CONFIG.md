@@ -87,6 +87,7 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 | `max_run_tokens` | integer | yes | Reserved up front for one review, released down to actual usage when it settles. |
 | `enabled` | boolean | no (default `true`) | `false` **stops reviewing**. It does not turn the budget checks off. |
 | `reviewer_share_pct` | integer 1–100 | no (default `40`) | The share of each plan window the agent may use, never the whole allowance. |
+| `per_contributor_pct` | integer 1–100 | no (default: **no cap**) | The share of the agent's weekly allowance any one contributor may spend, over the same rolling week. |
 | `max_changed_files` | integer | no (default `100`) | A pull request touching more files is refused before anything is fetched. |
 | `max_changed_lines` | integer | no (default `5000`) | The same, for additions plus deletions. |
 
@@ -106,6 +107,16 @@ weekly limit, after `reviewer_share_pct` — or the file is refused. A run
 that cannot fit in the tightest window could never be admitted at all, which
 is a configuration that reviews nothing, arrived at by arithmetic nobody did
 by hand.
+
+**`per_contributor_pct` is meaningless on a one-person allowlist.** The one
+account able to trigger anything would simply meet its own cap, so leaving it
+unset — the default — is right until several people can trigger reviews and
+one of them monopolising the week becomes a real outcome rather than a
+hypothetical. When it is set, a contributor past 85 % of their own share
+stops being auto-reviewed but can still summon a review with `@claude`, and
+is refused entirely at 100 %; everyone else's headroom is measured
+separately. The same fit rule as the daily window applies: if the resulting
+allowance is below `max_run_tokens` the file is refused.
 
 The two diff-size caps are layer 2 of the budget, enforced by the
 [workspace](WORKSPACE.md) but configured here so that every spending cap

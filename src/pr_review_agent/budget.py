@@ -6,13 +6,21 @@ operator out of their own interactive sessions until the window resets. That
 is why the governor lands *before* the review worker, and why this module is
 the single gate a claim has to pass.
 
-**Three windows, one shape.** Every limit is tokens recorded in the ledger
-within a trailing duration: five hours, seven days, and one day capped at a
-seventh of the week. The effective ceiling is the tightest of the three, and
-the ladder rung comes from the worst utilisation among them. Each is a share
-of the *plan's* limit rather than all of it -- ``reviewer_share_pct``, default
-40 -- so a runaway agent can degrade interactive Claude Code but cannot lock a
-maintainer out of it.
+**Windows, one shape.** Every limit is tokens recorded in the ledger within a
+trailing duration: five hours, seven days, and one day capped at a seventh of
+the week. The effective ceiling is the tightest of them, and the ladder rung
+comes from the worst utilisation among them. Each is a share of the *plan's*
+limit rather than all of it -- ``reviewer_share_pct``, default 40 -- so a
+runaway agent can degrade interactive Claude Code but cannot lock a maintainer
+out of it.
+
+**The fourth window is one contributor's.** When ``per_contributor_pct`` is
+configured, a claim is also weighed against what its own ``actor_id`` has
+spent over the weekly duration. It joins the same list, so it degrades to
+mention-only and then refuses on the same ladder -- but only for the
+contributor being admitted: everyone else's headroom is measured separately,
+which is the point. Unset, the window is not built at all and nothing about
+the other three changes.
 
 **Reserve, then settle.** Checking the remaining allowance is not enough under
 concurrency: two workers can each observe sufficient budget, each start a run,
@@ -95,11 +103,17 @@ class UsageConfidence(StrEnum):
 
 @dataclass(frozen=True)
 class Window:
-    """One rolling limit: ``limit`` tokens within a trailing ``duration``."""
+    """One rolling limit: ``limit`` tokens within a trailing ``duration``.
+
+    ``actor_id`` scopes the measurement to a single contributor. It is set
+    only on the contributor window, which is therefore built per claim
+    rather than once per configuration.
+    """
 
     name: str
     duration: timedelta
     limit: int
+    actor_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +153,9 @@ _USED_SINCE = """
 SELECT COALESCE(SUM(COALESCE(used_tokens, reserved_tokens)), 0)
 FROM ledger WHERE reserved_at > :start
 """
+
+# The contributor window, served by the `ledger_by_actor` index.
+_USED_SINCE_BY_ACTOR = _USED_SINCE + " AND actor_id = :actor"
 
 # Guarded on the owner, exactly as ``queue._FINISH`` is: a worker whose lease
 # lapsed and was re-claimed must not settle the row the newer worker holds.
@@ -180,7 +197,7 @@ class Governor:
                 "budget.enabled is false: refusing %s", claim.trigger.dedupe_key
             )
             return False
-        headroom = self._headroom(conn, now)
+        headroom = self._headroom(conn, now, actor_id=claim.trigger.actor_id)
         if not self._allows(headroom, claim):
             return False
         conn.execute(
@@ -220,25 +237,43 @@ class Governor:
             )
 
     def headroom(self, now: datetime) -> Headroom:
-        """What the windows allow, for an operator or a status readout."""
+        """What the shared windows allow, for an operator or a status readout.
+
+        Deliberately actor-agnostic: a readout has no contributor to scope
+        to, so the per-contributor window belongs to the admission path.
+        """
         with self._store.transaction() as conn:
             return self._headroom(conn, now)
 
-    def _headroom(self, conn: sqlite3.Connection, now: datetime) -> Headroom:
+    def _headroom(
+        self, conn: sqlite3.Connection, now: datetime, actor_id: int | None = None
+    ) -> Headroom:
         """The worst utilisation and the tightest remainder across windows."""
         at = to_utc(now, "now")
-        worst, tightest = 0.0, self._windows[0]
+        windows = self._windows + self._contributor_window(actor_id)
+        worst, tightest = 0.0, windows[0]
         remaining = None
-        for window in self._windows:
-            used = _used_since(conn, at - window.duration)
+        for window in windows:
+            used = _used_since(conn, at - window.duration, window.actor_id)
             worst = max(worst, used / window.limit)
             left = window.limit - used
             if remaining is None or left < remaining:
                 remaining, tightest = left, window
-        assert remaining is not None  # _windows is never empty
+        assert remaining is not None  # the window list is never empty
         return Headroom(
             mode=_mode_for(worst), remaining=max(0, remaining), tightest=tightest.name
         )
+
+    def _contributor_window(self, actor_id: int | None) -> tuple[Window, ...]:
+        """The fourth window, when one contributor's claim is being weighed.
+
+        Empty unless ``per_contributor_pct`` is configured *and* an actor is
+        being admitted, which is why an unset cap changes nothing at all.
+        """
+        limit = self._config.per_contributor_limit
+        if actor_id is None or limit is None:
+            return ()
+        return (Window("contributor", WEEKLY, limit, actor_id=actor_id),)
 
     def _allows(self, headroom: Headroom, claim: Claim) -> bool:
         """Whether the ladder and the remaining allowance permit this run."""
@@ -285,9 +320,19 @@ def _windows(config: BudgetConfig) -> tuple[Window, ...]:
     )
 
 
-def _used_since(conn: sqlite3.Connection, start: datetime) -> int:
-    """Tokens committed -- spent or reserved -- since ``start``."""
-    return int(conn.execute(_USED_SINCE, {"start": _stamp(start)}).fetchone()[0])
+def _used_since(
+    conn: sqlite3.Connection, start: datetime, actor_id: int | None = None
+) -> int:
+    """Tokens committed -- spent or reserved -- since ``start``.
+
+    Scoped to one contributor when ``actor_id`` is given, which is the whole
+    of the per-contributor window: the same arithmetic, a narrower ``WHERE``.
+    """
+    params: dict[str, object] = {"start": _stamp(start)}
+    if actor_id is None:
+        return int(conn.execute(_USED_SINCE, params).fetchone()[0])
+    params["actor"] = actor_id
+    return int(conn.execute(_USED_SINCE_BY_ACTOR, params).fetchone()[0])
 
 
 def _mode_for(utilisation: float) -> Mode:

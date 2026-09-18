@@ -134,7 +134,9 @@ namespaces already carry them, and `queue` rows are kept forever.
 
 Schema changes are an ordered list applied on connect, with the file's
 `PRAGMA user_version` recording how many have run. Version 1 is the ETag and
-watermark tables; version 2 adds the queue; version 3 adds the ledger.
+watermark tables; version 2 adds the queue; version 3 adds the ledger; version
+4 indexes the ledger by `(actor_id, reserved_at)` for the per-contributor
+budget window.
 
 Every statement is `IF NOT EXISTS`, for two reasons that both come down to
 re-runnability. A database created before the list existed already carries

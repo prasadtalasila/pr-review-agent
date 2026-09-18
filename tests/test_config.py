@@ -241,6 +241,39 @@ def test_a_run_larger_than_the_daily_allowance_is_rejected():
         Config.from_mapping(data)
 
 
+def test_the_per_contributor_cap_is_off_by_default():
+    """Unset means no cap, so an existing deployment is unaffected."""
+    budget = Config.from_mapping(VALID).budget
+    assert budget.per_contributor_pct is None
+    assert budget.per_contributor_limit is None
+
+
+def test_the_per_contributor_cap_is_a_share_of_the_weekly_allowance():
+    data = {**VALID, "budget": {**BUDGET, "per_contributor_pct": 50}}
+    budget = Config.from_mapping(data).budget
+    assert budget.per_contributor_limit == budget.weekly_limit * 50 // 100
+
+
+@pytest.mark.parametrize("value", [0, -1, 101, "40", 1.5, True])
+def test_an_unusable_per_contributor_cap_is_rejected(value):
+    # None is absent from this list on purpose: it is how the key is unset.
+    data = {**VALID, "budget": {**BUDGET, "per_contributor_pct": value}}
+    with pytest.raises(ConfigError, match="per_contributor_pct"):
+        Config.from_mapping(data)
+
+
+def test_a_run_larger_than_a_contributor_allowance_is_rejected():
+    """The same arithmetic trap as the daily window, one window further.
+
+    1 % of the weekly share is below ``max_run_tokens``, so with the cap set
+    that low no contributor could ever be admitted -- including the only one
+    on a one-person allowlist.
+    """
+    data = {**VALID, "budget": {**BUDGET, "per_contributor_pct": 1}}
+    with pytest.raises(ConfigError, match="no run could ever be admitted"):
+        Config.from_mapping(data)
+
+
 def test_unknown_key_in_budget_is_rejected():
     data = {**VALID, "budget": {**BUDGET, "reviewer_share": 40}}
     with pytest.raises(ConfigError, match="unknown keys in 'budget'"):
