@@ -94,7 +94,12 @@ environment in `.venv/` inside the repository, so editors and CI find the same
 interpreter. Prefix commands with `poetry run`, or open a subshell with
 `poetry env activate`.
 
-Copy `config.example.yaml` to `config.yaml` before running the daemon.
+Copy `config.minimal.example.yaml` to `config.yaml` before running the
+daemon — it carries the required keys and nothing else.
+`config.example.yaml` is the comprehensive one: every key the loader
+accepts, with the reasoning behind each and the defaults shown. Both are
+parsed by the test suite, so neither can drift from the loader.
+
 `config.yaml` is gitignored: it names real accounts and will later sit beside
 the agent's credentials. Every key is documented in
 [docs/CONFIG.md](docs/CONFIG.md).

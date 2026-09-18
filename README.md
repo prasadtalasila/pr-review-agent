@@ -140,7 +140,7 @@ command -v poetry                       # must print <repo>/.venv/bin/poetry
 poetry install
 poetry run pytest
 
-cp config.example.yaml config.yaml      # then edit: repo, allowlist, agent id
+cp config.minimal.example.yaml config.yaml   # then edit: repo, allowlist, budget
 ```
 
 Before deploying on a new host, confirm it can reach what the daemon needs:

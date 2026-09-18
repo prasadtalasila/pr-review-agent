@@ -84,4 +84,6 @@ tests/                        pytest suite, one test_*.py per module
 - Functions should remain under 25 lines.
 - Implementations should be tested when practical.
 - Real credentials, tokens and account identifiers never enter the repository.
-  `config.yaml` is gitignored; change `config.example.yaml` instead.
+  `config.yaml` is gitignored; change `config.example.yaml` and
+  `config.minimal.example.yaml` instead. A new key goes in the comprehensive
+  one; the minimal one takes only required keys.

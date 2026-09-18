@@ -1,0 +1,57 @@
+# The smallest configuration that loads. Copy to config.yaml and edit.
+#
+#     cp config.minimal.example.yaml config.yaml
+#
+# Every key here is REQUIRED -- the loader refuses a file that omits one,
+# rather than filling in a default. config.example.yaml has every optional
+# key as well, with the reasoning behind each; docs/CONFIG.md is the
+# reference.
+#
+# config.yaml is gitignored: it names real accounts and will sit beside the
+# agent's credentials. The GitHub token is NOT in this file; it is read from
+# the GITHUB_TOKEN environment variable.
+
+github:
+  # The repository to poll. Reviews are posted here.
+  repo: INTO-CPS-Association/DTaaS
+
+triggers:
+  # Numeric GitHub user ids, NEVER logins: a login can be renamed and the
+  # freed name registered by a stranger, which would hand them eligibility.
+  # A login here fails at startup rather than never matching.
+  #
+  #     curl -s https://api.github.com/users/<login> | grep '"id"'
+  #
+  # An empty list is valid and allows nobody. That is the safe way to start.
+  allowlist:
+    - 114395272  # 8ohamed (Mohamed Abdulkarim)
+
+budget:
+  # Your estimate of the PLAN's limits, in tokens, and the most this agent
+  # may spend on one review. There are deliberately no defaults: a
+  # subscription publishes no quota, so a default would be a spending
+  # ceiling nobody chose.
+  #
+  # Set them CONSERVATIVELY LOW. Nothing detects an over-estimate until the
+  # circuit breaker lands with the engine adapter, so until then the
+  # governor will report healthy utilisation while the real plan limit is
+  # already being hit.
+  #
+  # max_run_tokens must fit inside the daily allowance, which is a seventh
+  # of weekly_tokens times the agent's share (40% by default). The loader
+  # checks that and refuses a configuration that could never admit a run.
+  session_tokens: 88000      # rolling 5-hour window
+  weekly_tokens: 1500000     # rolling 7-day window
+  max_run_tokens: 60000      # reserved up front for each review
+
+# Not set here, and safe to leave out:
+#
+#   github.agent_user_id   until it is set, the agent cannot recognise its
+#                          own comments, so it could in principle reply to
+#                          itself. Fill it in as soon as the reviewer
+#                          account exists.
+#   triggers.handle        defaults to "claude", so "@claude review this".
+#   budget.enabled         defaults to true. Set false to STOP REVIEWING.
+#   store.path             defaults to state.db in the working directory.
+#   workspace.cache_dir    defaults to .cache/repos.
+#   the two diff-size caps  default to 100 files / 5000 lines.

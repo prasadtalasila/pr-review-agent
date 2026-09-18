@@ -1,8 +1,10 @@
 """Config loading: reject anything that could silently weaken a safety rule."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
+import yaml
 
 from pr_review_agent.config import Config, ConfigError
 from pr_review_agent.triggers.models import Actor
@@ -303,3 +305,71 @@ def test_an_unusable_cache_dir_is_rejected(value):
     data = {**VALID, "workspace": {"cache_dir": value}}
     with pytest.raises(ConfigError, match="workspace.cache_dir"):
         Config.from_mapping(data)
+
+
+# -- the shipped examples, which documentation has already got wrong once --
+
+EXAMPLES = Path(__file__).resolve().parent.parent
+
+
+def test_the_minimal_example_loads():
+    """It is the file the quickstart tells people to copy.
+
+    CONFIG.md once showed a "minimal file" with no budget section, which
+    would not have loaded at all. Parsing the real file is what stops the
+    documentation and the loader drifting apart again.
+    """
+    config = Config.load(EXAMPLES / "config.minimal.example.yaml")
+    assert config.github.repo == "INTO-CPS-Association/DTaaS"
+    assert config.budget.enabled is True
+
+
+def test_the_minimal_example_carries_only_required_keys():
+    """Minimal has to mean minimal: every key in it must be load-bearing."""
+    data = yaml.safe_load((EXAMPLES / "config.minimal.example.yaml").read_text())
+    assert set(data) == {"github", "triggers", "budget"}
+    assert set(data["github"]) == {"repo"}
+    assert set(data["triggers"]) == {"allowlist"}
+    assert set(data["budget"]) == {
+        "session_tokens",
+        "weekly_tokens",
+        "max_run_tokens",
+    }
+
+
+def test_the_comprehensive_example_loads():
+    config = Config.load(EXAMPLES / "config.example.yaml")
+    assert config.store.path == "state.db"
+    assert config.workspace.cache_dir == ".cache/repos"
+
+
+def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
+    """A key the loader takes but the example omits is undiscoverable."""
+    data = yaml.safe_load((EXAMPLES / "config.example.yaml").read_text())
+    assert set(data) == {"github", "triggers", "budget", "store", "workspace"}
+    assert set(data["github"]) == {"repo", "agent_user_id"}
+    assert set(data["triggers"]) == {"allowlist", "handle"}
+    assert set(data["budget"]) == {
+        "enabled",
+        "session_tokens",
+        "weekly_tokens",
+        "max_run_tokens",
+        "reviewer_share_pct",
+        "max_changed_files",
+        "max_changed_lines",
+    }
+    assert set(data["store"]) == {"path"}
+    assert set(data["workspace"]) == {"cache_dir"}
+
+
+def test_the_comprehensive_example_states_the_real_defaults():
+    """Its optional values are advertised as the defaults, so they must be."""
+    shown = Config.load(EXAMPLES / "config.example.yaml")
+    defaults = Config.load(EXAMPLES / "config.minimal.example.yaml")
+    assert shown.triggers.handle == defaults.triggers.handle
+    assert shown.budget.enabled == defaults.budget.enabled
+    assert shown.budget.reviewer_share_pct == defaults.budget.reviewer_share_pct
+    assert shown.budget.max_changed_files == defaults.budget.max_changed_files
+    assert shown.budget.max_changed_lines == defaults.budget.max_changed_lines
+    assert shown.store.path == defaults.store.path
+    assert shown.workspace.cache_dir == defaults.workspace.cache_dir
