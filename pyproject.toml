@@ -36,6 +36,7 @@ ruff = "^0.9"
 pylint = "^3.3"
 pyright = "^1.1"
 pytest-asyncio = "^0.24"
+cryptography = ">=42"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
