@@ -56,3 +56,24 @@ budget:
   # interactive Claude Code sessions: its ceiling is deliberately below the
   # plan's. Optional; 40 is the default.
   reviewer_share_pct: 40
+
+  # Layer 2's diff-size caps. A pull request over either is refused before
+  # anything is fetched. Both exist because neither bounds the other: 2000
+  # one-line files pass a line cap and still bury the engine, and one
+  # 50000-line generated file passes a file cap.
+  #
+  # These bound what the REVIEWER READS, not the disk: a fetch pulls every
+  # object reachable from the head, so a commit that adds a large blob and a
+  # later one that deletes it still downloads it. Optional; these are the
+  # defaults, and they reload on SIGHUP with the rest of this section.
+  max_changed_files: 100
+  max_changed_lines: 5000
+
+workspace:
+  # Where the bare mirror and the per-run checkouts live, created 0700.
+  # Optional; this is the default. Resolved against the working directory
+  # the daemon starts in, so prefer an absolute path under a service
+  # account's data directory in production. Unlike the budget section this
+  # is NOT reloaded on SIGHUP: moving the cache under a running daemon
+  # would orphan the mirror.
+  cache_dir: .cache/repos
