@@ -499,10 +499,23 @@ offline for five hours, which is why the markers are narrow.
 
 Recorded here so they are not rediscovered as omissions.
 
-**Layer 3's per-run enforcement.** `max_run_tokens` is reserved against, but
-nothing terminates a run that exceeds it mid-flight; `--max-budget-usd` and the
-turn caps are the levers. **The ladder's 60 % rung** likewise waits on a
-running engine to degrade.
+**Nothing aborts a run that is exceeding its reservation.** `max_run_tokens`
+is reserved against and settled against, but a run that overruns it does so
+undetected until `settle`, after the tokens are gone — which is why the
+`exhausted` rung is reachable only by an overrun. Layer 3
+[considered and rejected](#where-layer-3s-three-ceilings-ended-up) every way
+to enforce it at a subprocess seam.
+
+The breaker above is **not** that enforcement, and should not be read as it:
+it answers the *account's* limit being reached, not one run outspending its
+own reservation. What absorbs an overrun today is the
+[pre-flight estimate](#-the-pre-flight-token-estimate), whose rate is fitted
+against what runs actually cost — so an expensive run raises the predicted
+cost of the next comparable one, and a large enough pull request is refused
+before it starts. That is feedback after the fact rather than a ceiling, and
+the difference is a reservation's worth of tokens.
+
+**The ladder's 60 % rung** likewise waits on a running engine to degrade.
 
 ## 🧪 What the tests pin
 
