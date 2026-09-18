@@ -122,7 +122,12 @@ with, and all three are guarded on the owner.
 carry one ([POLLER.md](POLLER.md#-mapping-a-payload-to-a-pull-request)).
 
 It is what the review runs against, but it is **not** what makes the review
-safe to post. The publisher re-reads the live head immediately before posting
-and discards a review of a superseded commit. The queue cannot do that check
-itself: it would have to be a GitHub read, and it has to happen at publish
-time rather than claim time to be worth anything.
+safe to post. The [publisher](PUBLISHER.md#-the-head-is-re-read-immediately-before-posting)
+re-reads the live head immediately before posting and discards a review of a
+superseded commit. The queue cannot do that check itself: it would have to be
+a GitHub read, and it has to happen at publish time rather than claim time to
+be worth anything.
+
+The queue also does not know that a run has been *paid for but not posted*.
+That lives in `runs`, and the worker consults it before claiming work of its
+own — see [PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).

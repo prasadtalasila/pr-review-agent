@@ -55,6 +55,8 @@ src/pr_review_agent/          importable package (src layout)
   _startup.py                 token + config, shared by both entry points
   bootstrap.py                pre-flight egress checks for a new host
   budget.py                   rolling windows, ladder, reserve-then-settle
+  publisher.py                the 👀, the head re-check, one comment per PR
+  runs.py                     what a paid review produced, so it can be re-posted
   config.py                   config.yaml loader and validation
   daemon.py                   the poll-classify-enqueue loop and entry point
   queue.py                    claim protocol and per-pull-request leases

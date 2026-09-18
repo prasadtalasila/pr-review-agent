@@ -1,0 +1,189 @@
+# Publisher
+
+The last step between a computed review and a visible one. It does two
+things, minutes apart, and the gap between them is most of the design.
+
+Source: `src/pr_review_agent/publisher.py`, `src/pr_review_agent/runs.py`.
+
+## 👀 The acknowledgement is immediate
+
+A 👀 reaction goes out as soon as the trigger is **claimed** — before the
+pull request is read, before the checkout, before any engine runs. A review
+takes minutes; an acknowledgement that waited for one would be useless.
+
+It lands on whatever the contributor actually touched:
+
+| Trigger | Reaction endpoint |
+| :-- | :-- |
+| `mention` in a conversation comment | `/issues/comments/{id}/reactions` |
+| `mention` in an inline diff comment | `/pulls/comments/{id}/reactions` |
+| `pr_opened` | `/issues/{n}/reactions` |
+
+The two comment endpoints draw their ids from different sequences, so
+knowing the id is not enough — posting to the wrong one 404s, or reacts to
+an unrelated comment. Which endpoint a comment arrived on is recorded as
+`CommentSource` when the poll payload is mapped, where it is free to learn,
+and carried on the `Trigger` and the queue row through to the claim.
+
+**It never raises.** A GitHub failure here is logged and the review proceeds:
+losing a courtesy must not cost a review the governor has already reserved
+allowance for. The `except` is narrowed to `GitHubClientError` on purpose —
+a bug in the publisher *should* surface rather than hide behind a missing
+emoji.
+
+**A dry run still acknowledges.** The reaction says "the agent has your
+trigger", which is true in a dry run and is the one thing an operator
+watching one still wants a contributor to see.
+
+### About the 15 second criterion
+
+[ROADMAP.md](ROADMAP.md) asks for an acknowledgement within 15 s **of the
+trigger being seen**, not of it being written. The poll interval is adaptive
+10–600 s ([POLLER.md](POLLER.md)), so nothing here can beat the polling
+latency — the acknowledgement is what makes that latency *feel* short, which
+is exactly why [DESIGN.md](DESIGN.md#-alternatives-considered) could reject a
+lower-latency relay design for it.
+
+## 🔁 The head is re-read immediately before posting
+
+A review describes one commit. By the time it finishes the pull request may
+have moved on, and a review of a superseded commit landing late is worse
+than no review at all.
+
+So the publisher re-reads `GET /pulls/{n}` and compares the live head with
+the one the review ran against. On a mismatch it posts nothing and the queue
+row is **completed**, not retried: a push to an existing pull request is not
+a trigger ([TRIGGERS.md](TRIGGERS.md)), so another attempt would re-read the
+same stale sha and reserve allowance to do it.
+
+[QUEUE.md](QUEUE.md#-what-the-queue-does-not-do) assigns this check here
+deliberately. It has to be a live read taken as late as possible; at claim
+time it would be worth nothing.
+
+The read happens in a dry run too. An operator watching one needs to see the
+same decision the real path would take, not a shortcut past it.
+
+## 💬 One comment per pull request
+
+Findings are posted as a single ordinary issue comment on the pull request's
+conversation, and a re-review **edits that comment in place** rather than
+adding another. What a reader sees is the agent's current opinion, not a
+thread of superseded machine opinion they have to scroll past. The history
+is not lost — it lives in `runs` and the ledger, where it can be queried and
+purged.
+
+The body names the commit it describes, because an edited comment otherwise
+says nothing about which revision it is about. Findings render in a pinned
+severity-then-location order, so a re-review that finds the same things
+produces a byte-identical body and the edit is a no-op.
+
+## 🛡 The publisher cannot approve anything
+
+[DESIGN.md](DESIGN.md#-prompt-injection-is-in-scope) names three
+prompt-injection mitigations, none of which relies on the model behaving.
+This is the third: **whatever a review concludes, the agent takes no
+approval action and no merge action.**
+
+It is held by an **absent capability** rather than a guarded field. The only
+GitHub writes this module knows how to make are a reaction and an ordinary
+issue comment. There is no event field to set wrongly, no severity that can
+escalate, and no branch to get wrong — a pull request whose text asks to be
+approved cannot get what it asks for even if every other mitigation fails
+and the model does exactly as it is told.
+
+Two tests pin it: one asserts on the recorded requests that no path matches
+`/reviews` and no body carries an `event` key; the other reads the module's
+own source and asserts it contains no token that could change that. A future
+change that reaches for the reviews endpoint has to delete a test to do it.
+
+This is why there is no line-anchored inline review. Inline comments would
+mean the reviews endpoint, which would mean an `event` field, which would
+mean the guarantee became "we always set it to `COMMENT`" — a promise about
+code rather than a property of it.
+
+## 💾 A paid review is kept until it can be posted
+
+The engine is the only irreversible step, so the order after it is fixed:
+
+```text
+settle  →  record  →  publish  →  finish
+```
+
+Recording the findings in `runs` **before** publishing is what makes a failed
+publish cheap. The next claim for that pull request finds the unpublished run
+and posts it, reaching no engine at all — so a flaky GitHub write cannot
+spend the allowance a second time. A test pins the engine call count at 1
+across a failed publish and its successful retry.
+
+The resume path takes the **ordinary claim** rather than a path of its own.
+That keeps one pull request in one worker's hands; a second lease would be a
+second chance to post the same comment twice. It settles its reservation at
+zero `exact` tokens immediately, because a resume reaches no engine and must
+not be allowed to look as though it did.
+
+The cost, stated plainly: **a budget refusal defers publication of an
+already-paid review.** The resume claim goes through `governor.admit` like
+any other, so if every window is exhausted the row waits until one rolls.
+The alternative was a publish path outside the lease, which means a second
+lease implementation and a duplicate-comment race between workers.
+
+| Publish outcome | Queue verb | Why |
+| :-- | :-- | :-- |
+| published | `complete` | Done. |
+| dry run | `complete` | The pipeline ran; there is nothing to retry. |
+| superseded | `complete` | The head will never match again. |
+| write failed | `release` | Retryable, and the retry re-publishes rather than re-reviewing. |
+
+A failed publish still burns a queue attempt, so a permanently rejected
+comment is abandoned after `max_attempts` rather than retrying forever.
+
+## 🧪 `publish.dry_run`
+
+Runs the whole pipeline and posts nothing, logging the comment it would have
+written. It is reloadable on `SIGHUP` through the mechanism
+`budget.enabled` built — a brake that needs a restart is not one — and a
+broken configuration file leaves the previous value in force.
+
+**It does not make a run free.** The engine has already run by the time the
+publisher is asked, so a dry run spends exactly what a real review spends.
+The brake that stops spending is `budget.enabled`. See
+[CONFIG.md](CONFIG.md).
+
+A dry run still stamps the run as needing publication no longer. The pipeline
+ran and there is nothing left to post; an unstamped run would be re-offered
+on every claim for the lifetime of the database.
+
+## 📋 The `runs` table
+
+See [STORAGE.md](STORAGE.md#-schema) for the columns. Four decisions worth
+knowing:
+
+- **Keyed on `dedupe_key`**, matching `queue` and `ledger`, which is what
+  turns "every posted comment is traceable to a ledger row recording engine,
+  model, mode, usage and `usage_confidence`" into a query rather than a
+  convention.
+- **`comment_id` is written per run and read per pull request.** The question
+  at publish time is never "what did this run post" but "what does this pull
+  request already have".
+- **`findings` is JSON text, not a child table.** Written once, read once,
+  purged wholesale; nothing queries a finding by path, line or severity.
+- **`content_purged_at` is stamped apart from emptying `findings`,** so a run
+  whose content was deleted after a merge stays distinguishable from a run
+  that looked and found nothing — the same distinction `Outcome` keeps
+  between `truncated` and a clean empty result.
+
+`RunStore.purge_content` exists and has no caller. The retention sweep is
+specified in terms of this table, and deciding the purge's shape later would
+mean deciding it against rows already written the wrong way.
+
+## 🔑 Prerequisites
+
+The GitHub token needs **write** scope. `DESIGN.md` recorded that read-only
+sufficed for polling and that write scope was only needed once the publisher
+existed; it exists. `python -m pr_review_agent.bootstrap` checks it, because
+the failure mode otherwise is a review that is polled for, claimed, paid for
+and computed, and then 403s on the last call.
+
+`github.agent_user_id` must be set — it already is, required since #24 — so
+the agent's own comment is classified `self_commenter` and a posted review
+cannot re-trigger a review.

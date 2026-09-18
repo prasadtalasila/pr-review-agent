@@ -22,13 +22,13 @@ fail at startup, not silently fall back to a default that spends tokens. That
 applies to unknown top-level sections and to unknown keys inside a section.
 
 Only the sections backed by implemented components are accepted today. The
-`publish` section described in [BUDGET.md](BUDGET.md) will be added with the
-component that reads it — adding it earlier would mean accepting settings
-that do nothing, which is the failure this rule exists to
-prevent. The same rule is why `budget` carries `max_run_tokens` but no turn
-cap: the governor reserves against the first, while the second is not a
-setting at all — `queue.DEFAULT_MAX_ATTEMPTS` bounds how often one trigger
-may reach an engine, and the CLI bounds the turns inside a single run.
+`publish` section arrived with the component that reads it rather than
+before it — accepting settings that do nothing is the failure this rule
+exists to prevent. The same rule is why `budget` carries `max_run_tokens`
+but no turn cap: the governor reserves against the first, while the second
+is not a setting at all — `queue.DEFAULT_MAX_ATTEMPTS` bounds how often one
+trigger may reach an engine, and the CLI bounds the turns inside a single
+run.
 
 ## 🔐 What is *not* in this file
 
@@ -253,6 +253,25 @@ path that does not exist in the repository is skipped.
 
 See [ENGINE.md](ENGINE.md) for the argv these keys produce.
 
+### `publish`
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `dry_run` | boolean | no (default `false`) | Run the whole pipeline and post nothing, logging the comment that would have been written. |
+
+Optional, and the default is to post. Unlike the plan token counts this is
+not a guess an operator has to make: a dry run spends exactly what a real
+review spends, so defaulting to one would burn the allowance and show
+nobody the result.
+
+`dry_run` is validated as strictly `true` or `false` rather than cast. Every
+non-empty string is truthy in Python, so `dry_run: "no"` would read as "post
+for real" under a cast and as "post nothing" under YAML's own boolean rules;
+refusing both is the only answer that cannot surprise an operator.
+
+Reloadable on `SIGHUP` — see [Reload](#-reload) — and described in full in
+[PUBLISHER.md](PUBLISHER.md#-publishdry_run).
+
 ## 📄 A minimal file
 
 Every key below is required; everything else has a default. This is
@@ -308,5 +327,12 @@ silently.
 `ERROR`. Crashing on a bad reload would turn the emergency brake into a way to
 take the service down with a typo.
 
-`publish.dry_run` is the other key specified as reloadable. It arrives with
-the publisher; this mechanism takes it without change.
+`publish.dry_run` is the other reloadable key, and it took this mechanism
+without change: `SIGHUP` swaps the `budget` and `publish` sections together,
+and a broken file leaves both as they were.
+
+It is the quieter brake. `budget.enabled: false` stops the agent *spending*;
+`publish.dry_run: true` lets it spend exactly as before and posts nothing,
+logging the comment it would have written instead. Use it to watch what the
+agent would say before letting it say it — not to save money. See
+[PUBLISHER.md](PUBLISHER.md#-publishdry_run).

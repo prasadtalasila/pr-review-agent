@@ -10,16 +10,16 @@ host.
 
 | # | Component | Responsibility | State |
 | :-- | :-- | :-- | :-- |
-| 0 | **Daemon loop** | Poll on the adaptive interval, classify what changed, enqueue what is accepted, advance the watermarks. Stops at `enqueue`. | implemented — [DAEMON.md](DAEMON.md) |
+| 0 | **Daemon loop** | Poll on the adaptive interval, classify what changed, enqueue what is accepted, advance the watermarks, and supervise the workers that drain the queue. | implemented — [DAEMON.md](DAEMON.md) |
 | 1 | **Poller** | Outbound-only conditional GETs against three repo-wide GitHub REST endpoints. | implemented — [POLLER.md](POLLER.md) |
 | 2 | **Classifier + allowlist** | Turn a polled payload into an accepted trigger or a reason code. | implemented — [TRIGGERS.md](TRIGGERS.md) |
 | 3 | **Store** | The watermarks, ETags and queue rows that must survive a restart, and the schema migrations that get them there. | implemented — [STORAGE.md](STORAGE.md) |
-| 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`) and a per-PR lease so reviews of one pull request never overlap. The `head_sha` re-check before posting belongs to the publisher, which is where the live head can be read. | implemented — [QUEUE.md](QUEUE.md) |
+| 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`) and a per-PR lease so reviews of one pull request never overlap. The `head_sha` re-check before posting belongs to the publisher, where the live head can be read. | implemented — [QUEUE.md](QUEUE.md) |
 | 5 | **Budget governor** | Layers 4 and 5 of spending control over one ledger; layers 2 and 3 land with the engine. | implemented — [BUDGET.md](BUDGET.md) |
 | 6 | **Workspace** | Fetch a pull request head into a bare mirror, check it out into an isolated worktree, diff it against the merge base, tear it down. Executes nothing from the tree. | implemented — [WORKSPACE.md](WORKSPACE.md) |
 | 7 | **Review worker** | Claim through the governor, resolve the pull request, check it out, run an engine, settle the ledger, close the row. Its own task, so a review never blocks a poll. | implemented — [WORKER.md](WORKER.md) |
-| 8 | **Engine adapter** | A `ReviewEngine` protocol and `Capabilities` record, with CLI-subprocess implementations (`claude`, then one other). No vendor SDK is linked. | seam implemented — [ENGINE.md](ENGINE.md); no adapter yet |
-| 9 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
+| 8 | **Engine adapter** | A `ReviewEngine` protocol and `Capabilities` record, with CLI-subprocess implementations (`claude`, then one other). No vendor SDK is linked. | implemented — [ENGINE.md](ENGINE.md); a second adapter is deliberately last |
+| 9 | **Publisher** | An immediate 👀 reaction, a live `head_sha` re-check, and one comment per pull request — edited in place on re-review. It can post no other kind of write. | implemented — [PUBLISHER.md](PUBLISHER.md) |
 | 10 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |
 
 The ordering is deliberate rather than convenient: **the budget governor lands
