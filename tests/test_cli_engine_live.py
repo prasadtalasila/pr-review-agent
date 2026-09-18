@@ -18,7 +18,7 @@ import pytest
 from pr_review_agent.budget import Mode, UsageConfidence
 from pr_review_agent.engine import ClaudeCliEngine, Outcome, ReviewRequest
 from pr_review_agent.triggers.models import Trigger, TriggerKind
-from pr_review_agent.workspace import Checkout, PullRequestFacts
+from pr_review_agent.workspace import Checkout, DiffSize, PullRequestFacts
 
 pytestmark = pytest.mark.live
 
@@ -37,7 +37,11 @@ async def test_a_real_run_returns_findings_and_a_token_count(tmp_path):
     (tmp_path / "adder.py").write_text("def add(a, b):\n    return a - b\n")
     request = ReviewRequest(
         checkout=Checkout(
-            path=tmp_path, head_sha="0" * 40, merge_base="1" * 40, diff=DIFF
+            path=tmp_path,
+            head_sha="0" * 40,
+            merge_base="1" * 40,
+            diff=DIFF,
+            reviewed=DiffSize(files=1, lines=2),
         ),
         facts=PullRequestFacts(
             number=1,

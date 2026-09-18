@@ -28,7 +28,7 @@ from pr_review_agent.engine.prompt import (
     build_prompt,
 )
 from pr_review_agent.triggers.models import Trigger, TriggerKind
-from pr_review_agent.workspace import Checkout, PullRequestFacts
+from pr_review_agent.workspace import Checkout, DiffSize, PullRequestFacts
 
 FACTS = PullRequestFacts(
     number=7,
@@ -75,7 +75,11 @@ def envelope(**overrides) -> str:
 
 def request(tmp_path, diff="--- a/x\n+++ b/x\n+pass\n") -> ReviewRequest:
     checkout = Checkout(
-        path=tmp_path, head_sha="a" * 40, merge_base="b" * 40, diff=diff
+        path=tmp_path,
+        head_sha="a" * 40,
+        merge_base="b" * 40,
+        diff=diff,
+        reviewed=DiffSize(files=1, lines=1),
     )
     return ReviewRequest(
         checkout=checkout, facts=FACTS, trigger=TRIGGER, mode=Mode.FULL

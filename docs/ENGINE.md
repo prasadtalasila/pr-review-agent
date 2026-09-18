@@ -137,7 +137,14 @@ tree and feeding a public comment is the wrong place for it. A test asserts
 
 **The prompt goes on stdin**, not in the argv. It carries the diff, and a
 diff-sized argv hits the platform limit on exactly the pull requests that
-most need reviewing.
+most need reviewing. It also keeps the argv small enough to log whole, which
+is what makes a posted review traceable to the invocation that produced it.
+
+Untrusted text inside the prompt is fenced, and the fence is **sized to its
+contents**: the builder finds the longest run of backticks in the diff and
+opens with one more than that. A fixed three-backtick fence is closable by
+any diff that contains one, which would let the "this is data" boundary be
+ended by the data.
 
 A timeout kills the process before it prints anything, so `EngineTimeout`
 carries no usage while the governor is still holding a reservation. The
@@ -198,6 +205,36 @@ clean review.
 included: cheaper than fresh input, not free, and the windows measure what a
 run consumed. `total_cost_usd` is on the envelope and deliberately not
 recorded — the windows are token-denominated.
+
+#### The schema retry is inside the CLI, and it spends
+
+`--json-schema` does not merely validate. When the model's output does not
+fit the schema the CLI **re-prompts by itself**, and only gives up with
+`error_max_structured_output_retries`. That retry is not a lever this adapter
+holds: there is no flag to disable it and no callback before it fires.
+
+Two consequences worth stating rather than discovering from a ledger row:
+
+- A single `review()` call can cost several model turns. The reported `usage`
+  covers all of them, so the ledger stays honest — but a run's cost is not
+  bounded by one turn's worth of tokens, and the pre-flight estimate should
+  not be read as though it were.
+- `error_max_structured_output_retries` is the **expensive** failure: it is
+  the outcome that spent the most and produced the least. It maps to
+  `failed` rather than `truncated` deliberately — retrying it costs the same
+  again with no reason to expect a different answer.
+
+Keeping `FINDINGS_SCHEMA` small and flat is therefore a spending decision,
+not a style one. Every required field is another way for a run to end in the
+retry path.
+
+#### The sizes in the prompt are the reviewable ones
+
+The prompt quotes `checkout.reviewed` — what survived `budget.excluded_paths`
+— and not `PullRequestFacts`' API totals. The diff the engine is shown has
+already had the excluded paths removed, so quoting the API's figures would
+tell the reviewer it is missing files that were withheld on purpose, and
+invite it to go looking for them with the tools it does have.
 
 ### Standards come from the base ref
 

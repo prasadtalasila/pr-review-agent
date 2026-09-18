@@ -20,7 +20,7 @@ they are reproduced here so they survive the issue being closed.
 | Workspace (fetch, checkout, merge-base diff, teardown) | implemented, unit tested |
 | Budget layer 2 (path exclusions, pre-flight estimate) | implemented, unit tested |
 | Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented, unit tested |
-| Engine adapter (a `claude` CLI implementation) | not started |
+| Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, unit tested; no caller |
 | Publisher | not started |
 | Retention sweep | not started |
 
@@ -29,22 +29,33 @@ worker**, so the spending rails exist before anything can spend.
 
 ## 🧭 Next
 
-1. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`,
-   with the `head_sha` re-check immediately before posting. It also carries the
-   budget pieces that need a *running* engine: the circuit breaker, layer 3's
-   per-turn enforcement, and the ladder's 60 % rung. [Layer 2 is
-   complete](BUDGET.md#-path-exclusions) — it needed only a diff, so the
-   adapter is handed one with excluded paths already absent, and a run
-   predicted to cost more than `max_run_tokens` never reaches it.
-2. **Retention sweep.** Purge content on merge; keep the ledger.
+1. **The worker, and the budget pieces that need a running engine.** Drain the
+   queue through the governor into the adapter, then the circuit breaker,
+   layer 3's per-run enforcement and the ladder's 60 % rung. The worker
+   inherits one question the adapter names and cannot answer: a review killed
+   on its wall clock leaves tokens spent and no envelope to measure them, so
+   the reservation has to settle at its full reserved amount with
+   `unavailable` confidence. See [ENGINE.md](ENGINE.md).
+2. **Publisher.** One line-anchored review, event `COMMENT`, with the
+   `head_sha` re-check immediately before posting. It is also the consumer
+   `ReviewResult.outcome` is waiting for: findings are publishable only from a
+   run that completed.
+3. **Retention sweep.** Purge content on merge; keep the ledger.
 
 The [daemon loop](DAEMON.md) fills the queue and nothing drains it, which is
 still the intended state: the backlog is visible and none of it has cost
 anything. Every piece the worker will need now exists — the
 [governor](BUDGET.md) can reserve and settle, the [workspace](WORKSPACE.md)
-can put a pull request on disk, and the [engine seam](ENGINE.md) says what a
-review engine is handed and must return. What is missing is the worker that
-joins them, and any engine that could spend.
+can put a pull request on disk, and the [engine seam](ENGINE.md) now has an
+adapter behind it that can actually review one. What is missing is the worker
+that joins them.
+
+That is the first time "nothing can spend" stops being structural and becomes
+a matter of what is wired to what. The adapter is a real caller of a real
+coding agent; the only reason no allowance moves is that nothing calls the
+adapter. The worker is therefore the change where `CLAUDE.md` §5's rule —
+nothing reaches an engine outside the governor — starts doing work rather
+than describing a property the code has for free.
 
 A second engine plus a shared conformance suite is deliberately last: the
 seam is worth defining early and filling late. It will be another CLI —

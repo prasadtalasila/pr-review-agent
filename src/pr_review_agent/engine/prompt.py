@@ -52,12 +52,19 @@ FINDINGS_SCHEMA: dict = {
 
 
 def build_prompt(request: ReviewRequest, standards: str) -> str:
-    """Assemble the review prompt: the task, the standards, then the data."""
+    """Assemble the review prompt: the task, the standards, then the data.
+
+    The sizes quoted are ``checkout.reviewed`` -- what survived
+    ``budget.excluded_paths`` -- not the API's totals. They have to match the
+    diff below them, or the reviewer is told it is missing files that were
+    deliberately withheld.
+    """
     facts = request.facts
+    reviewed = request.checkout.reviewed
     parts = [
         f"Review pull request #{facts.number} against `{facts.base_ref}`.",
         f"Head commit {facts.head_sha}, merge base {request.checkout.merge_base}.",
-        f"{facts.changed_files} file(s) changed, {facts.changed_lines} line(s).",
+        f"{reviewed.files} file(s) to review, {reviewed.lines} line(s).",
         "",
         "The working directory holds the pull request head. You may read it.",
         "Report findings on lines the diff touches, anchored to a path and a",

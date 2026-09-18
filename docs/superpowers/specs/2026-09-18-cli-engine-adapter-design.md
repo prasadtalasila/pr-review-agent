@@ -66,6 +66,24 @@ choosing a billing mode.
 #19. They are noted here so #19 does not have to rediscover them, and are not
 used by this change.
 
+### The retry we do not control
+
+`--json-schema` re-prompts on a validation mismatch and only surrenders with
+`error_max_structured_output_retries`. There is no flag to disable that and
+no hook before it fires, which has a consequence the budget design should
+absorb: **one `review()` call is not one model turn.** The envelope's usage
+covers every attempt, so the ledger stays honest, but a pre-flight estimate
+derived from a single pass will under-predict a run that hit the retry path.
+
+It also means `error_max_structured_output_retries` is the most expensive way
+for a run to fail — maximum spend, zero output. That is the reason it maps to
+`FAILED` rather than `TRUNCATED`: retrying it costs the same again with no
+reason to expect a different answer.
+
+The practical lever left to us is schema size. `FINDINGS_SCHEMA` is flat and
+small because every required field is another way into the retry path, which
+makes schema design a spending decision rather than a stylistic one.
+
 ## Layout
 
 `src/pr_review_agent/engine/` gains two modules and a prompt builder.
@@ -335,6 +353,107 @@ none needs a network.
 
 Then the full local gate from `DEVELOPER.md`: `poetry run pytest`, `ruff`,
 `pylint`, `pyright`.
+
+## Rejected alternatives, and why
+
+The shape above is the residue of several choices that could plausibly have
+gone the other way. Recording the losing options is the point: a future
+reader who re-proposes one should find out here that it was considered, not
+rediscover the argument.
+
+### Findings written to a file instead of parsed from stdout
+
+Proposed on the reasonable grounds that stdout parsing is brittle, that a
+file has no size ceiling, and that a file would generalise better to an agent
+orchestrating several tools.
+
+Rejected, and the objection that actually bites is not the format:
+
+- **It costs the sandbox.** Writing a file needs a write tool. The whole
+  containment story is *no Write, no Edit, no mutating Bash*, asserted by a
+  test. Granting Write and then confining it to one scratch path is a much
+  weaker guarantee than not granting it at all, and `read_only_sandbox: true`
+  would stop being a claim we could honestly make.
+- **A missing file is ambiguous.** Crashed, refused, wrote elsewhere, timed
+  out — all look identical. The stdout envelope always arrives, and it
+  carries the usage and the terminal reason whatever the model did.
+- **Usage comes from the envelope regardless**, so file output would mean two
+  channels that can disagree, not one channel instead of another.
+- **Cleanup.** The file has to live outside the worktree or it dirties the
+  tree being diffed.
+
+The orchestration worry does not survive contact with the flag:
+`--output-format json` constrains nothing about what happens *inside* a run.
+The agent may call as many tools over as many turns as it likes; the envelope
+reports the final result plus usage. If output size ever becomes the real
+constraint, the escape hatch is a scratch directory outside the worktree with
+Write scoped to it — worth doing then, on evidence.
+
+### Standards from the agent host
+
+The alternative to reading them from the repository under review. Strictly
+safer: nothing the target repository contains could influence the reviewer at
+all.
+
+Rejected because it contradicts the split `DESIGN.md` already commits to —
+the engine is generic, the standards are per-repository. Host-side standards
+would mean the agent's own repository has to be edited to change how DTaaS is
+reviewed, which puts the wrong people in charge of the wrong file. Reading at
+the merge base buys most of the safety for none of that cost.
+
+### Our own validation retry
+
+`DESIGN.md` prescribes a *budgeted* validation retry for engines without
+schema-constrained output. This adapter adds none, for two reasons that only
+became visible once the flag was checked: `--json-schema` means the engine is
+schema-constrained after all, so the prescription does not apply — and the
+CLI already retries internally, so a retry of ours would be a second retry
+loop wrapped around one we cannot see or bound.
+
+### `--bare`
+
+Skips `CLAUDE.md` discovery, hooks, plugins and auto-memory — everything we
+want gone. Rejected because it also forces `ANTHROPIC_API_KEY` authentication
+and never reads OAuth or the keychain, which would decide issue #12's billing
+question by side effect of an isolation flag. `--restricted` plus
+`--setting-sources ''` gets the same isolation while staying
+authentication-agnostic, which is what the seam promised to be.
+
+### Refusing to run on a version mismatch
+
+The stricter reading of "each adapter pins the CLI version it was written
+against". Rejected: the parse is what actually protects the run and it
+already fails loudly, so refusing adds no safety while taking the reviewer
+offline on a routine upgrade that changed nothing we read. The warning exists
+so that when the parse does break, the logs already say why.
+
+### An `engine.name` selector key
+
+One adapter, one value. A selector with a single option is configurability
+nobody asked for, and its shape is only knowable once a second adapter shows
+what actually varies.
+
+## What implementation changed about the design
+
+Three things were not visible until the code existed. They are recorded above
+in place; collected here so the diff between the plan and the result is not
+something a reader has to reconstruct.
+
+1. **`Workspace.show(ref, path)` turned out to be unnecessary.** A linked
+   worktree shares the mirror's object database, so `git show` run with `-C
+   checkout.path` reaches the merge base directly. The engine never needs to
+   hold a `Workspace`, and the read is a small module taking only the
+   `Checkout` it is already given.
+2. **`subagents` became `false`.** Pylint flagged the all-true capability
+   record as duplicating `FakeEngine.FULL`; looking for an honest fix rather
+   than a suppression surfaced a real inconsistency. `read_only_sandbox` is a
+   claim about the argv, so `subagents` has to be read the same way, and the
+   configured tool set has no fan-out tool. A lint complaint is a poor reason
+   to change a design; the inconsistency it exposed is a good one.
+3. **The prompt quotes `checkout.reviewed`, not `PullRequestFacts`.** Budget
+   layer 2 landed while this was being written, and the diff an engine is
+   handed now has excluded paths already removed. Quoting the API's totals
+   would tell the reviewer it is missing files that were withheld on purpose.
 
 ## Documentation
 

@@ -162,6 +162,26 @@ runs proving reviews cost twelve tokens a line it would still refuse pull
 requests the agent has direct evidence it can afford. A rate that can only be
 revised upward is not a fit.
 
+### One run is not one turn
+
+Worth knowing before the fit is trusted too far. The `claude` adapter asks
+for schema-constrained output, and the CLI **re-prompts by itself** when the
+model's answer does not fit — see
+[ENGINE.md](ENGINE.md#the-schema-retry-is-inside-the-cli-and-it-spends). That
+retry is not something the adapter can disable or bound.
+
+The ledger stays honest, because the envelope's usage covers every attempt.
+The *fit* stays honest too, for the same reason: it is fitted against what
+runs actually cost, retries included, so a corpus with a normal retry rate
+predicts a normal retry rate.
+
+What this does affect is variance. A run that hits the retry path costs a
+multiple of one that does not, over the same reviewable lines, so the residual
+around the fitted rate is wider than a line-count model suggests — and the
+estimate is a refusal threshold rather than a reservation, which is the
+reading that survives that variance. The reservation is still
+`max_run_tokens`, and it is what the retry path is actually bounded by.
+
 ### Refusing releases the reservation
 
 The reservation is taken by `admit`, inside the claim, before the pull

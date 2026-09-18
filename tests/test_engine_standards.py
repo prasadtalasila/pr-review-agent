@@ -6,7 +6,10 @@ import pytest
 from conftest import git
 
 from pr_review_agent.engine.standards import MAX_STANDARDS_BYTES, read_standards
-from pr_review_agent.workspace import Checkout
+from pr_review_agent.workspace import Checkout, DiffSize
+
+#: Irrelevant here: these tests read files at a ref, never the diff.
+NO_DIFF = DiffSize(files=0, lines=0)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -38,6 +41,7 @@ def repo(tmp_path):
         head_sha=head_sha,
         merge_base=merge_base,
         diff="",
+        reviewed=NO_DIFF,
     )
 
 
@@ -67,7 +71,11 @@ async def test_oversized_standards_are_skipped_rather_than_truncated(repo, caplo
     git("commit", "-qm", "big", cwd=repo.path)
     base = git("rev-parse", "HEAD", cwd=repo.path)
     checkout = Checkout(
-        path=repo.path, head_sha=repo.head_sha, merge_base=base, diff=""
+        path=repo.path,
+        head_sha=repo.head_sha,
+        merge_base=base,
+        diff="",
+        reviewed=NO_DIFF,
     )
     standards = await read_standards(checkout, ("BIG.md", "AGENTS.md"))
     assert "BIG.md" not in standards
