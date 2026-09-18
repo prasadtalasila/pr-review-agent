@@ -63,6 +63,34 @@ arguments for exactly this reason: `budget` is reloaded on `SIGHUP`, and a
 holder of a stale snapshot would ignore a tightened cap — the failure the
 reload mechanism exists to prevent.
 
+### What one run leaves behind
+
+The statelessness rule is worth spelling out against the actual inventory,
+because "one pull request cannot affect the next" is a security claim and not
+merely a tidiness one. The tree under review is untrusted input.
+
+| State | Lifetime | Reaches the next run? |
+| :-- | :-- | :-- |
+| Worktree at `runs/<uuid>` | created per run, removed in `finally` | No. `sweep()` also deletes the whole `runs/` tree at startup, so a crash between `worktree add` and teardown is cleaned at the next boot. |
+| Run ref `refs/run/<uuid>` | per run, `update-ref -d` in `finally` | No |
+| The bare mirror | persistent, shared by every pull request | **Yes** — the one genuinely shared artefact |
+| `ReviewWorker` instance | process lifetime | Only if a field held run data. None does. |
+| Engine | a subprocess per run: own `cwd`, scrubbed env, kill-on-timeout | No |
+| `GitHubClient`, `SqliteStore` | process lifetime, shared with the poll loop | Carries no per-review state |
+
+So the whole carry-over surface is the mirror, and what a hostile pull
+request can put there is already bounded by the workspace design: objects and
+one ref under `refs/run/`, fetched `--no-tags --no-recurse-submodules` over
+an https-only whitelist, never executed. The diff is computed in the *bare*
+repository, so an in-tree `.gitattributes` cannot render the change as
+"Binary files differ" and hide itself from the review. What a large pull
+request can do is grow the disk. What it cannot do is reach the next
+review's tree, its environment or its prompt.
+
+This is why the worker holding no state is a design rule rather than an
+implementation detail: it is the last link in that chain, and the only one
+this change is adding.
+
 ## One run
 
 ```python
@@ -231,6 +259,47 @@ Workers are built from `config.worker.count`, each with a distinct owner id.
 The engine is `FakeEngine`, and startup logs a warning naming it: a daemon
 that looks like it reviews and does not is worse than one that says so.
 
+## Walkthrough: one review, end to end
+
+The interleaving is the part that is hard to see from the code, because
+`await` is what makes it happen and nothing names it. Both loops are in one
+process on one event loop.
+
+| Time | Poll loop | Worker loop |
+| :-- | :-- | :-- |
+| t+0 s | `GET /pulls` → 200; PR #42 is new. Classifier accepts (allowlisted author **id**, `created_at` above the watermark). `enqueue` inserts `pull:42:abc123` as `pending`; the watermark advances *after* the insert. Waits the adaptive interval. | idle in `_wait` |
+| t+2 s | sleeping | wakes. `claim()` opens `BEGIN IMMEDIATE`: sweeps rows out of attempts, runs `_CLAIMABLE` oldest-first, offers #42 to `governor.admit`, which measures the three shared windows plus the contributor's, finds mode `full`, and inserts a ledger row with `reserved_tokens = max_run_tokens` and `settled_at NULL`. `_TAKE_LEASE` then sets `claimed`, `attempts=1`, `owner`, `leased_until = t+30 min`. **One commit**: the lease and the reservation are atomic, which is the whole concurrency guarantee. |
+| t+3 s | wakes, polls, enqueues an `@claude` mention on PR #7 | `await GET /pulls/42` → `PullRequestFacts`. This read resolves `head_sha` (a mention's payload carries none) and supplies the counts the size gate needs — one request serving both. |
+| t+5 s | waiting | `workspace.checkout`: size gate → fetch under the mirror lock → `merge-base` → `diff` in the bare mirror → `worktree add --detach`. |
+| t+5 s … t+4 min | polls repeatedly, enqueues whatever it sees | `await engine.review(...)`. `FakeEngine` returns at once; a CLI adapter is minutes. **This await is the reason the worker is a separate loop.** |
+| t+4 min | | context exit tears down the worktree and the run ref |
+| | | `governor.settle` → `used_tokens`, `usage_confidence`, `engine`, `model`, `settled_at`. The windows stop counting the full reservation and start counting what was spent. |
+| | | `queue.complete` → `done`, owner cleared. Findings are logged and dropped; there is no publisher. |
+| t+4 min | | next `claim()` offers PR #7's mention — a different pull request, so the per-PR lease does not block it |
+
+The mention on #7 waited four minutes behind #42. That is what concurrency
+of one means, and it is why `worker.count` exists.
+
+### The same review, failing once
+
+`engine.review` raises `TimeoutError` at t+30 min.
+
+1. `settle` runs anyway, at the **full reservation** — the engine had
+   started. That charge stays in the windows until it rolls out.
+2. `queue.release` → `pending`, owner cleared, `attempts` still 1.
+3. The worker loops and `claim()` offers the same row straight back:
+   `attempts=2`, a **fresh** reservation, a fresh 30-minute lease.
+4. Attempt 2 succeeds → settle at actual usage → `complete`.
+
+One trigger now has two ledger rows: one charged in full for the failure,
+one for the real cost. That is the intended pessimism, not double-counting to
+be fixed later — the failed attempt genuinely may have spent what it
+reserved, and the governor cannot find out.
+
+Had attempt 3 also failed, the next `claim()` would have swept the row to
+`abandoned` before offering anything, and no further allowance would be
+reserved for it.
+
 ## Why not a process per review
 
 Considered and rejected. The overhead argument is sound — spawning is
@@ -311,8 +380,59 @@ argued.
 
 ## Documentation
 
-New `docs/WORKER.md`. Edits where this change makes existing text false:
-`QUEUE.md` (the new verb, and the status table), `BUDGET.md`
-(settle-on-failure), `ENGINE.md`, `ARCHITECTURE.md` and `ROADMAP.md` (the
-seam now has a caller), `DAEMON.md` (two loops), `CONFIG.md` (the `worker`
-section).
+`docs/WORKER.md` is a deliverable of this change, not a note appended to it.
+The worker is where five subsystems meet, and most of what is worth knowing
+about it is *why one ordering was chosen over another* — knowledge that is
+invisible in the code and expensive to re-derive. It carries:
+
+1. **What the worker is, and what it deliberately is not.** It drains; it
+   does not publish. Findings are logged and dropped until the publisher
+   exists.
+2. **The two loops**, with the end-to-end walkthrough above — the successful
+   interleaving and the failing one — because "the poll cycle is not blocked"
+   is a claim best read as a timeline.
+3. **The three-valued `usage` and the settle rule**, with the table of where
+   a failure happened and what it settles at, and the argument for why a
+   crashed engine cannot be settled at zero.
+4. **The fate of a failed row**: `release` versus `abandon`, what each costs,
+   and why `complete` was not reused for a permanent failure.
+5. **What one run leaves behind**, with the carry-over table — the isolation
+   argument stated as a property of the code.
+6. **The supervisor**: why a crash respawns rather than killing the daemon,
+   why a poison pull request cannot tight-loop it, and what the backoff is
+   actually for.
+7. **Why a process per review was rejected**, in full. This one is worth
+   writing down precisely because the idea is reasonable and will be raised
+   again; the objections are non-obvious and two of them are invariants
+   stated elsewhere in the docs.
+8. **`worker.count` as a spending bound**, and the fact that raising it
+   parallelises across pull requests but never within one.
+
+Edits where this change makes existing text false: `QUEUE.md` (the new verb,
+and the status table, which currently defines `done` as reviewed and
+`abandoned` as attempts-exhausted only), `BUDGET.md` (settle-on-failure,
+which the module docstring currently discusses only for a lost worker),
+`ENGINE.md`, `ARCHITECTURE.md` and `ROADMAP.md` (the seam now has a caller;
+the "nothing drains the queue" state is over), `DAEMON.md` (two loops, and
+the supervisor), `CONFIG.md` and both example configs (the `worker` section).
+
+Module and class docstrings carry the same reasoning at the point of use, as
+`queue.py`, `budget.py` and `repo.py` already do: the settle rule beside
+`run_one`, the carry-over rule on the dataclass, the backoff rationale on
+`supervise`.
+
+## Decisions, and what was rejected
+
+Recorded because the discarded options are all defensible, and the next
+person to look at this will think of them again.
+
+| Decision | Chosen | Rejected, and why |
+| :-- | :-- | :-- |
+| How much the worker owns | facts read + checkout + engine | *Engine only, checkout injected* — smaller, but the acceptance test would then run over a stub rather than the real workspace, forfeiting the free end-to-end verification that is the point of doing this now. *Reuse the trigger's `head_sha`* — not viable: a mention's is `None`, and the size counts would be unavailable. |
+| Settle on failure | split on whether the engine started | *Always zero* — refunds a CLI adapter that timed out after spending real tokens, up to `max_attempts` times. *Always the full reservation* — charges a full run for a pull request refused by the size gate before the first git call. |
+| Fate of a failed row | transient `release`, permanent `abandon` | *Everything releases* — reaches the same refusal three times, reserving allowance each time. *Permanent completes* — overloads `done`, which means reviewed, so the table stops distinguishing a reviewed row from a refused one. |
+| Worker topology | N loop tasks in one process | *A process per review* — see above; three objections, none of them overhead. *A task per claim behind a semaphore* — equivalent in effect, more moving parts in the shutdown path, and `worker.count` already expresses the same thing. |
+| Idle wait | 30 s, fixed | *5 s* — better latency, but a governor refusing for hours logs some 720 identical warnings an hour. *An enqueue event* — fixes latency, not the refusal spin, and adds shared state between the loops; a released or refused row produces no enqueue. |
+| Crash handling | supervisor respawns with capped exponential backoff | *Propagate and let the process die*, as the poll loop does — but that takes the poller down for a fault confined to the worker. *Fixed-delay respawn* — noisier under a persistent fault. *A crash budget that stops the daemon* — loudest, same collateral as propagating. |
+| Backoff constants | module constants | *Config keys* — a backoff is a property of the failure mode, not an operator's decision, and nobody can set one correctly. |
+| `worker.count` | config key, default 1, capped at 4 | *Fixed at 1* — safest, but the loop shape supports N and pinning it in code means a later spending decision is also a refactor. *Fixed at 2* — doubles the reservation floor on the strength of a fake engine that has never spent anything. |
