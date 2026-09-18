@@ -374,6 +374,37 @@ class WorkspaceConfig:
         return cls(cache_dir=cache_dir)
 
 
+@dataclass(frozen=True)
+class PublishConfig:
+    """Whether the publisher actually posts.
+
+    ``dry_run`` runs the whole pipeline -- acknowledgement aside -- and posts
+    nothing, which is how an operator watches what the agent *would* say
+    before letting it say it. It is the second reloadable key, alongside
+    ``budget.enabled``, because both are brakes: a brake that needs a restart
+    is not one.
+
+    Unlike the budget token counts this has a default, and the default is
+    ``False``. A dry run costs the same tokens as a real one and produces no
+    review, so defaulting to it would be a daemon that spends the allowance
+    and shows nobody the result.
+    """
+
+    dry_run: bool = False
+
+    @classmethod
+    def parse(cls, data: dict) -> PublishConfig:
+        """Validate the ``publish`` section."""
+        dry_run = data.get("dry_run", False)
+        # Strictly ``bool``: every non-empty string is truthy in Python, so
+        # ``dry_run: "no"`` would read as "post for real" under a cast and as
+        # "post nothing" under YAML's own boolean rules. Refusing both is the
+        # only answer that cannot surprise an operator.
+        if not isinstance(dry_run, bool):
+            raise ConfigError(f"publish.dry_run must be true or false, got {dry_run!r}")
+        return cls(dry_run=dry_run)
+
+
 #: The CLI an adapter runs when the operator does not name one.
 DEFAULT_ENGINE_BINARY = "claude"
 
@@ -499,6 +530,7 @@ class Config:
     store: StoreConfig
     workspace: WorkspaceConfig
     worker: WorkerConfig
+    publish: PublishConfig
     #: Required, because the worker now wires it. While nothing drained the
     #: queue an absent section could not spend and so could be absent; a
     #: daemon that claims work and has no engine to run would instead fail
@@ -519,6 +551,7 @@ class Config:
                 "store",
                 "workspace",
                 "worker",
+                "publish",
                 "engine",
             }
         )
@@ -573,6 +606,12 @@ class Config:
             # holds a single reservation.
             worker=WorkerConfig.parse(
                 _section(data, "worker", {"count"}) if "worker" in data else {}
+            ),
+            # Optional, and its default is to post. A dry run spends exactly
+            # what a real review spends, so defaulting to one would burn the
+            # allowance and show nobody the result.
+            publish=PublishConfig.parse(
+                _section(data, "publish", {"dry_run"}) if "publish" in data else {}
             ),
             # Required: there is no model an operator could be assumed to
             # have chosen, and every key here decides a cost.

@@ -214,6 +214,22 @@ worker:
   count: 1
 
 # ---------------------------------------------------------------------------
+# publish -- optional. Whether the agent actually posts.
+# ---------------------------------------------------------------------------
+publish:
+  # Optional (default false). With dry_run: true the whole pipeline runs --
+  # claim, checkout, review, settle -- and nothing is posted; the comment the
+  # agent would have written is logged instead. Use it to watch what the
+  # agent would say before letting it say it.
+  #
+  # It does NOT make a run free. A dry run spends exactly what a real review
+  # spends, because the engine has already run by the time the publisher is
+  # asked. The brake that stops spending is budget.enabled.
+  #
+  # Reloaded on SIGHUP, like budget: a brake that needs a restart is not one.
+  dry_run: false
+
+# ---------------------------------------------------------------------------
 # engine -- REQUIRED. Which coding agent reviews, and how it is run.
 # ---------------------------------------------------------------------------
 #
