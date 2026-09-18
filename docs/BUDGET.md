@@ -20,6 +20,17 @@ worker: the spending rails exist before anything can spend.
 | 3 | Per-run ceiling: max tokens, turn cap, wall-clock timeout | **done**, with one gap — see below |
 | 4 | Rolling windows and pacing, by reserve-then-settle | **done** |
 | 5 | A degradation ladder rather than a hard stop | **done** |
+| 6 | A circuit breaker, converging onto the limit nobody publishes | **done** — [below](#-the-circuit-breaker) |
+
+Three more bound spend without being layers, because they are properties of
+how the agent runs rather than decisions about one claim. They are named here
+so that "every control on spend" is one list rather than four pages:
+
+| Control | What it bounds | Where |
+| :-- | :-- | :-- |
+| `worker.count` | How many reviews can be in flight at once, and so how fast the windows can be drawn down | [WORKER.md](WORKER.md#-workercount) |
+| `engine.timeout_seconds` | The wall clock one run cannot outlive, which is the only bound when an engine reports no usage | [ENGINE.md](ENGINE.md) |
+| `queue.max_attempts` | How often one trigger may be retried, and so how many times a single failure can be paid for | [QUEUE.md](QUEUE.md) |
 
 Layer 1 is the classifier — it *is* the first budget layer, which is why its
 rejections are logged at a level an operator actually sees.
@@ -412,30 +423,99 @@ half-applied, and **a broken file leaves the previous configuration in force** �
 crashing would turn the emergency brake into a way to take the service down
 with a typo.
 
+## 🔌 The circuit breaker
+
+**Implemented** in `src/pr_review_agent/budget.py`, over the `budget_state`
+table. Design note:
+[the circuit breaker](superpowers/specs/2026-09-18-circuit-breaker-design.md).
+
+Every limit above is the operator's guess, because the plan publishes no
+quota. A guess that is too low is harmless. A guess that is too high is the
+one failure the rest of this design cannot see: the governor admits runs and
+reports healthy utilisation while the real limit is already being hit, and the
+[worker](WORKER.md) retries into the same wall until `max_attempts` runs out,
+spending each time. The breaker is the only feedback from reality into that
+guess.
+
+**Trip.** A usage-limit failure refuses every claim for `TRIP_HOLD`, which is
+one `SESSION`. Five hours because it is the shortest window, and because it is
+a *duration* rather than a reset time — the only kind of answer available when
+[constraint 4](DESIGN.md#-the-four-constraints) says the plan exposes none.
+`trip(window, resets_at)`, the signature this document used to sketch, is
+therefore not what was built: `trip(now)` takes no reset time because there is
+none to take.
+
+If the weekly limit was the one that blew, the next attempt trips again and the
+calibration keeps shrinking — the design converges either way, so it never
+needs the attribution to be right. A refused claim costs no attempt:
+`ReviewQueue.claim` already skips a candidate `admit` rejects rather than
+burning one, because a refusal is about the allowance, not about the trigger.
+
+**Decay, and recovery.** The same trip multiplies a stored calibration by
+`DECAY_FACTOR` (0.9), and every window's effective limit becomes `configured ×
+calibrated`. So the ceiling drops a tenth each time reality disagrees with the
+guess, converging downward over a handful of windows instead of hitting the
+wall once per window forever.
+
+Recovery is additive: one percentage point per clean `SESSION`, capped at the
+configured value. Multiplicative down and additive up is what makes the series
+converge rather than oscillate. It exists because the pool is *shared* — a trip
+does not always mean the guess was too high, it can equally mean the maintainer
+had a heavy week, and a calibration that could only ever be revised downward
+would leave the reviewer permanently crippled by one of those. That is the
+mirror of the permanent floor [the fit rejects](#the-cold-start-errs-high).
+
+Because a trip holds for a full `SESSION` and recovery accrues only in clean
+ones, decay is self-rate-limiting: no second timer, and no way for a burst of
+trips to collapse the calibration in an afternoon.
+
+The calibration is an **integer percentage floored at 1**, never a float.
+`_headroom` divides by the limit, so a calibration reaching zero would raise
+where it should refuse — the same reason `reviewer_share_pct` is validated
+`1..100`. Decay truncates rather than rounds, because `round(3.6)` is 4 and a
+rounded decay stalls at 4 % forever instead of converging.
+
+**What a tripped run settles at.** Not the full reservation. A usage limit is
+one of the few failures where the spend *is* knowable: refused up front the CLI
+did no work and it is zero, hit mid-run the envelope measured it. Charging the
+ceiling would write tokens that were never spent into all three rolling
+windows, and — the windows being rolling and ledger rows never deleted — they
+would keep refusing real runs for up to a week after the account recovered.
+
+### Detection is a guess, and this is where to correct it
+
+Issue #20 required the real usage-limit failure to be observed before the
+interface was fixed. **It has not been.** Manufacturing one means driving a
+live subscription into the wall this design exists to avoid.
+
+So the guess is confined to one constant, `_USAGE_LIMIT_MARKERS` in
+`src/pr_review_agent/engine/claude.py`, matched against both plausible
+carriers — a nonzero exit's stderr and the result envelope. When the real
+error is seen, editing that tuple is the whole fix: no signature changes and
+no migration. A miss costs a retry; a false positive takes the reviewer
+offline for five hours, which is why the markers are narrow.
+
 ## 🕳 Not built yet
 
 Recorded here so they are not rediscovered as omissions.
 
-**The circuit breaker and calibration decay.** Every limit above is the
-operator's guess, because the plan publishes no quota. A guess that is too low
-is harmless. A guess that is too high is the one failure the rest of this design
-cannot see: the governor reports healthy utilisation while the real limit is
-being hit. The breaker is the only feedback from reality into that guess, and
-multiplicative decay is what makes it converge downward instead of hitting the
-wall once per window forever.
+**Nothing aborts a run that is exceeding its reservation.** `max_run_tokens`
+is reserved against and settled against, but a run that overruns it does so
+undetected until `settle`, after the tokens are gone — which is why the
+`exhausted` rung is reachable only by an overrun. Layer 3
+[considered and rejected](#where-layer-3s-three-ceilings-ended-up) every way
+to enforce it at a subprocess seam.
 
-It is deferred because its interface is determined by an error nobody has seen
-yet. `trip(window, resets_at)` assumes the failure names which window blew and
-when it resets, and [constraint 4](DESIGN.md#-the-four-constraints) says the
-plan exposes no reset time. Designing it against a synthetic call, then
-rewriting it once the engine adapter shows what a real usage-limit error looks
-like, is worse than designing it once alongside the detector.
+The breaker above is **not** that enforcement, and should not be read as it:
+it answers the *account's* limit being reached, not one run outspending its
+own reservation. What absorbs an overrun today is the
+[pre-flight estimate](#-the-pre-flight-token-estimate), whose rate is fitted
+against what runs actually cost — so an expensive run raises the predicted
+cost of the next comparable one, and a large enough pull request is refused
+before it starts. That is feedback after the fact rather than a ceiling, and
+the difference is a reservation's worth of tokens.
 
-Nothing drains the queue today, so no run can hit a limit and there is no
-exposure. The cost is operator guidance: **set `session_tokens` and
-`weekly_tokens` conservatively low until the breaker lands**, because nothing
-will catch an over-estimate.
-
+**The ladder's 60 % rung** likewise waits on a running engine to degrade.
 
 ## 🧪 What the tests pin
 
@@ -460,7 +540,23 @@ cases in `tests/test_queue.py`:
   oversized pull request, the fit takes over at the tenth fittable row, and
   rows the engine could not measure are not fitted;
 - a pre-flight refusal returns the window to exactly where it was, and a
-  pull request with nothing left to review is refused for free.
+  pull request with nothing left to review is refused for free;
+- a trip refuses every claim without costing an attempt, admission resumes
+  once the hold expires, and the calibration decays, bounds every window,
+  floors above zero and survives a restart;
+- repeated trips drive the calibration **monotonically downward** rather than
+  oscillating, and a clean window recovers a point, capped at the configured
+  value.
+
+In `tests/test_cli_engine.py` and `tests/test_worker.py`, for the detector and
+the join:
+
+- a usage limit on stderr and one in the envelope both raise `UsageLimited`,
+  the envelope carrying its measured usage and the stderr case carrying none,
+  while an unrelated failure is still a protocol error;
+- a `UsageLimited` run trips the breaker, settles at what is known rather than
+  at the reservation, leaves the row pending, and is not attempted again while
+  the breaker holds.
 
 And in `tests/test_workspace.py` and `tests/test_exclusions.py`, for the
 exclusions half of layer 2:

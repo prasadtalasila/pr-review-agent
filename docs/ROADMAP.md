@@ -23,6 +23,7 @@ they are reproduced here so they survive the issue being closed.
 | Review worker (claim → run → settle), and its supervisor | implemented, unit tested |
 | Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, unit tested, wired |
 | Publisher (👀, head re-check, one comment per PR) | implemented, unit tested |
+| Circuit breaker and calibration decay | implemented, unit tested |
 | Retention sweep | not started |
 
 The ordering is deliberate: the **budget governor lands before the review
@@ -30,16 +31,15 @@ worker**, so the spending rails exist before anything can spend.
 
 ## 🧭 Next
 
-1. **The budget pieces that still need a running engine:** the circuit
-   breaker and the ladder's 60 % rung. The worker has landed and settled the
-   question the adapter named and could not answer — a review killed on its
-   wall clock leaves tokens spent and no envelope to measure them, so it
-   settles at its full reservation with `unavailable` confidence. See
-   [WORKER.md](WORKER.md#-what-a-failed-run-settles-at). Layer 3's wall clock
-   has landed too, validated below the queue lease; its *token* ceiling did
-   not, because every way to build one assumes an engine that reports tokens,
-   and it belongs with the breaker. See
-   [BUDGET.md](BUDGET.md#where-layer-3s-three-ceilings-ended-up).
+1. **The last budget piece that needs a running engine:** the ladder's 60 %
+   rung. The [circuit breaker](BUDGET.md#-the-circuit-breaker) has landed, so
+   an over-estimated limit is no longer invisible: a usage-limit failure
+   refuses every claim for five hours and decays the effective limits toward
+   the real one. What it has **not** had is a sighting of the real error — see
+   the known gaps. Layer 3's wall clock has landed too, validated below the
+   queue lease; its *token* ceiling did not, because every way to build one
+   assumes an engine that reports tokens, and it belonged with the breaker.
+   See [BUDGET.md](BUDGET.md#where-layer-3s-three-ceilings-ended-up).
 2. **Retention sweep.** Purge content on merge; keep the ledger. It is
    specified in terms of the `runs` table the publisher added, and
    `RunStore.purge_content` is already there waiting for a caller.
@@ -102,7 +102,8 @@ linked.
 - [ ] **Plan lockout is prevented:** with `reviewer_share_pct` configured,
       agent usage never exceeds its share of the session or weekly window
       (**done**), and a usage-limit error trips the breaker and decays the
-      calibrated estimate (with the engine).
+      calibrated estimate (**done** — against a detector whose markers are
+      still unconfirmed; see the known gaps).
 - [x] `budget.enabled: false` takes effect without a restart, and so does
       `publish.dry_run: true`.
 - [x] **Every posted comment is traceable** to a ledger row recording engine,

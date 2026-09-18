@@ -64,7 +64,7 @@ from datetime import datetime, timedelta
 from ._compat import StrEnum
 from .config import BudgetConfig
 from .queue import Claim
-from .store import SqliteStore, to_utc
+from .store import SqliteStore, parse_timestamp, to_utc
 from .triggers.models import TriggerKind
 
 logger = logging.getLogger(__name__)
@@ -99,6 +99,38 @@ DEFAULT_TOKENS_PER_LINE = 40
 
 #: Settled, measurable runs needed before the fit replaces the constant.
 MIN_FIT_SAMPLES = 10
+
+#: How long a trip refuses every claim. ``SESSION`` because it is the
+#: shortest window, and because it is a *duration* rather than a reset time --
+#: which is the only kind of answer available when the plan publishes none.
+#: If the weekly limit was the one that blew, the next attempt trips again and
+#: the calibration keeps shrinking, so the design converges either way rather
+#: than needing the attribution to be right.
+TRIP_HOLD = SESSION
+
+#: What one trip does to the calibration, and what one clean window undoes.
+#: Multiplicative down, additive up: the series converges instead of
+#: oscillating, and a one-off heavy week on the *shared* pool heals rather
+#: than crippling the reviewer for good.
+DECAY_FACTOR = 0.9
+RECOVERY_POINTS = 1
+RECOVERY_PERIOD = SESSION
+
+#: Percentage points, never a float: no drift across restarts, and the same
+#: arithmetic ``BudgetConfig._share`` already uses. Floored at 1 rather than
+#: 0 for the reason ``reviewer_share_pct`` is -- ``_headroom`` divides by
+#: ``window.limit``, so a calibration reaching zero is a crash, not a policy.
+FULL_CALIBRATION = 100
+MIN_CALIBRATION = 1
+
+#: The breaker's whole state: three unrelated scalars, so a key/value table
+#: rather than a row of one thing. Absent means never tripped, which is what
+#: lets an existing database adopt migration 6 with no backfill.
+_STATE_GET = "SELECT key, value FROM budget_state"
+_STATE_SET = """
+INSERT INTO budget_state (key, value) VALUES (:key, :value)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value
+"""
 
 
 class Mode(StrEnum):
@@ -149,6 +181,9 @@ class StopReason(StrEnum):
     REFUSED = "refused"
     #: GitHub or the workspace failed before the engine started.
     INFRASTRUCTURE = "infrastructure"
+    #: The *account's* limit was reached, not this run's ceiling. The one
+    #: reason that trips the circuit breaker rather than being retried.
+    USAGE_LIMIT = "usage_limit"
 
 
 @dataclass(frozen=True)
@@ -188,6 +223,48 @@ class Headroom:
     mode: Mode
     remaining: int
     tightest: str
+
+
+@dataclass(frozen=True)
+class Breaker:
+    """What the last usage-limit failure left behind.
+
+    The defaults are "never tripped", which is what an empty
+    ``budget_state`` reads back as -- so a database that predates migration 6
+    needs no backfill to mean the right thing.
+    """
+
+    calibrated_pct: int = FULL_CALIBRATION
+    tripped_until: datetime | None = None
+    last_trip_at: datetime | None = None
+
+    def tripped(self, now: datetime) -> bool:
+        """Whether claims are still being refused outright."""
+        return self.tripped_until is not None and now < self.tripped_until
+
+    def calibration(self, now: datetime) -> int:
+        """The stored calibration with accrued recovery applied.
+
+        Computed rather than stored, so nothing is written on a read path and
+        the whole rule is a pure function of three values.
+
+        Recovery is additive against a multiplicative decay, which is what
+        makes the series converge downward instead of oscillating. It has to
+        exist at all because the usage pool is *shared*: a trip does not
+        always mean the operator's guess was too high, it can equally mean
+        the maintainer had a heavy week, and a calibration that could only
+        ever be revised downward would leave the reviewer permanently
+        crippled by one of those.
+
+        Because ``RECOVERY_PERIOD`` equals ``TRIP_HOLD``, the first point
+        accrues exactly as the hold expires.
+        """
+        if self.last_trip_at is None:
+            return self.calibrated_pct
+        periods = (now - self.last_trip_at) // RECOVERY_PERIOD
+        return min(
+            FULL_CALIBRATION, self.calibrated_pct + RECOVERY_POINTS * max(0, periods)
+        )
 
 
 _RESERVE = """
@@ -268,7 +345,24 @@ class Governor:
                 "budget.enabled is false: refusing %s", claim.trigger.dedupe_key
             )
             return False
-        headroom = self._headroom(conn, now, actor_id=claim.trigger.actor_id)
+        at = to_utc(now, "now")
+        breaker = _breaker(conn)
+        if breaker.tripped(at):
+            # Ahead of the window arithmetic on purpose: a trip is a fact
+            # about the account, and the arithmetic is the guess it just
+            # contradicted.
+            logger.warning(
+                "circuit breaker tripped until %s: refusing %s",
+                breaker.tripped_until,
+                claim.trigger.dedupe_key,
+            )
+            return False
+        headroom = self._headroom(
+            conn,
+            now,
+            actor_id=claim.trigger.actor_id,
+            calibration=breaker.calibration(at),
+        )
         if not self._allows(headroom, claim):
             return False
         conn.execute(
@@ -329,6 +423,45 @@ class Governor:
                 ).rowcount
                 == 1
             )
+
+    def trip(self, now: datetime) -> int:
+        """Record that the account's real limit was hit; return the new calibration.
+
+        Two things at once, because a usage-limit error is evidence of two
+        different facts. That the account is out *now* -- so nothing is
+        admitted for ``TRIP_HOLD``. And that the configured limits were too
+        high -- so the calibration decays, and every window's effective limit
+        with it.
+
+        The decay applies to the *recovered* value, so recovery accrued since
+        the previous trip is counted before it is undone.
+        """
+        at = to_utc(now, "now")
+        with self._store.transaction() as conn:
+            # Truncated rather than rounded, so every trip is a strict
+            # decrease: rounding stalls at 4, where `round(3.6)` is 4 again
+            # and the calibration stops converging short of its floor.
+            calibrated = max(
+                MIN_CALIBRATION, int(_breaker(conn).calibration(at) * DECAY_FACTOR)
+            )
+            _set_breaker(
+                conn,
+                calibrated_pct=str(calibrated),
+                tripped_until=_stamp(at + TRIP_HOLD),
+                last_trip_at=_stamp(at),
+            )
+        logger.warning(
+            "usage limit reached: refusing every claim for %s, and the effective "
+            "limits are now %d%% of the configured ones",
+            TRIP_HOLD,
+            calibrated,
+        )
+        return calibrated
+
+    def breaker(self) -> Breaker:
+        """The breaker's state, for an operator or a status readout."""
+        with self._store.transaction() as conn:
+            return _breaker(conn)
 
     def estimate(self, reviewed_lines: int) -> int:
         """Predicted tokens for a review of ``reviewed_lines`` lines.
@@ -432,21 +565,32 @@ class Governor:
         Deliberately actor-agnostic: a readout has no contributor to scope
         to, so the per-contributor window belongs to the admission path.
         """
+        at = to_utc(now, "now")
         with self._store.transaction() as conn:
-            return self._headroom(conn, now)
+            return self._headroom(conn, now, calibration=_breaker(conn).calibration(at))
 
     def _headroom(
-        self, conn: sqlite3.Connection, now: datetime, actor_id: int | None = None
+        self,
+        conn: sqlite3.Connection,
+        now: datetime,
+        actor_id: int | None = None,
+        calibration: int = FULL_CALIBRATION,
     ) -> Headroom:
-        """The worst utilisation and the tightest remainder across windows."""
+        """The worst utilisation and the tightest remainder across windows.
+
+        ``calibration`` is what the circuit breaker has learned, so every
+        window is measured against ``min(configured, calibrated)`` rather
+        than against the operator's guess alone.
+        """
         at = to_utc(now, "now")
         windows = self._windows + self._contributor_window(actor_id)
         worst, tightest = 0.0, windows[0]
         remaining = None
         for window in windows:
+            limit = _calibrated(window.limit, calibration)
             used = _used_since(conn, at - window.duration, window.actor_id)
-            worst = max(worst, used / window.limit)
-            left = window.limit - used
+            worst = max(worst, used / limit)
+            left = limit - used
             if remaining is None or left < remaining:
                 remaining, tightest = left, window
         assert remaining is not None  # the window list is never empty
@@ -523,6 +667,34 @@ def _used_since(
         return int(conn.execute(_USED_SINCE, params).fetchone()[0])
     params["actor"] = actor_id
     return int(conn.execute(_USED_SINCE_BY_ACTOR, params).fetchone()[0])
+
+
+def _calibrated(limit: int, calibration: int) -> int:
+    """``limit`` scaled by what the breaker has learned.
+
+    Never below one token: ``_headroom`` divides by this, and a small
+    configured window against a heavily decayed calibration would otherwise
+    reach zero and raise where it should refuse.
+    """
+    return max(1, limit * calibration // FULL_CALIBRATION)
+
+
+def _breaker(conn: sqlite3.Connection) -> Breaker:
+    """Read the breaker's state; every key absent means never tripped."""
+    stored = dict(conn.execute(_STATE_GET).fetchall())
+    tripped_until = stored.get("tripped_until")
+    last_trip_at = stored.get("last_trip_at")
+    return Breaker(
+        calibrated_pct=int(stored.get("calibrated_pct", FULL_CALIBRATION)),
+        tripped_until=None if tripped_until is None else parse_timestamp(tripped_until),
+        last_trip_at=None if last_trip_at is None else parse_timestamp(last_trip_at),
+    )
+
+
+def _set_breaker(conn: sqlite3.Connection, **values: str) -> None:
+    """Write the breaker's state, inside the caller's transaction."""
+    for key, value in values.items():
+        conn.execute(_STATE_SET, {"key": key, "value": value})
 
 
 def _mode_for(utilisation: float) -> Mode:

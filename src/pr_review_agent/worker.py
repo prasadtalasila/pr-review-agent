@@ -56,7 +56,14 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from .budget import Governor, StopReason, Usage, UsageConfidence
-from .engine import EngineTimeout, Outcome, ReviewEngine, ReviewRequest, ReviewResult
+from .engine import (
+    EngineTimeout,
+    Outcome,
+    ReviewEngine,
+    ReviewRequest,
+    ReviewResult,
+    UsageLimited,
+)
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
 from .poller.pulls import fetch_pull_request_facts
@@ -255,6 +262,21 @@ class ReviewWorker:
                 "giving up on %s permanently", claim.trigger.dedupe_key, exc_info=True
             )
             finish = self.queue.abandon
+        except UsageLimited as limited:
+            # The wall is the account's, not this run's, so retrying reaches
+            # it again having spent to get there. The breaker refuses every
+            # claim instead, and the row waits behind it.
+            logger.warning("%s hit the account's usage limit", claim.trigger.dedupe_key)
+            self.governor.trip(_now())
+            # Knowable, in both of its shapes: measured if the engine printed
+            # an envelope, zero if it was refused before doing any work. So
+            # this settles at what happened rather than at the ceiling.
+            usage = limited.usage or Usage(0, UsageConfidence.EXACT)
+            reason = StopReason.USAGE_LIMIT
+            # Unattempted, for the reason `_resume_publication` gives: the
+            # bound caps what one poison trigger may drain, and this trigger
+            # drained nothing -- the account was already out when it arrived.
+            finish = self.queue.release_unattempted
         except EngineError as exc:
             logger.warning(
                 "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
@@ -289,6 +311,10 @@ class ReviewWorker:
         """Run the engine, converting any failure of it into ``EngineError``."""
         try:
             return await self.engine.review(request)
+        except UsageLimited:
+            # Not an engine failure to retry: it is the account's limit, and
+            # `run_one` has an arm of its own for it.
+            raise
         except EngineTimeout as exc:
             raise EngineError(
                 f"{self.engine.name} outlived its wall clock: {exc}",

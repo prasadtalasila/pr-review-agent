@@ -22,7 +22,7 @@ import json
 import logging
 
 from ..budget import Usage, UsageConfidence
-from .cli import CliEngine, EngineProtocolError
+from .cli import CliEngine, EngineProtocolError, UsageLimited
 from .models import (
     Capabilities,
     Finding,
@@ -42,6 +42,25 @@ TOOLS = "Read,Grep,Glob"
 #: What the envelope's ``subtype`` means for publishability. Anything absent
 #: from here is a failure: an unrecognised subtype is not a clean review.
 _TRUNCATING_SUBTYPES = frozenset({"error_max_turns"})
+
+#: How this adapter recognises the account being out of quota, as opposed to
+#: this run being out of its own ceiling. Matched case-insensitively against
+#: the envelope and against stderr, because it is not yet known which of the
+#: two carries it.
+#:
+#: **These markers are a guess, and the one place to correct it.** Issue #20
+#: requires the real failure to be observed before the interface is fixed;
+#: it has not been, because manufacturing one means driving a live
+#: subscription into the wall this whole design exists to avoid. When the
+#: real error is seen, editing this tuple is the entire fix -- no signature
+#: changes, no migration. Until then a miss costs a retry rather than a
+#: wrong trip, which is the safe direction: the breaker refuses work, so a
+#: false positive is more expensive than a false negative.
+_USAGE_LIMIT_MARKERS = (
+    "usage limit reached",
+    "rate_limit_error",
+    "exceeded your account's",
+)
 
 #: Five answers about this adapter *as it is configured*, which is the only
 #: form in which they are true: ``read_only_sandbox`` is a claim about the
@@ -137,10 +156,19 @@ class ClaudeCliEngine(CliEngine):
                 self.expected_version,
             )
 
+    def usage_limited(self, text: str) -> bool:
+        """Whether ``text`` is the CLI saying the *account* is out of quota."""
+        lowered = text.lower()
+        return any(marker in lowered for marker in _USAGE_LIMIT_MARKERS)
+
     def parse(self, stdout: str) -> ReviewResult:
         """Read the result envelope, strictly."""
         envelope = self._envelope(stdout)
         usage = self._usage(envelope)
+        if self.usage_limited(json.dumps(envelope)):
+            # Hit mid-run: the envelope still measured what it spent, so the
+            # breaker is told a real figure rather than the reservation.
+            raise UsageLimited(f"{self.name} reports a usage limit", usage)
         outcome = self._outcome(envelope)
         if outcome is not Outcome.COMPLETED:
             logger.warning(

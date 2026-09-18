@@ -90,6 +90,7 @@ engine had started.
 | :-- | :-- | :-- |
 | before `engine.review` | `0`, `unavailable` | Nothing reached an engine. Provable, not assumed. |
 | in or after `engine.review` | the full reservation | Anything may have been spent, and the governor cannot find out. |
+| `UsageLimited` | `0` or the envelope's figure, `exact` | The one failure where the spend **is** knowable. |
 | nowhere — it succeeded | `result.usage` | What the engine reported. |
 
 In the code this is one variable taking three values, and the assignment
@@ -100,6 +101,21 @@ flag that could disagree with reality.
 Pessimism is the safe direction for a spending control. It is the same
 argument [BUDGET.md](BUDGET.md#a-crashed-workers-reservation-stays-charged)
 already makes for refusing a crashed worker an amnesty.
+
+**`UsageLimited` is the exception that proves the rule.** The ceiling is
+charged because a killed run's spend is *unknowable*; a usage limit is one of
+the few failures where it is not. Refused up front, the CLI did no work and
+the spend is zero; hit mid-run, the CLI still printed an envelope and that
+envelope measured it. So the exception carries the figure when it has one and
+the worker settles at it.
+
+Charging the reservation instead would be worse than merely pessimistic. It
+would write tokens that were never spent into all three rolling windows, and
+because the windows are rolling and ledger rows are never deleted, those
+phantom tokens would keep refusing real runs for up to a week after the
+account had recovered — the ledger quietly taking over the
+[breaker](BUDGET.md#-the-circuit-breaker)'s job, with a far longer time
+constant and nothing in the logs to say so.
 
 ## 🎫 What happens to the row
 
@@ -113,6 +129,7 @@ A failed run has two possible fates and they are not interchangeable.
 | `GitHubClientError` | `release` | 5xx, rate limit, network — transient by construction |
 | `WorkspaceError`, `GitCommandError` | `release` | A failed fetch is a failed network call |
 | the engine raises anything | `release` | May succeed next time; bounded by `max_attempts` |
+| `UsageLimited` | `release`, and the breaker trips | The wall is the *account's*; the row waits behind the breaker rather than being retried into it |
 | `PullRequestTooLarge` | `abandon` | Deterministic on this head |
 | `PayloadError` | `abandon` | Deterministic |
 
@@ -146,6 +163,12 @@ Every adapter is a foreign command-line tool. The worker has no catalogue of
 what one can raise and no way to tell a timeout from a parse error from a
 bug inside it — so the engine call is wrapped, and anything it raises
 becomes `EngineError` and is retried.
+
+`UsageLimited` is the single exception, and it is re-raised rather than
+wrapped. It has to be: retrying it is the specific failure the
+[circuit breaker](BUDGET.md#-the-circuit-breaker) exists to prevent, because
+the wall belongs to the account and a second attempt reaches it again having
+spent to get there.
 
 Narrowing that boundary to the one call is the point: a bug in the *worker*
 is not caught by it, and propagates to the supervisor instead of being

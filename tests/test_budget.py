@@ -5,15 +5,20 @@ that widens what may be spent to add a test pinning the new bound, and these
 are those bounds.
 """
 
+import itertools
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from pr_review_agent.budget import (
     DAILY,
+    DECAY_FACTOR,
     DEFAULT_TOKENS_PER_LINE,
+    MIN_CALIBRATION,
     MIN_FIT_SAMPLES,
+    RECOVERY_PERIOD,
     SESSION,
+    TRIP_HOLD,
     WEEKLY,
     Governor,
     Mode,
@@ -653,3 +658,104 @@ def test_a_refusal_never_contributes_to_the_fit(store):
     governor.preflight(claim, 0, NOON)
     with store.transaction() as conn:
         assert conn.execute("SELECT reviewed_lines FROM ledger").fetchone() == (None,)
+
+
+# -- the circuit breaker ------------------------------------------------
+
+
+def test_a_trip_refuses_every_claim(store):
+    """The wall is the account's, so nothing may be admitted behind it."""
+    governor = Governor(store, budget())
+    governor.trip(NOON)
+
+    assert admit_all(store, governor, [opened(pr=1), mention(comment_id=2)]) == []
+
+
+def test_a_refused_claim_costs_no_attempt(store):
+    """A trip is about the allowance, not the trigger: it must not abandon one."""
+    governor = Governor(store, budget())
+    queue = ReviewQueue(store)
+    queue.enqueue(opened(pr=1), now=NOON)
+    governor.trip(NOON)
+
+    for _ in range(5):
+        assert queue.claim(now=NOON, owner="w", admit=governor.admit) is None
+
+    assert queue.status(opened(pr=1).dedupe_key) is QueueStatus.PENDING
+    assert queue.claim(now=NOON + TRIP_HOLD, owner="w", admit=governor.admit)
+
+
+def test_admission_resumes_once_the_hold_expires(store):
+    governor = Governor(store, budget())
+    governor.trip(NOON)
+
+    assert admit_all(store, governor, [opened(pr=1)], now=NOON + TRIP_HOLD) != []
+
+
+def test_a_trip_decays_the_calibration(store):
+    governor = Governor(store, budget())
+
+    assert governor.trip(NOON) == int(100 * DECAY_FACTOR)
+
+
+def test_the_calibration_bounds_every_window(store):
+    """The effective limit is the configured one times what was learned."""
+    governor = Governor(store, budget())
+    before = governor.headroom(NOON).remaining
+    governor.trip(NOON)
+
+    after = governor.headroom(NOON).remaining
+    assert after == before * int(100 * DECAY_FACTOR) // 100
+
+
+def test_the_calibration_floors_above_zero(store):
+    """Never zero: `_headroom` divides by the limit, so zero would raise."""
+    governor = Governor(store, budget())
+    at = NOON
+    for _ in range(200):
+        governor.trip(at)
+
+    assert governor.breaker().calibrated_pct == MIN_CALIBRATION
+    # Still arithmetic rather than a ZeroDivisionError -- and a window this
+    # small cannot fit a run, so the answer is a refusal either way.
+    later = at + TRIP_HOLD
+    assert governor.headroom(later).remaining < budget().max_run_tokens
+    assert admit_all(store, governor, [opened(pr=1)], now=later) == []
+
+
+def test_repeated_trips_converge_downward(store):
+    """#20's criterion: downward, not oscillation."""
+    governor = Governor(store, budget())
+    seen = [governor.trip(NOON + n * TRIP_HOLD) for n in range(10)]
+
+    assert seen == sorted(seen, reverse=True)
+    assert seen[-1] < seen[0]
+    # Strictly downward while the wall keeps being hit, despite a full
+    # recovery period passing between each trip.
+    assert all(later < earlier for earlier, later in itertools.pairwise(seen))
+
+
+def test_a_clean_window_recovers_a_point(store):
+    governor = Governor(store, budget())
+    governor.trip(NOON)
+    breaker = governor.breaker()
+
+    assert breaker.calibration(NOON) == int(100 * DECAY_FACTOR)
+    assert breaker.calibration(NOON + RECOVERY_PERIOD) == int(100 * DECAY_FACTOR) + 1
+
+
+def test_recovery_caps_at_the_configured_limit(store):
+    """It climbs back to the operator's guess and stops -- never above it."""
+    governor = Governor(store, budget())
+    governor.trip(NOON)
+
+    assert governor.breaker().calibration(NOON + 500 * RECOVERY_PERIOD) == 100
+
+
+def test_the_calibration_survives_a_restart(store):
+    """The whole point of persisting it: a daemon restart is not an amnesty."""
+    Governor(store, budget()).trip(NOON)
+
+    assert Governor(store, budget()).breaker().calibrated_pct == round(
+        100 * DECAY_FACTOR
+    )

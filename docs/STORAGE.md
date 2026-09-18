@@ -129,6 +129,10 @@ CREATE TABLE runs (
     published_at      TEXT,             -- NULL until posted (or dry-run)
     content_purged_at TEXT
 );
+CREATE TABLE budget_state (
+    key   TEXT PRIMARY KEY,           -- calibrated_pct|tripped_until|last_trip_at
+    value TEXT NOT NULL
+);
 ```
 
 `runs` is the **only** table holding review content, and therefore the only
@@ -143,6 +147,14 @@ looked and found nothing.
 `queue.comment_id` and `queue.comment_source` are NULL together for a
 `pr_opened` row: nobody wrote a comment to acknowledge, so the 👀 goes on the
 pull request itself.
+
+`budget_state` holds the [circuit breaker](BUDGET.md#-the-circuit-breaker)'s
+three scalars, and is a separate table from `ledger` for a reason worth being
+explicit about: ledger rows are tokens genuinely consumed and the rolling
+windows **sum** them, so breaker state kept there would be counted as spend.
+Key/value because these are three unrelated values rather than a row of one
+thing, and every key absent is what "never tripped" reads back as — which is
+how a database written before version 9 adopts it with no backfill.
 
 The ledger is append-only and **never** pruned, even when review content is
 purged after a merge: the rolling budget windows are computed from it, so
@@ -187,7 +199,8 @@ watermark tables; version 2 adds the queue; version 3 adds the ledger; version
 budget window; version 5 adds `ledger.reviewed_lines`; version 6 adds
 `ledger.stop_reason`; version 7 adds `queue.comment_id` and
 `queue.comment_source`, which is what lets the publisher acknowledge the
-comment a mention was written in; version 8 adds `runs`.
+comment a mention was written in; version 8 adds `runs`; version 9 adds
+`budget_state`.
 
 **Each migration and its version bump commit together**, in one transaction.
 That is what lets versions 5, 6 and 7 be `ALTER TABLE ADD COLUMN`, which

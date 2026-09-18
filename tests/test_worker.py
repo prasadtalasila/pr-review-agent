@@ -21,6 +21,7 @@ from pr_review_agent.engine import (
     EngineTimeout,
     FakeEngine,
     ReviewRequest,
+    UsageLimited,
 )
 from pr_review_agent.engine.models import Outcome, ReviewResult
 from pr_review_agent.poller.client import GitHubClient, GitHubClientError
@@ -1050,3 +1051,88 @@ async def test_a_dry_run_is_not_re_offered_forever(wired):
     await fixture.worker.run_once()
 
     assert fixture.runs.unpublished_for(REPO, PR) is None
+
+
+# -- the account's own limit -----------------------------------------------
+
+
+class LimitedEngine:
+    """An engine that hits the account's own limit rather than its own."""
+
+    name: str = "limited"
+    capabilities: Capabilities = FULL
+
+    def __init__(self, usage: Usage | None = None) -> None:
+        self.usage = usage
+        self.calls = 0
+
+    async def review(self, request: ReviewRequest) -> ReviewResult:
+        """Refuse the way a CLI out of quota does."""
+        del request
+        self.calls += 1
+        raise UsageLimited("the account is out of quota", self.usage)
+
+
+async def test_a_usage_limit_trips_the_breaker(wired):
+    """The one failure that must stop the next run rather than retry it."""
+    fixture = wired(engine=LimitedEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.governor.breaker().tripped(NOW)
+    assert fixture.governor.breaker().calibrated_pct < 100
+
+
+async def test_a_usage_limit_settles_at_what_is_known_not_the_ceiling(wired):
+    """Refused before doing work: charging the reservation would invent spend.
+
+    Phantom tokens here are not cosmetic. The windows are rolling and ledger
+    rows are never deleted, so a reservation's worth of usage that never
+    happened keeps refusing real runs for up to a week after the account has
+    recovered.
+    """
+    fixture = wired(engine=LimitedEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    (row,) = ledger_rows(fixture.store)
+    assert row[2] == MAX_RUN_TOKENS  # reserved
+    assert row[3] == 0  # used
+    assert row[4] == str(UsageConfidence.EXACT)
+
+
+async def test_a_usage_limit_hit_mid_run_settles_at_the_measured_figure(wired):
+    """The envelope measured it, so the ledger records it."""
+    fixture = wired(engine=LimitedEngine(Usage(321, UsageConfidence.EXACT, "limited")))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    (row,) = ledger_rows(fixture.store)
+    assert row[3] == 321
+
+
+async def test_a_usage_limit_is_recorded_as_its_own_stop_reason(wired):
+    """`GROUP BY stop_reason` has to distinguish it from an engine failure."""
+    fixture = wired(engine=LimitedEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert stop_reasons(fixture.store) == [str(StopReason.USAGE_LIMIT)]
+
+
+async def test_a_usage_limit_leaves_the_row_unattempted(wired):
+    """The account was already out when this trigger arrived: it drained
+    nothing, so counting the attempt would abandon a good review."""
+    fixture = wired(engine=LimitedEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.PENDING
+    # And the breaker, not the queue, is what stops it being attempted again.
+    assert await fixture.worker.run_once() is False
+    assert fixture.engine.calls == 1

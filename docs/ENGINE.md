@@ -268,11 +268,13 @@ engine started is charged its full reservation.
 
 ## 🚧 What lands next
 
-The circuit breaker, and then the publisher. The worker
-[has landed](WORKER.md), and so has layer 3's wall clock:
-`engine.timeout_seconds` is now validated at startup as strictly below the
-queue lease, which is the ceiling the subprocess boundary can actually
-enforce.
+The publisher [has landed](PUBLISHER.md), and so has the
+[circuit breaker](BUDGET.md#-the-circuit-breaker): an adapter now recognises
+the account's own usage limit and raises `UsageLimited`, which trips the
+breaker rather than being retried into the same wall. The worker
+[has landed](WORKER.md) too, and with it layer 3's wall clock —
+`engine.timeout_seconds` is validated at startup as strictly below the queue
+lease, which is the ceiling the subprocess boundary can actually enforce.
 
 **What layer 3 did *not* build is a token-denominated run ceiling**, and this
 page is why. `--max-budget-usd` is denominated in dollars while every window
@@ -284,9 +286,8 @@ tokens, while one that writes a long analysis burns seconds and thousands.
 And watching usage stream past, which is the honest version, assumes an engine
 that streams usage at all — while [`usage_reporting`](#-capabilities) exists
 precisely because one will not. A ceiling only the `claude` adapter could
-honour is the opposite of a seam. It goes to
-[#20](https://github.com/prasadtalasila/pr-review-agent/issues/20) instead,
-whose breaker is the right shape for a bound nobody can enforce mid-run.
+honour is the opposite of a seam. It went to the breaker instead, which is the
+right shape for a bound nobody can enforce mid-run.
 
 Layer 2 is not among them: path exclusions and the
 [pre-flight estimate](BUDGET.md#-the-pre-flight-token-estimate) needed only a

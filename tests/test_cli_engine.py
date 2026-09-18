@@ -19,6 +19,7 @@ from pr_review_agent.engine import (
     Outcome,
     ReviewRequest,
     Severity,
+    UsageLimited,
 )
 from pr_review_agent.engine.claude import TOOLS
 from pr_review_agent.engine.cli import cli_environment
@@ -104,11 +105,13 @@ class Recorder:
         self,
         stdout: str = "",
         *,
+        stderr: str = "",
         returncode: int | None = 0,
         hang: bool = False,
         version: str = "2.1.274 (Claude Code)",
     ):
         self.stdout = stdout
+        self.stderr = stderr
         self.returncode = returncode
         self.hang = hang
         self.version = version
@@ -131,7 +134,7 @@ class Recorder:
         self.stdin = stdin
         if self.hang:
             await asyncio.sleep(3600)
-        return self.stdout.encode(), b""
+        return self.stdout.encode(), self.stderr.encode()
 
     def terminate(self):
         self.stopped = True
@@ -366,3 +369,33 @@ def test_a_diff_full_of_backticks_cannot_end_its_own_fence(tmp_path):
     prompt = build_prompt(request(tmp_path, diff=diff), standards="")
     fence = "`" * 5
     assert prompt.count(fence) == 2
+
+
+# -- the account's own limit, which must not be retried --
+
+
+async def test_a_usage_limit_on_stderr_raises_usage_limited(tmp_path, run):
+    """Refused before doing any work: knowable, and knowably zero."""
+    run(Recorder("", stderr="Claude usage limit reached", returncode=1))
+    with pytest.raises(UsageLimited) as raised:
+        await engine().review(request(tmp_path))
+
+    assert raised.value.usage is None
+
+
+async def test_a_usage_limit_in_the_envelope_carries_its_usage(tmp_path, run):
+    """Hit mid-run: the envelope still measured what it spent."""
+    run(Recorder(envelope(subtype="error_during_execution", error="rate_limit_error")))
+    with pytest.raises(UsageLimited) as raised:
+        await engine().review(request(tmp_path))
+
+    assert raised.value.usage is not None
+    assert raised.value.usage.tokens == sum(USAGE.values())
+    assert raised.value.usage.confidence is UsageConfidence.EXACT
+
+
+async def test_an_unrelated_failure_is_still_a_protocol_error(tmp_path, run):
+    """The breaker refuses work, so a false trip costs more than a retry."""
+    run(Recorder("", stderr="segmentation fault", returncode=139))
+    with pytest.raises(EngineProtocolError):
+        await engine().review(request(tmp_path))

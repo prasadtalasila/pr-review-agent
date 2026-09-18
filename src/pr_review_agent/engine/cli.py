@@ -23,6 +23,7 @@ from abc import ABC, abstractmethod
 from hashlib import sha256
 from pathlib import Path
 
+from ..budget import Usage
 from .models import Capabilities, ReviewRequest, ReviewResult
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,27 @@ class EngineTimeout(EngineError):
     envelope, so nothing measured what it spent. The reservation it leaves
     behind is the caller's to settle.
     """
+
+
+class UsageLimited(EngineError):
+    """The account's own usage limit was reached, not this run's ceiling.
+
+    The one engine failure that must not be retried: the wall is the
+    account's, so a second attempt reaches it again having spent to get
+    there. It trips the circuit breaker instead -- see ``docs/BUDGET.md``.
+
+    ``usage`` is what the run is known to have cost, and it is optional
+    because a usage limit fails in two shapes. Refused up front, the CLI did
+    no work and the spend is known to be *zero*, which the caller supplies.
+    Hit mid-run, the CLI still printed an envelope and that envelope measured
+    the spend, which travels here. Either way it is knowable, which is why
+    this failure does not settle at the full reservation the way a run killed
+    on its wall clock does.
+    """
+
+    def __init__(self, message: str, usage: Usage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
 
 
 class EngineProtocolError(EngineError):
@@ -152,11 +174,28 @@ class CliEngine(ABC):
                 f"{self.name} exceeded {self.timeout_seconds}s and was killed"
             ) from exc
         if process.returncode:
+            complaint = stderr.decode(errors="replace").strip()
+            if self.usage_limited(complaint):
+                # Refused before doing any work, so the spend is known to be
+                # nothing -- which is not the same as unknown, and the
+                # difference is a reservation's worth of allowance.
+                raise UsageLimited(f"{self.name} reports a usage limit: {complaint}")
             raise EngineProtocolError(
-                f"{self.name} exited {process.returncode}: "
-                f"{stderr.decode(errors='replace').strip()}"
+                f"{self.name} exited {process.returncode}: {complaint}"
             )
         return stdout.decode(errors="replace")
+
+    def usage_limited(self, text: str) -> bool:
+        """Whether ``text`` is this tool saying the account is out of quota.
+
+        ``False`` here, because a tool that cannot say so has no such
+        failure to recognise. An adapter that can overrides it -- and that
+        override is the *only* thing standing between a real usage limit and
+        an ordinary retry, so it is deliberately one small predicate rather
+        than something spread across a parser.
+        """
+        del text
+        return False
 
     async def _start(
         self, argv: tuple[str, ...], cwd: Path
