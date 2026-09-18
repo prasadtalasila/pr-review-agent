@@ -139,6 +139,15 @@ _MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX IF NOT EXISTS runs_by_pr ON runs (repo, pr_number);
     """,
+    # The circuit breaker's three scalars. A separate table from `ledger`
+    # because ledger rows are tokens genuinely consumed and the rolling
+    # windows sum them; breaker state is not usage and must not be summed.
+    """
+    CREATE TABLE IF NOT EXISTS budget_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    """,
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

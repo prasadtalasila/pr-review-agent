@@ -131,7 +131,7 @@ def test_a_failed_transaction_rolls_back(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 8
+        assert store.schema_version == SCHEMA_VERSION == 9
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -322,3 +322,22 @@ def test_an_existing_database_adopts_the_runs_table(tmp_path):
     with SqliteStore(path) as reopened:
         assert reopened.schema_version == SCHEMA_VERSION
         assert reopened.watermark("comments") is not None
+
+
+def test_the_breaker_state_arrives_with_the_schema(tmp_path):
+    """Where the circuit breaker persists what it has learned."""
+    with SqliteStore(tmp_path / "state.db") as store, store.transaction() as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(budget_state)")}
+    assert columns == {"key", "value"}
+
+
+def test_an_existing_database_adopts_the_breaker_state(tmp_path):
+    """A v8 store gains it, empty -- which is what "never tripped" reads as."""
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store, store.transaction() as conn:
+        conn.execute("DROP TABLE budget_state")
+        conn.execute("PRAGMA user_version = 8")
+
+    with SqliteStore(path) as reopened, reopened.transaction() as conn:
+        assert reopened.schema_version == SCHEMA_VERSION
+        assert conn.execute("SELECT * FROM budget_state").fetchall() == []

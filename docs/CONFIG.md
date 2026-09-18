@@ -102,9 +102,11 @@ nobody chose. They are required even when `enabled` is `false`, so that
 flipping the kill switch back on over `SIGHUP` cannot fail on a key that was
 never supplied.
 
-Set them **conservatively low**. Until the circuit breaker lands with the
-engine adapter, nothing detects an over-estimate: the governor reports
-healthy utilisation while the real plan limit is already being hit.
+Set them **conservatively low** anyway. The
+[circuit breaker](BUDGET.md#-the-circuit-breaker) now catches an over-estimate
+and decays the effective limits toward the real one, but it only learns by
+hitting the wall: every trip is a lockout the operator could have avoided by
+guessing lower to begin with.
 
 `max_run_tokens` must fit inside the daily allowance — a seventh of the
 weekly limit, after `reviewer_share_pct` — or the file is refused. A run

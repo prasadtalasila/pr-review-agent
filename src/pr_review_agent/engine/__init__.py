@@ -13,6 +13,7 @@ from .cli import (
     EngineProtocolError,
     EngineTimeout,
     EngineUnavailable,
+    UsageLimited,
 )
 from .fake import FULL, FakeEngine
 from .models import (
@@ -41,4 +42,5 @@ __all__ = [
     "ReviewRequest",
     "ReviewResult",
     "Severity",
+    "UsageLimited",
 ]
