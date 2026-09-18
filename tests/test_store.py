@@ -301,3 +301,24 @@ def test_an_existing_database_adopts_the_comment_columns(tmp_path):
                 "SELECT comment_id, comment_source FROM queue"
             ).fetchone()
     assert row == (None, None)
+
+
+def test_runs_arrive_with_the_schema(tmp_path):
+    """The only table holding review content, and so the only one purged."""
+    with SqliteStore(tmp_path / "state.db") as store, store.transaction() as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    assert {"findings", "comment_id", "published_at", "content_purged_at"} <= columns
+
+
+def test_an_existing_database_adopts_the_runs_table(tmp_path):
+    """A v6 store gains it, and its queued rows survive."""
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store:
+        store.advance_watermark("comments", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        with store.transaction() as conn:
+            conn.execute("DROP TABLE runs")
+            conn.execute("PRAGMA user_version = 6")
+
+    with SqliteStore(path) as reopened:
+        assert reopened.schema_version == SCHEMA_VERSION
+        assert reopened.watermark("comments") is not None

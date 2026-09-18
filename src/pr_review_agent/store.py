@@ -121,6 +121,24 @@ _MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE queue ADD COLUMN comment_id INTEGER;
     ALTER TABLE queue ADD COLUMN comment_source TEXT;
     """,
+    # What a paid review produced. The only table holding review content,
+    # and therefore the only one the retention sweep purges; the ledger's
+    # metrics survive that purge because they live elsewhere. See runs.py.
+    """
+    CREATE TABLE IF NOT EXISTS runs (
+        dedupe_key        TEXT PRIMARY KEY,
+        repo              TEXT NOT NULL,
+        pr_number         INTEGER NOT NULL,
+        head_sha          TEXT NOT NULL,
+        outcome           TEXT NOT NULL,
+        findings          TEXT NOT NULL,
+        comment_id        INTEGER,
+        recorded_at       TEXT NOT NULL,
+        published_at      TEXT,
+        content_purged_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS runs_by_pr ON runs (repo, pr_number);
+    """,
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

@@ -1,0 +1,220 @@
+"""What a paid review produced, kept so publishing it can be retried.
+
+Everything before this module is recoverable by running it again. A review is
+not: the tokens are spent by the time the publisher is asked, so a GitHub
+write that fails at the last step must not cost a second review to recover
+from. Recording the findings *before* publishing is what makes the retry
+publish-only, and it is the whole reason this table exists.
+
+**One row per trigger, keyed the same way the queue and the ledger are.**
+``dedupe_key`` joins all three, which is what turns "every posted comment is
+traceable to a ledger row recording engine, model, mode, usage and
+confidence" into a query rather than a convention.
+
+**The comment id is written per run and read per pull request.** The agent
+keeps one comment per pull request and rewrites it on re-review, so the
+question asked at publish time is never "what did this run post" but "what
+does this pull request already have" -- answered by the newest run for that
+pull request carrying an id, which is what ``runs_by_pr`` serves.
+
+**Findings are JSON text rather than a child table.** They are written once,
+read once and purged wholesale; no query selects on a finding's path, line or
+severity. A child table would add a migration, a join and a cascade to store
+a list nobody queries into.
+
+**A purge is not an empty review.** ``content_purged_at`` is stamped
+separately from emptying ``findings``, because a run whose content was
+deleted after the pull request merged has to stay distinguishable from a run
+that looked and found nothing -- the same distinction ``Outcome`` keeps
+between ``TRUNCATED`` and a clean empty result, and ``UsageConfidence``
+keeps between ``unavailable`` and zero. A purged run is never offered for
+publication: there is nothing left to post.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from datetime import datetime
+
+from .engine import Finding, Outcome, ReviewResult, Severity
+from .store import SqliteStore, to_utc
+from .triggers.models import Trigger
+
+logger = logging.getLogger(__name__)
+
+_RECORD = """
+INSERT INTO runs
+    (dedupe_key, repo, pr_number, head_sha, outcome, findings, recorded_at)
+VALUES (:key, :repo, :pr, :sha, :outcome, :findings, :now)
+ON CONFLICT(dedupe_key) DO UPDATE SET
+    head_sha = :sha, outcome = :outcome, findings = :findings, recorded_at = :now
+"""
+
+# Oldest first, so a backlog of unpublished runs drains in the order it was
+# reviewed. `content_purged_at IS NULL` because a purged run has no findings
+# left and publishing it would post an empty review over a real one.
+_UNPUBLISHED = """
+SELECT dedupe_key, repo, pr_number, head_sha, outcome, findings, comment_id
+FROM runs
+WHERE repo = :repo AND pr_number = :pr
+  AND published_at IS NULL AND content_purged_at IS NULL
+ORDER BY recorded_at, rowid
+LIMIT 1
+"""
+
+_MARK_PUBLISHED = """
+UPDATE runs SET published_at = :now, comment_id = :comment
+WHERE dedupe_key = :key AND published_at IS NULL
+"""
+
+# The newest comment this pull request has, which is the one edited in place.
+_COMMENT_FOR_PR = """
+SELECT comment_id FROM runs
+WHERE repo = :repo AND pr_number = :pr AND comment_id IS NOT NULL
+ORDER BY recorded_at DESC, rowid DESC
+LIMIT 1
+"""
+
+# `findings` is emptied rather than set NULL: the column is NOT NULL, and an
+# empty list is what a reader of a purged row should see.
+_PURGE = """
+UPDATE runs SET findings = '[]', content_purged_at = :now
+WHERE repo = :repo AND pr_number = :pr AND content_purged_at IS NULL
+"""
+
+
+@dataclass(frozen=True)
+class RecordedRun:
+    """One completed review, as it was stored."""
+
+    dedupe_key: str
+    repo: str
+    pr_number: int
+    head_sha: str
+    outcome: Outcome
+    findings: tuple[Finding, ...]
+    comment_id: int | None
+
+
+class RunStore:
+    """Durable record of what each paid review produced."""
+
+    def __init__(self, store: SqliteStore) -> None:
+        self._store = store
+
+    def record(
+        self,
+        trigger: Trigger,
+        *,
+        head_sha: str,
+        result: ReviewResult,
+        now: datetime,
+    ) -> None:
+        """Store what this run produced, before anything is posted.
+
+        ``head_sha`` is passed rather than read off the trigger: a mention's
+        trigger carries no sha, and the one that matters is the head the
+        review actually ran against, which the worker resolved when it
+        claimed.
+        """
+        with self._store.transaction() as conn:
+            conn.execute(
+                _RECORD,
+                {
+                    "key": trigger.dedupe_key,
+                    "repo": trigger.repo,
+                    "pr": trigger.pr_number,
+                    "sha": head_sha,
+                    "outcome": str(result.outcome),
+                    "findings": _dump(result.findings),
+                    "now": _stamp(now),
+                },
+            )
+
+    def unpublished_for(self, repo: str, pr_number: int) -> RecordedRun | None:
+        """The oldest recorded run for this pull request still to be posted."""
+        with self._store.transaction() as conn:
+            row = conn.execute(_UNPUBLISHED, {"repo": repo, "pr": pr_number}).fetchone()
+        return None if row is None else _run(row)
+
+    def mark_published(
+        self, dedupe_key: str, *, comment_id: int, now: datetime
+    ) -> bool:
+        """Record that this run's comment is up; ``False`` if it already was."""
+        with self._store.transaction() as conn:
+            return (
+                conn.execute(
+                    _MARK_PUBLISHED,
+                    {"key": dedupe_key, "comment": comment_id, "now": _stamp(now)},
+                ).rowcount
+                == 1
+            )
+
+    def comment_for_pull_request(self, repo: str, pr_number: int) -> int | None:
+        """The comment the agent already has on this pull request, if any."""
+        with self._store.transaction() as conn:
+            row = conn.execute(
+                _COMMENT_FOR_PR, {"repo": repo, "pr": pr_number}
+            ).fetchone()
+        return None if row is None else row[0]
+
+    def purge_content(self, repo: str, pr_number: int, *, now: datetime) -> int:
+        """Delete the review content for this pull request; how many rows.
+
+        No caller yet -- the retention sweep is the next component, and it is
+        specified in terms of this table. The shape of the purge is decided
+        here because deciding it later would mean deciding it against rows
+        already written the wrong way.
+        """
+        with self._store.transaction() as conn:
+            return conn.execute(
+                _PURGE, {"repo": repo, "pr": pr_number, "now": _stamp(now)}
+            ).rowcount
+
+
+def _dump(findings: tuple[Finding, ...]) -> str:
+    """Findings as stored JSON."""
+    return json.dumps(
+        [
+            {
+                "path": f.path,
+                "line": f.line,
+                "severity": str(f.severity),
+                "body": f.body,
+            }
+            for f in findings
+        ]
+    )
+
+
+def _load(raw: str) -> tuple[Finding, ...]:
+    """Findings as read back."""
+    return tuple(
+        Finding(
+            path=item["path"],
+            line=item["line"],
+            severity=Severity(item["severity"]),
+            body=item["body"],
+        )
+        for item in json.loads(raw)
+    )
+
+
+def _run(row: tuple) -> RecordedRun:
+    """Build a :class:`RecordedRun` from an ``_UNPUBLISHED`` row."""
+    return RecordedRun(
+        dedupe_key=row[0],
+        repo=row[1],
+        pr_number=row[2],
+        head_sha=row[3],
+        outcome=Outcome(row[4]),
+        findings=_load(row[5]),
+        comment_id=row[6],
+    )
+
+
+def _stamp(value: datetime) -> str:
+    """Format a timestamp for storage, rejecting a naive one."""
+    return to_utc(value, "run timestamp").isoformat()
