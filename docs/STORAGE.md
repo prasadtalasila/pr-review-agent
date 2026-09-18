@@ -111,7 +111,8 @@ CREATE TABLE ledger (
     engine           TEXT,            -- NULL until settled
     model            TEXT,
     reserved_at      TEXT NOT NULL,   -- aware UTC, ISO-8601
-    settled_at       TEXT
+    settled_at       TEXT,
+    reviewed_lines   INTEGER          -- what the estimate is fitted against
 );
 ```
 
@@ -130,19 +131,34 @@ rolling window rather than being released when its lease lapses — see
 `repo` and `pr_number` are absent for the same reason: both dedupe-key
 namespaces already carry them, and `queue` rows are kept forever.
 
+`reviewed_lines` is the one column that exists for something other than the
+windows: it is the predictor the
+[pre-flight estimate](BUDGET.md#-the-pre-flight-token-estimate) fits a
+tokens-per-line rate against. It stays NULL on a row that reviewed nothing —
+a refusal, or a run recorded before the column existed — so those rows never
+enter the fit.
+
 ## 🔢 Migrations
 
 Schema changes are an ordered list applied on connect, with the file's
 `PRAGMA user_version` recording how many have run. Version 1 is the ETag and
 watermark tables; version 2 adds the queue; version 3 adds the ledger; version
 4 indexes the ledger by `(actor_id, reserved_at)` for the per-contributor
-budget window.
+budget window; version 5 adds `ledger.reviewed_lines`.
 
-Every statement is `IF NOT EXISTS`, for two reasons that both come down to
-re-runnability. A database created before the list existed already carries
-version 1's tables at `user_version = 0`, and has to be able to adopt it. And a
-crash between applying a migration and bumping the version must leave the
-migration re-runnable rather than the file wedged.
+**Each migration and its version bump commit together**, in one transaction.
+That is what lets version 5 be an `ALTER TABLE ADD COLUMN`, which SQLite has
+no `IF NOT EXISTS` form for and which fails outright on a second application.
+A crash mid-migration rolls the pair back and the migration is simply
+re-applied.
+
+The `CREATE` statements are still `IF NOT EXISTS`, but now for one reason
+rather than two: a database created before the list existed already carries
+version 1's tables at `user_version = 0`, and has to be able to adopt it.
+
+`executescript` would be the natural way to run a multi-statement migration
+and is deliberately not used — it issues a `COMMIT` of its own first, which
+would split the script from its version bump.
 
 ## 🔐 Write transactions
 

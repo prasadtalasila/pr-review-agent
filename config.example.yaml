@@ -118,10 +118,13 @@ budget:
   # per_contributor_pct: 50
 
   # Optional (defaults 100 / 5000). Layer 2's diff-size caps: a pull request
-  # over either is refused before anything is fetched. Both exist because
-  # neither bounds the other -- 2000 one-line files pass a line cap and
-  # still bury the engine, and one 50000-line generated file passes a file
-  # cap.
+  # over either is refused before a worktree is created and before any diff
+  # reaches the reviewer. Both exist because neither bounds the other --
+  # 2000 one-line files pass a line cap and still bury the engine, and one
+  # 50000-line generated file passes a file cap.
+  #
+  # They are measured on what SURVIVES excluded_paths below, so a vendored
+  # dependency bump is not refused for lines the reviewer never sees.
   #
   # They bound WHAT THE REVIEWER READS, not the disk. A fetch pulls every
   # object reachable from the head, so a commit that adds a large blob and a
@@ -133,6 +136,35 @@ budget:
   # SIGHUP.
   max_changed_files: 100
   max_changed_lines: 5000
+
+  # Optional. Paths excluded from the caps above AND from the diff the
+  # reviewer is shown -- one list, one mechanism, so the two cannot drift
+  # apart. Reviewing a lockfile is close to worthless while its thousands of
+  # lines still count against a cap, which makes this the largest saving
+  # available for zero tokens.
+  #
+  # Glob patterns, matched at any depth via "**/". SETTING THIS REPLACES THE
+  # LIST BELOW rather than adding to it; an empty list excludes nothing. A
+  # pattern may not begin with ":", because the pathspec magic is the
+  # agent's to supply.
+  excluded_paths:
+    - '**/package-lock.json'
+    - '**/yarn.lock'
+    - '**/pnpm-lock.yaml'
+    - '**/poetry.lock'
+    - '**/Cargo.lock'
+    - '**/Gemfile.lock'
+    - '**/composer.lock'
+    - '**/go.sum'
+    - '**/vendor/**'
+    - '**/node_modules/**'
+    - '**/third_party/**'
+    - '**/*.pb.go'
+    - '**/*_pb2.py'
+    - '**/*.generated.*'
+    - '**/*.min.js'
+    - '**/*.min.css'
+    - '**/*.map'
 
 # ---------------------------------------------------------------------------
 # store -- optional. Where the daemon's memory lives.

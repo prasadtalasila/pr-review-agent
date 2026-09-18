@@ -16,7 +16,7 @@ worker: the spending rails exist before anything can spend.
 | Layer | Mechanism | State |
 | :-- | :-- | :-- |
 | 1 | Allowlist, bot filter, draft skip, cold-start watermark | done — [TRIGGERS.md](TRIGGERS.md) |
-| 2 | Path exclusions, diff-size caps, pre-flight token estimate | diff-size caps **done** — [WORKSPACE.md](WORKSPACE.md); the rest with the engine adapter |
+| 2 | Path exclusions, diff-size caps, pre-flight token estimate | **done** — [WORKSPACE.md](WORKSPACE.md) and below |
 | 3 | Per-run ceiling: max tokens, max turns, wall-clock timeout | `max_run_tokens` done; enforcement with the engine |
 | 4 | Rolling windows and pacing, by reserve-then-settle | **done** |
 | 5 | A degradation ladder rather than a hard stop | **done** |
@@ -24,19 +24,19 @@ worker: the spending rails exist before anything can spend.
 Layer 1 is the classifier — it *is* the first budget layer, which is why its
 rejections are logged at a level an operator actually sees.
 
-Layer 3, and the rest of layer 2, need a diff in hand and a running turn to
-abort, so they belong to the phase that has both. `max_run_tokens` lands
-here because the governor reserves against it; `max_turns` and
-`wall_clock_seconds` do not, because nothing would read them and
-[CONFIG.md](CONFIG.md#-the-rule-the-loader-follows)'s rule is that a setting
-which does nothing is exactly the failure to avoid.
+Layer 3 needs a *running turn* to abort, so it belongs to the phase that has
+one. `max_run_tokens` lands here because the governor reserves against it;
+`max_turns` and `wall_clock_seconds` do not, because nothing would read them
+and [CONFIG.md](CONFIG.md#-the-rule-the-loader-follows)'s rule is that a
+setting which does nothing is exactly the failure to avoid.
 
-**Layer 2's diff-size caps arrived early**, with the
-[workspace](WORKSPACE.md): the checkout is the first thing that needs them,
-because it has to decide whether to fetch a pull request at all.
-`max_changed_files` and `max_changed_lines` are enforced before the first
-git invocation, and both exist because neither bounds the other — two
-thousand one-line files pass a line cap and still bury the engine.
+Layer 2 needs only a *diff*, which is why it lands before the engine rather
+than with it.
+
+**The diff-size caps arrived first**, with the [workspace](WORKSPACE.md).
+`max_changed_files` and `max_changed_lines` both exist because neither bounds
+the other — two thousand one-line files pass a line cap and still bury the
+engine, and one fifty-thousand-line generated file passes a file cap.
 
 They are in this section, rather than beside the code that reads them,
 because every spending cap belongs in one place. Being here also makes them
@@ -47,6 +47,140 @@ Be clear about what they bound: **the engine's input, not the disk**. A
 fetch pulls every object reachable from the head, so a commit that adds a
 large blob and a later one that removes it still downloads it while
 reporting no changed lines at all.
+
+## 🚫 Path exclusions
+
+```yaml
+budget:
+  excluded_paths:
+    - '**/package-lock.json'
+    - '**/vendor/**'
+    - '**/*.min.js'
+```
+
+Lockfiles, vendored trees, generated code and minified bundles. Reviewing
+them is close to worthless and they dominate diff size, which makes this the
+largest saving available for zero tokens.
+
+**Exclusions apply to the size caps and to the diff the engine is shown, and
+they are the same list applied by the same mechanism.** Each pattern becomes
+a git pathspec — `:(exclude,glob)<pattern>` — passed to both the
+`git diff --numstat` the caps are measured on and the `git diff` that
+produces `Checkout.diff`. They cannot drift apart, because there is only one
+of them.
+
+That second half holds by construction rather than by care:
+[ENGINE.md](ENGINE.md)'s `ReviewRequest` carries the checkout and
+deliberately does not repeat the diff beside it, so `Checkout.diff` is the
+only diff in the system.
+
+Both halves are needed. Applying exclusions to the engine alone would leave a
+vendored-dependency bump refused on a size cap for lines the engine was never
+going to see — a pull request rejected for content that does not exist.
+
+Setting the key **replaces** the default list rather than adding to it, and
+an empty list excludes nothing: a repository that genuinely reviews its
+lockfiles is a real repository. A pattern may not begin with `:`, because the
+pathspec magic is the agent's to supply and a pattern that rewrites its own
+meaning is not something an operator can predict from reading their own
+configuration file.
+
+### The size gate moved to make this possible
+
+It now runs **after** the fetch, on `--numstat`, rather than before it on the
+API's totals. That is not a preference; `GET /pulls/{n}` reports three
+aggregate integers with no per-path breakdown, and a lockfile cannot be
+subtracted from an integer.
+
+So "refused before anything is written to disk" is now "refused before a
+worktree exists and before any diff can reach an engine". What was given up
+is affordable: a fetch costs bandwidth and disk, and **these caps are a
+spending control over tokens**. The section above already conceded that they
+bound what the engine reads rather than what the fetch downloads — the
+property surrendered was never the one doing the work.
+
+The alternative was `GET /pulls/{n}/files`, which paginates to thirty
+requests per claimed trigger, truncates at three thousand files, and is the
+endpoint [WORKSPACE.md](WORKSPACE.md#-why-a-checkout-rather-than-the-api-diff)
+already rejected for the diff.
+
+A refusal logs both figures — what survived exclusion and what the API
+reported. "Refused at 3 files" is baffling beside a pull request GitHub says
+has 900; the gap between the two numbers *is* the explanation.
+
+## 🔮 The pre-flight token estimate
+
+The last refusal that costs nothing. `Governor.preflight` predicts a run's
+cost and refuses it when the prediction exceeds `max_run_tokens` — or when
+nothing is left to review after exclusions, which a lockfile-only pull
+request now is.
+
+```text
+estimate = rate × reviewable lines
+```
+
+No fitted intercept. A review has a fixed overhead — the prompt, the
+instructions, the first file read — but the only question asked here is
+whether a pull request is *large* enough to refuse, and under-predicting a
+fifty-line change is harmless because a fifty-line change is nowhere near the
+cap. The fixed cost is amortised into the rate, where it makes large diffs
+predict slightly high: the safe direction.
+
+`rate` is fitted against the ledger — `Σ used_tokens ÷ Σ reviewed_lines` —
+over settled rows whose `usage_confidence` is `exact`. Rows from an engine
+that reported no usage are excluded, because fitting a rate to a run nobody
+measured would turn [the known-weaker guarantee](#-the-ledger) into a
+confidently wrong number.
+
+`reviewed_lines` is the column migration 5 added, and it is written by
+`settle` from `Checkout.reviewed` — **never by the engine.**
+`ReviewResult.usage` *is* `budget.Usage`, so putting the field there would
+make an adapter responsible for reporting the size it was handed, and an
+adapter that under-reported would bias the rate downward. A spending control
+must not take its input from the thing it controls.
+
+### The cold start errs high
+
+A fresh database has no rows to fit against, and the first runs are exactly
+when an over-estimate is cheapest to get wrong. So **40 tokens per line until
+ten fittable rows exist**, after which the fit takes over outright.
+
+Forty is above what a review is expected to cost, which over-refuses rather
+than overspending; against the shipped `max_run_tokens` it puts the threshold
+at 1,500 reviewable lines. Neither number is configurable: an operator's
+escape hatch is `max_run_tokens`, which they already have to choose, and a
+second knob multiplying into it is CONFIG.md's failure mode.
+
+Declining to estimate until data existed was the alternative, and it leaves
+the least-calibrated moment unguarded — a run that truly costs 200,000
+tokens against a 60,000 reservation completes, and the overrun surfaces at
+settle, after the tokens are gone. That overrun is precisely what reaches
+`exhausted`.
+
+A permanent floor — `max(fitted, 40)` — was also rejected. After five hundred
+runs proving reviews cost twelve tokens a line it would still refuse pull
+requests the agent has direct evidence it can afford. A rate that can only be
+revised upward is not a fit.
+
+### Refusing releases the reservation
+
+The reservation is taken by `admit`, inside the claim, before the pull
+request's size is knowable — the facts read happens once per *claimed*
+trigger, because reading it per open pull request per cycle is the design
+[POLLER.md](POLLER.md) exists to refuse. So a pre-flight refusal cannot
+happen before a reservation exists; what it must do instead is hand the
+reservation straight back.
+
+`preflight` settles the row at zero tokens **in the same call as the
+refusal**. A caller that refused and forgot to settle would leave a full
+reservation charged against every window until it aged out, because
+[nothing releases a reservation early](#a-crashed-workers-reservation-stays-charged)
+by design. Making the decision and the release one call means that failure
+cannot be introduced by a caller.
+
+A refused row records `used_tokens = 0` at confidence `exact` — the cost is
+not unknown, it is known to be nothing — and leaves `reviewed_lines` NULL, so
+a refusal never contributes to the fit.
 
 ## 🧍 Human headroom
 
@@ -254,7 +388,20 @@ cases in `tests/test_queue.py`:
 - `settle` releases the remainder and records engine, model and confidence;
 - `budget.enabled: false` admits nothing, and `SIGHUP` flips it without a
   restart;
-- a `SIGHUP` against an unparseable file keeps the previous config in force.
+- a `SIGHUP` against an unparseable file keeps the previous config in force;
+- an empty ledger estimates at the documented constant and still refuses an
+  oversized pull request, the fit takes over at the tenth fittable row, and
+  rows the engine could not measure are not fitted;
+- a pre-flight refusal returns the window to exactly where it was, and a
+  pull request with nothing left to review is refused for free.
+
+And in `tests/test_workspace.py` and `tests/test_exclusions.py`, for the
+exclusions half of layer 2:
+
+- a vendored-only change over the line cap is refused without exclusions and
+  admitted with them;
+- an excluded path appears in neither the size count nor the diff;
+- a binary file counts as one file and no lines.
 
 Per-run ceilings terminating an over-budget review is layer 3, and lands with
 the engine adapter.

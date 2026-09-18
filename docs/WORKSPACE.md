@@ -141,11 +141,28 @@ reach outside itself.
 budget:
   max_changed_files: 100
   max_changed_lines: 5000
+  excluded_paths: ['**/package-lock.json', '**/vendor/**', …]
 ```
 
-A pull request over either cap raises `PullRequestTooLarge` **before the
-first git invocation**, which is what makes "refused before anything is
-written to disk" literally rather than approximately true.
+A pull request over either cap raises `PullRequestTooLarge` **before a
+worktree exists and before any diff can reach an engine**.
+
+The caps are measured on `git diff --numstat` with `excluded_paths` applied,
+not on the API's `additions` / `deletions` / `changed_files`. That is why the
+gate runs after the fetch rather than before it: those three are aggregates
+with no per-path breakdown, and a lockfile cannot be subtracted from an
+integer. The trade is set out in
+[BUDGET.md](BUDGET.md#the-size-gate-moved-to-make-this-possible) — a fetch
+costs bandwidth, and these caps bound tokens.
+
+The same pathspec arguments produce `Checkout.diff`, so the engine is shown
+exactly what the caps counted. `Checkout.reviewed` carries those two numbers
+for the [pre-flight estimate](BUDGET.md#-the-pre-flight-token-estimate).
+
+A refusal now happens between the fetch and the worktree, where a run-scoped
+ref already exists, so the ref is deleted on the way out. Before exclusions
+the gate fired before the fetch and there was nothing to clean up; leaving it
+would leak one ref per refused pull request until the next startup sweep.
 
 They live in `budget` rather than in `workspace` so that every spending cap
 stays in one specification and one section — see

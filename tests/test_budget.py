@@ -11,6 +11,8 @@ import pytest
 
 from pr_review_agent.budget import (
     DAILY,
+    DEFAULT_TOKENS_PER_LINE,
+    MIN_FIT_SAMPLES,
     SESSION,
     WEEKLY,
     Governor,
@@ -441,3 +443,111 @@ def _burn_to(governor, queue, mode):
         assert claim is not None, f"never reached {mode}"
         queue.complete(claim)
         index += 1
+
+
+# -- the pre-flight estimate --------------------------------------------
+
+
+def fit_rows(store, governor, count, *, tokens, lines, confidence=None):
+    """Settle ``count`` runs, each spending ``tokens`` over ``lines`` lines."""
+    claims = admit_all(store, governor, [opened(pr=n) for n in range(count)])
+    assert len(claims) == count, "the window ran out before the sample did"
+    for claim in claims:
+        governor.settle(
+            claim,
+            Usage(
+                tokens=tokens,
+                confidence=confidence or UsageConfidence.EXACT,
+                engine="fake",
+            ),
+            now=NOON,
+            reviewed_lines=lines,
+        )
+
+
+def test_an_empty_ledger_estimates_at_the_documented_constant(store):
+    """The cold start errs high, deliberately.
+
+    A fresh database has nothing to fit against, and the first runs are when
+    an over-estimate is cheapest to get wrong.
+    """
+    governor = Governor(store, budget())
+    assert governor.estimate(100) == 100 * DEFAULT_TOKENS_PER_LINE
+
+
+def test_an_empty_ledger_still_refuses_an_oversized_pull_request(store):
+    """Issue #17: the cold start is guarded, not exempt."""
+    governor = Governor(store, budget())
+    (claim,) = admit_all(store, governor, [opened(pr=1)])
+    over = budget().max_run_tokens // DEFAULT_TOKENS_PER_LINE + 1
+    assert governor.preflight(claim, over, NOON) is False
+
+
+def test_the_fit_takes_over_once_the_sample_exists(store):
+    """Evidence replaces the guess outright -- there is no floor under it."""
+    governor = Governor(store, budget(weekly_tokens=250_000, session_tokens=250_000))
+    fit_rows(store, governor, MIN_FIT_SAMPLES, tokens=300, lines=100)
+    assert governor.estimate(100) == 300
+    assert governor.estimate(100) < 100 * DEFAULT_TOKENS_PER_LINE
+
+
+def test_one_sample_short_keeps_the_constant(store):
+    governor = Governor(store, budget(weekly_tokens=250_000, session_tokens=250_000))
+    fit_rows(store, governor, MIN_FIT_SAMPLES - 1, tokens=300, lines=100)
+    assert governor.estimate(100) == 100 * DEFAULT_TOKENS_PER_LINE
+
+
+def test_rows_the_engine_could_not_measure_are_not_fitted(store):
+    """`estimated` and `unavailable` describe a run nobody measured.
+
+    Fitting a rate to them would turn the weaker guarantee ENGINE.md
+    describes into a confidently wrong number.
+    """
+    governor = Governor(store, budget(weekly_tokens=250_000, session_tokens=250_000))
+    fit_rows(
+        store,
+        governor,
+        MIN_FIT_SAMPLES,
+        tokens=300,
+        lines=100,
+        confidence=UsageConfidence.ESTIMATED,
+    )
+    assert governor.estimate(100) == 100 * DEFAULT_TOKENS_PER_LINE
+
+
+def test_a_refused_run_hands_its_reservation_straight_back(store):
+    """Issue #17's criterion, honoured as "released" rather than "never taken".
+
+    The reservation is taken inside the claim, before the pull request's size
+    is knowable. What must not happen is that a refusal leaves it charged.
+    """
+    governor = Governor(store, budget())
+    (claim,) = admit_all(store, governor, [opened(pr=1)])
+    assert governor.headroom(NOON).remaining < budget().daily_limit
+
+    assert governor.preflight(claim, 10_000, NOON) is False
+    assert governor.headroom(NOON).remaining == budget().daily_limit
+
+
+def test_an_affordable_pull_request_keeps_its_reservation(store):
+    governor = Governor(store, budget())
+    (claim,) = admit_all(store, governor, [opened(pr=1)])
+    assert governor.preflight(claim, 1, NOON) is True
+    assert governor.headroom(NOON).remaining < budget().daily_limit
+
+
+def test_nothing_left_to_review_is_refused_for_free(store):
+    """A lockfile-only pull request has nothing in it after exclusions."""
+    governor = Governor(store, budget())
+    (claim,) = admit_all(store, governor, [opened(pr=1)])
+    assert governor.preflight(claim, 0, NOON) is False
+    assert governor.headroom(NOON).remaining == budget().daily_limit
+
+
+def test_a_refusal_never_contributes_to_the_fit(store):
+    """It reviewed no lines, so it says nothing about tokens per line."""
+    governor = Governor(store, budget())
+    (claim,) = admit_all(store, governor, [opened(pr=1)])
+    governor.preflight(claim, 0, NOON)
+    with store.transaction() as conn:
+        assert conn.execute("SELECT reviewed_lines FROM ledger").fetchone() == (None,)

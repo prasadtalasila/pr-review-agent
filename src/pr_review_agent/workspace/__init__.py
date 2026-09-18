@@ -6,10 +6,17 @@ See ``docs/WORKSPACE.md``.
 """
 
 from .gitcmd import GitCommandError, WorkspaceError
-from .repo import Checkout, PullRequestFacts, PullRequestTooLarge, Workspace
+from .repo import (
+    Checkout,
+    DiffSize,
+    PullRequestFacts,
+    PullRequestTooLarge,
+    Workspace,
+)
 
 __all__ = [
     "Checkout",
+    "DiffSize",
     "GitCommandError",
     "PullRequestFacts",
     "PullRequestTooLarge",

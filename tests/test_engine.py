@@ -20,7 +20,7 @@ from pr_review_agent.engine import (
 from pr_review_agent.queue import ReviewQueue
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
-from pr_review_agent.workspace import Checkout, PullRequestFacts
+from pr_review_agent.workspace import Checkout, DiffSize, PullRequestFacts
 
 FACTS = PullRequestFacts(
     number=7,
@@ -47,6 +47,7 @@ def request(tmp_path: Path) -> ReviewRequest:
         head_sha="a" * 40,
         merge_base="b" * 40,
         diff="--- a/x\n+++ b/x\n",
+        reviewed=DiffSize(files=1, lines=1),
     )
     return ReviewRequest(
         checkout=checkout, facts=FACTS, trigger=TRIGGER, mode=Mode.FULL

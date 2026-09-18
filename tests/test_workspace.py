@@ -4,9 +4,15 @@ import asyncio
 import sys
 
 import pytest
-from conftest import PR_NUMBER, git
+from conftest import PR_NUMBER, REVIEWABLE_LINES, VENDORED_LINES, git
 
-from pr_review_agent.workspace import PullRequestFacts, PullRequestTooLarge
+from pr_review_agent.workspace import (
+    DiffSize,
+    PullRequestFacts,
+    PullRequestTooLarge,
+)
+
+VENDORED = ("**/vendor/**",)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -72,40 +78,134 @@ async def test_head_sha_is_resolved_when_the_trigger_carried_none(
         assert checkout.head_sha == git_remote.head_sha
 
 
-async def test_too_many_changed_lines_is_refused_before_any_disk_write(
-    workspace, git_remote, tmp_path
+async def test_too_many_changed_lines_is_refused_before_a_worktree_exists(
+    workspace, git_remote
 ):
     with pytest.raises(PullRequestTooLarge, match="max_changed_lines"):
-        async with workspace.checkout(facts(git_remote, additions=9000), **CAPS):
+        async with workspace.checkout(
+            facts(git_remote), max_changed_files=100, max_changed_lines=1
+        ):
             pass
-    assert not (tmp_path / "cache").exists()
+    assert not workspace.runs.exists()
 
 
-async def test_too_many_changed_files_is_refused_before_any_disk_write(
-    workspace, git_remote, tmp_path
+async def test_too_many_changed_files_is_refused_before_a_worktree_exists(
+    workspace, git_remote
 ):
     with pytest.raises(PullRequestTooLarge, match="max_changed_files"):
-        async with workspace.checkout(facts(git_remote, changed_files=9000), **CAPS):
+        async with workspace.checkout(
+            facts(git_remote), max_changed_files=1, max_changed_lines=5000
+        ):
             pass
-    assert not (tmp_path / "cache").exists()
+    assert not workspace.runs.exists()
 
 
-async def test_the_refusal_names_the_cap_and_the_numbers(workspace, git_remote):
+async def test_a_refused_pull_request_leaves_no_run_ref_behind(workspace, git_remote):
+    """The gate is now a routine outcome between the fetch and the worktree.
+
+    Before exclusions it fired before the fetch, so there was no ref to
+    clean up. There is one now, and leaving it would leak a ref per refusal
+    until the next startup sweep.
+    """
+    with pytest.raises(PullRequestTooLarge):
+        async with workspace.checkout(
+            facts(git_remote), max_changed_files=100, max_changed_lines=1
+        ):
+            pass
+    assert await workspace.run_refs() == []
+
+
+async def test_the_refusal_names_the_cap_and_both_sets_of_numbers(
+    workspace, git_remote
+):
+    """The reviewable figure refused on, and the totals it came from.
+
+    "Refused at 3 files" is baffling next to a pull request the API says has
+    900. The gap between the two numbers is the explanation, so the refusal
+    carries both.
+    """
     with pytest.raises(PullRequestTooLarge) as excinfo:
         async with workspace.checkout(
-            facts(git_remote, additions=4000, deletions=4000), **CAPS
+            facts(git_remote, additions=900, deletions=10, changed_files=42),
+            max_changed_files=100,
+            max_changed_lines=1,
         ):
             pass
     assert excinfo.value.cap == "max_changed_lines"
-    assert excinfo.value.observed == 8000
-    assert excinfo.value.limit == 5000
+    assert excinfo.value.observed == VENDORED_LINES + REVIEWABLE_LINES
+    assert excinfo.value.limit == 1
+    assert "42 files, 910 lines, before exclusions" in str(excinfo.value)
 
 
 async def test_a_pull_request_exactly_on_the_cap_is_allowed(workspace, git_remote):
     async with workspace.checkout(
-        facts(git_remote, additions=5000, deletions=0, changed_files=100), **CAPS
+        facts(git_remote),
+        max_changed_files=3,
+        max_changed_lines=VENDORED_LINES + REVIEWABLE_LINES,
     ) as checkout:
         assert checkout.path.exists()
+
+
+async def test_a_vendored_only_change_is_not_refused_on_size(workspace, git_remote):
+    """Issue #17's acceptance criterion, stated as a test.
+
+    The vendored file alone busts the cap. Excluding it leaves two
+    reviewable lines, and a pull request containing nothing reviewable but a
+    dependency bump must not be charged for lines the engine never sees.
+    """
+    cap = VENDORED_LINES - 1
+    with pytest.raises(PullRequestTooLarge, match="max_changed_lines"):
+        async with workspace.checkout(
+            facts(git_remote), max_changed_files=100, max_changed_lines=cap
+        ):
+            pass
+
+    async with workspace.checkout(
+        facts(git_remote),
+        max_changed_files=100,
+        max_changed_lines=cap,
+        excluded_paths=VENDORED,
+    ) as checkout:
+        assert checkout.reviewed.lines == REVIEWABLE_LINES
+
+
+async def test_an_excluded_path_is_not_in_the_diff_the_engine_is_shown(
+    workspace, git_remote
+):
+    """The gate and the engine's input share one mechanism, so they agree.
+
+    ``ReviewRequest`` carries the checkout and does not repeat the diff, so
+    ``Checkout.diff`` is the only diff in the system: excluding a path here
+    excludes it everywhere, by construction rather than by care.
+    """
+    async with workspace.checkout(
+        facts(git_remote), **CAPS, excluded_paths=VENDORED
+    ) as checkout:
+        assert "vendor/lib.js" not in checkout.diff
+        assert "def added():" in checkout.diff
+
+
+async def test_excluding_nothing_counts_everything(workspace, git_remote):
+    async with workspace.checkout(facts(git_remote), **CAPS) as checkout:
+        assert checkout.reviewed.lines == VENDORED_LINES + REVIEWABLE_LINES
+        # feature.py, vendor/lib.js and the binary blob.
+        assert checkout.reviewed.files == 3
+
+
+def test_a_binary_file_is_one_file_and_no_lines():
+    """git reports ``-`` for both counts on a binary file.
+
+    Counting that as a line total would need an int() over a dash; ignoring
+    the file entirely would let a thousand binary blobs pass a file cap.
+    """
+    size = DiffSize.from_numstat("3\t1\tsrc/a.py\n-\t-\tlogo.bin\n")
+    assert size == DiffSize(files=2, lines=4)
+
+
+def test_numstat_counting_ignores_the_path_entirely():
+    """A path git had to quote must not be able to disturb the count."""
+    size = DiffSize.from_numstat('1\t0\t"odd\\nname.py"\n')
+    assert size == DiffSize(files=1, lines=1)
 
 
 async def test_teardown_removes_the_worktree_and_the_run_ref(workspace, git_remote):

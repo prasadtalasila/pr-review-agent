@@ -36,6 +36,13 @@ reservation. That fallback is the whole concurrency guarantee -- the second
 worker sees the first's reservation as already spent, before the first has
 finished.
 
+**The pre-flight estimate is the last free refusal.** ``preflight`` predicts
+a run's cost from the lines that survived ``budget.excluded_paths`` and
+refuses one that cannot fit ``max_run_tokens`` -- releasing the reservation
+in the same call, because nothing else releases one early. The rate is fitted
+against settled ledger rows, falling back to a deliberately high constant
+until there are enough of them to fit.
+
 **A crashed worker's reservation stays charged** until it ages out of its
 rolling window. BUDGET.md says a reservation expires with the lease so a
 crashed worker "does not leak allowance", and this honours the *intent* of
@@ -77,6 +84,21 @@ DAILY = timedelta(days=1)
 #: pull request somebody explicitly asks about; at the second, nothing runs.
 MENTION_ONLY_AT = 0.85
 EXHAUSTED_AT = 1.0
+
+#: The pre-flight estimate's cold start. A fresh database has no history to
+#: fit a rate against, and the first runs are exactly when an over-estimate
+#: is cheapest to get wrong -- so the fallback errs high. Forty is above what
+#: a review is expected to cost per changed line, which over-refuses rather
+#: than overspends; against the shipped ``max_run_tokens`` it puts the
+#: refusal threshold at 1,500 reviewable lines.
+#:
+#: Neither is configurable. An operator's escape hatch is ``max_run_tokens``,
+#: which they already have to choose; a second knob multiplying into it is
+#: CONFIG.md's failure mode rather than a feature.
+DEFAULT_TOKENS_PER_LINE = 40
+
+#: Settled, measurable runs needed before the fit replaces the constant.
+MIN_FIT_SAMPLES = 10
 
 
 class Mode(StrEnum):
@@ -162,8 +184,20 @@ _USED_SINCE_BY_ACTOR = _USED_SINCE + " AND actor_id = :actor"
 _SETTLE = """
 UPDATE ledger
 SET used_tokens = :used, usage_confidence = :confidence,
-    engine = :engine, model = :model, settled_at = :now
+    engine = :engine, model = :model, reviewed_lines = :lines, settled_at = :now
 WHERE dedupe_key = :key AND owner = :owner AND settled_at IS NULL
+"""
+
+# What the pre-flight estimate is fitted against. Only settled rows that
+# actually reviewed something, and only where the engine reported a real
+# token count: `estimated` and `unavailable` rows describe a run the governor
+# could not measure, and fitting a rate to them would turn a known-weaker
+# guarantee into a confidently wrong number.
+_FIT_SAMPLE = """
+SELECT COUNT(*), COALESCE(SUM(used_tokens), 0), COALESCE(SUM(reviewed_lines), 0)
+FROM ledger
+WHERE settled_at IS NOT NULL AND usage_confidence = :exact
+  AND reviewed_lines IS NOT NULL AND reviewed_lines > 0
 """
 
 
@@ -213,11 +247,26 @@ class Governor:
         )
         return True
 
-    def settle(self, claim: Claim, usage: Usage, *, now: datetime) -> bool:
+    def settle(
+        self,
+        claim: Claim,
+        usage: Usage,
+        *,
+        now: datetime,
+        reviewed_lines: int | None = None,
+    ) -> bool:
         """Record what the run actually spent, releasing the remainder.
 
         ``False`` when no unsettled reservation is held for this claim, which
         is how a worker whose lease lapsed learns to discard its result.
+
+        ``reviewed_lines`` is what the pre-flight estimate is fitted against,
+        and it is a separate argument rather than a field on ``Usage`` on
+        purpose. ``ReviewResult.usage`` *is* this ``Usage``, so putting it
+        there would make an adapter responsible for reporting the size it
+        was handed -- and an adapter that under-reported would bias the rate
+        downward, which is a spending control taking its input from the
+        thing it controls. The worker reads it off ``Checkout.reviewed``.
         """
         with self._store.transaction() as conn:
             return (
@@ -228,6 +277,7 @@ class Governor:
                         "confidence": str(usage.confidence),
                         "engine": usage.engine,
                         "model": usage.model,
+                        "lines": reviewed_lines,
                         "now": _stamp(now),
                         "key": claim.trigger.dedupe_key,
                         "owner": claim.owner,
@@ -235,6 +285,82 @@ class Governor:
                 ).rowcount
                 == 1
             )
+
+    def estimate(self, reviewed_lines: int) -> int:
+        """Predicted tokens for a review of ``reviewed_lines`` lines.
+
+        ``rate x lines``, with no fitted intercept. A real review has a fixed
+        overhead -- the prompt, the instructions, the first file read -- and
+        a two-parameter fit would capture it, but the intercept is unstable
+        on a handful of samples and the only question asked here is whether
+        a pull request is *large* enough to refuse. Under-predicting a fifty
+        line change is harmless, because a fifty line change is nowhere near
+        the cap. The fixed cost is amortised into the rate instead, where it
+        makes large diffs predict slightly high: the safe direction.
+        """
+        return round(self._rate() * reviewed_lines)
+
+    def preflight(self, claim: Claim, reviewed_lines: int, now: datetime) -> bool:
+        """Whether this run is worth starting -- releasing its hold if not.
+
+        Refuses a pull request predicted to cost more than one run may spend,
+        and one with nothing left to review after ``budget.excluded_paths``.
+        Both are free refusals: no engine has run, and no tokens are gone.
+
+        **The release happens inside this call, not beside it.** A caller
+        that refused and forgot to settle would leave a full reservation
+        charged against every window until it aged out, because nothing
+        releases a reservation early by design. Making the decision and the
+        release one call means that failure cannot be introduced by a
+        caller.
+        """
+        key = claim.trigger.dedupe_key
+        if reviewed_lines <= 0:
+            logger.info(
+                "nothing left to review in %s after path exclusions: refusing", key
+            )
+        else:
+            predicted = self.estimate(reviewed_lines)
+            if predicted <= self._config.max_run_tokens:
+                return True
+            logger.warning(
+                "%s is predicted to cost %d tokens over %d reviewable lines, "
+                "above the %d a run may spend: refusing",
+                key,
+                predicted,
+                reviewed_lines,
+                self._config.max_run_tokens,
+            )
+        # Known to have cost nothing, which is not the same as unknown: an
+        # `unavailable` row would draw its whole reservation down instead.
+        self.settle(
+            claim,
+            Usage(tokens=0, confidence=UsageConfidence.EXACT),
+            now=now,
+        )
+        return False
+
+    def _rate(self) -> float:
+        """Tokens per reviewable line, fitted against the ledger.
+
+        Below ``MIN_FIT_SAMPLES`` the fit has nothing to say, so the
+        documented constant stands in. It is deliberately above what a review
+        is expected to cost: erring high over-refuses rather than overspends,
+        and a fresh database is exactly where an over-estimate is cheapest to
+        get wrong.
+
+        Once the sample exists the fit takes over outright, with no floor
+        under it. A rate that could only ever be revised upward would refuse
+        pull requests the agent has direct evidence it can afford, which is
+        not a fit.
+        """
+        with self._store.transaction() as conn:
+            rows, tokens, lines = conn.execute(
+                _FIT_SAMPLE, {"exact": str(UsageConfidence.EXACT)}
+            ).fetchone()
+        if rows < MIN_FIT_SAMPLES or not lines:
+            return float(DEFAULT_TOKENS_PER_LINE)
+        return tokens / lines
 
     def headroom(self, now: datetime) -> Headroom:
         """What the shared windows allow, for an operator or a status readout.

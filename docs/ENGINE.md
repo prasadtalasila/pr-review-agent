@@ -113,6 +113,15 @@ rather than growing its own copy of the rules.
 
 A `claude` CLI adapter: `claude -p --output-format json`, run as a
 subprocess with `cwd` set to the checkout, a timeout, and a scrubbed
-environment. With it come the budget pieces that need a running engine — the
-circuit breaker, layer 3's per-turn enforcement and the pre-flight token
-estimate — and then the publisher.
+environment. With it come the budget pieces that need a *running* engine —
+the circuit breaker and layer 3's per-turn enforcement — and then the
+publisher.
+
+Layer 2 is no longer among them. Path exclusions and the
+[pre-flight estimate](BUDGET.md#-the-pre-flight-token-estimate) needed only a
+diff, so they landed ahead of the adapter: an engine is handed a diff with
+excluded paths already absent, and a run predicted to cost more than
+`max_run_tokens` never reaches one. The adapter's part is to report usage
+honestly, which is what keeps the estimate's fit calibrated — an engine
+declaring `usage_reporting: false` produces rows the fit deliberately
+ignores.

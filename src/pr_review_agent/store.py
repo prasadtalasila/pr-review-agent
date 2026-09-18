@@ -45,11 +45,14 @@ from pathlib import Path
 
 # Applied in order; the file's ``user_version`` records how many have run.
 #
-# Every statement is ``IF NOT EXISTS`` for two reasons. A database created
-# before this list existed already carries the first migration's tables at
-# ``user_version = 0``, and would otherwise fail to adopt it. And a crash
-# between ``executescript`` and the version bump must leave the migration
-# re-runnable rather than wedged, which needs each one to be idempotent.
+# The ``CREATE`` statements are all ``IF NOT EXISTS`` because a database
+# created before this list existed already carries the first migration's
+# tables at ``user_version = 0``, and would otherwise fail to adopt it.
+#
+# They no longer have to be idempotent for crash-safety: ``_migrate`` applies
+# each script and its version bump in one transaction, so a crash rolls the
+# pair back together. ``ALTER TABLE ADD COLUMN`` has no ``IF NOT EXISTS``
+# form in SQLite and could not have been written any other way.
 _MIGRATIONS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS etags (
@@ -100,6 +103,9 @@ _MIGRATIONS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS ledger_by_actor ON ledger (actor_id, reserved_at);
     """,
+    """
+    ALTER TABLE ledger ADD COLUMN reviewed_lines INTEGER;
+    """,
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)
@@ -135,14 +141,31 @@ class SqliteStore:
         return int(self._conn.execute("PRAGMA user_version").fetchone()[0])
 
     def _migrate(self) -> None:
-        """Apply every migration this database has not seen yet."""
+        """Apply every migration this database has not seen yet.
+
+        Each script and its version bump commit together. ``executescript``
+        would be the natural way to run a multi-statement script, but it
+        issues a ``COMMIT`` of its own first, which would split the pair --
+        so the statements are executed individually inside one transaction
+        instead. A crash mid-migration therefore rolls back to the previous
+        version and the migration is simply re-applied, rather than needing
+        every statement to be independently idempotent.
+        """
         for index, script in enumerate(
             _MIGRATIONS[self.schema_version :], start=self.schema_version + 1
         ):
-            self._conn.executescript(script)
-            # PRAGMA does not accept a bound parameter; `index` is a loop
-            # counter over a module constant, never user input.
-            self._conn.execute(f"PRAGMA user_version = {index:d}")
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for statement in script.split(";"):
+                    if statement.strip():
+                        self._conn.execute(statement)
+                # PRAGMA does not accept a bound parameter; `index` is a loop
+                # counter over a module constant, never user input.
+                self._conn.execute(f"PRAGMA user_version = {index:d}")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

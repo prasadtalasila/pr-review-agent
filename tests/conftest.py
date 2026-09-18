@@ -38,6 +38,12 @@ from pr_review_agent.workspace import Workspace
 #: The pull request the fixture repository publishes.
 PR_NUMBER = 7
 
+#: Lines the fixture's vendored file adds, and the two reviewable lines
+#: beside it in ``feature.py``. Named so a test can assert on the totals
+#: without restating what the fixture happens to contain.
+VENDORED_LINES = 60
+REVIEWABLE_LINES = 2
+
 
 def git(*args: str, cwd: pathlib.Path | None = None) -> str:
     """Plain git, for building fixtures.
@@ -193,6 +199,13 @@ def _build_fixture_repo(root: pathlib.Path) -> tuple[pathlib.Path, str]:
     git("commit", "-qm", "base", cwd=build)
     git("checkout", "-q", "-b", "pr", cwd=build)
     (build / "feature.py").write_text("def added():\n    return 1\n")
+    # A vendored tree and a binary blob, so the size gate can be tested
+    # against what exclusions actually leave behind. VENDORED_LINES is large
+    # enough to swamp the two reviewable lines beside it, which is the shape
+    # of the pull request layer 2 exists to stop being charged for.
+    (build / "vendor").mkdir()
+    (build / "vendor" / "lib.js").write_text("var x = 0;\n" * VENDORED_LINES)
+    (build / "logo.bin").write_bytes(bytes(range(256)))
     git("add", "-A", cwd=build)
     git("commit", "-qm", "pull request head", cwd=build)
     head_sha = git("rev-parse", "HEAD", cwd=build)
