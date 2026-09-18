@@ -28,7 +28,7 @@ solution.
 | 1 | **No inbound network access.** The host cannot receive GitHub webhooks. | Every webhook-driven integration. |
 | 2 | **Restricted eligibility.** Only an explicitly configured set of contributors may be auto-reviewed; others are reviewed only when an allowlisted maintainer asks. | Anything whose trigger surface is "all pull requests". |
 | 3 | **Hard usage ceiling with no overspend.** The backend is a Claude Max 5x subscription with a weekly threshold, and **all Claude surfaces share one usage pool**. | Anything unbounded. A runaway reviewer does not merely overspend — it locks maintainers out of their own interactive Claude Code sessions until the window resets. |
-| 4 | **Opaque limits.** Subscription plans expose no programmatic quota API. Neither `claude -p --output-format json` nor the Agent SDK result object reports remaining allowance or a window reset time. | Querying the budget. Per-run token counts are reported; the plan's remaining budget is not, so enforcement must be self-maintained. |
+| 4 | **Opaque limits.** Subscription plans expose no programmatic quota API. `claude -p --output-format json` reports what a run cost, but neither it nor any other agent CLI reports remaining allowance or a window reset time. | Querying the budget. Per-run token counts are reported; the plan's remaining budget is not, so enforcement must be self-maintained. |
 
 Constraint 1 is why the design polls rather than listens. Constraint 2 is why
 the allowlist is gated on the *commenter* for mentions, not the author.
@@ -136,7 +136,30 @@ agent-agnostic; only the "run a review" step is Claude-specific. A
 `ReviewEngine` protocol with a declared `Capabilities` record
 (`structured_output`, `usage_reporting`, `read_only_sandbox`, `subagents`,
 `prompt_caching`) admits adapters for opencode, GitHub Copilot CLI, aider,
-Codex CLI and Gemini CLI.
+Codex CLI and Gemini CLI. The protocol and the record are implemented —
+see [ENGINE.md](ENGINE.md); the adapters are not.
+
+**Every adapter is a command-line tool, invoked as a subprocess. No vendor
+SDK is linked.** That is a decision, not an accident of what shipped first:
+
+- A CLI is the interface every one of these agents actually offers. Codex
+  CLI, opencode and Gemini CLI have no Python SDK worth targeting, so an
+  SDK-shaped seam would be a seam only Claude could fit through — the
+  opposite of the point.
+- A subprocess is a containment boundary a library call is not. The review
+  step runs over an untrusted tree; a separate process with its own working
+  directory, its own environment and a kill-on-timeout is a control the
+  agent holds, whereas an in-process agent loop shares this process's
+  memory, credentials and file handles.
+- Dependency surface. An SDK pins a vendor's transitive tree into a daemon
+  whose other dependencies are `httpx`, `PyYAML` and the standard library.
+  A CLI is a version string and an `argv`.
+
+The cost is real and worth naming: a subprocess boundary means parsing
+whatever the CLI prints, so an output-format change breaks an adapter in a
+way a typed SDK response would not. Each adapter therefore pins the CLI
+version it was written against and fails loudly on an unparseable run
+rather than treating it as an empty review.
 
 Two limitations are worth stating honestly:
 
@@ -150,28 +173,43 @@ Two limitations are worth stating honestly:
 Review standards should therefore be authored in the cross-agent `AGENTS.md`
 plus `review-standards/*.md`, with the Claude adapter generating `CLAUDE.md`
 from them. Recommended sequencing: define the interface early, ship the Claude
-adapter only, and add one second engine plus a shared conformance suite in the
-final phase. The seam pays for itself regardless — it is what makes the review
-step testable without spending tokens.
+CLI adapter only, and add one second engine plus a shared conformance suite in
+the final phase. The seam pays for itself regardless — it is what makes the
+review step testable without spending tokens.
 
-## 💳 Billing mode (unresolved)
+## 💳 Billing mode
 
-Anthropic's documented position is that OAuth/subscription authentication is
-intended for *ordinary, individual* use of Claude Code and the Agent SDK, and
-its own guidance points 24/7 bots and business use at API keys. Running the
-CLI from cron or CI for one's own work is explicitly fine; a persistent daemon
-reviewing **other contributors'** pull requests on one personal Max
-subscription is a genuine grey area — not credential intermediation (the
-credential never leaves our host), but not obviously individual use either.
+One clause narrowed this question considerably. The [Agent SDK
+overview](https://code.claude.com/docs/en/agent-sdk/overview) states that
+"unless previously approved, Anthropic does not allow third party developers
+to offer claude.ai login or rate limits for their products, including agents
+built on the Claude Agent SDK", and points such products at API keys.
 
-The design treats this as configuration: `billing.mode: subscription | api_key`.
-`api_key` mode uses the identical governor with USD-denominated windows,
-removes the policy ambiguity, gives authoritative per-run cost, and eliminates
-the plan-lockout failure mode entirely, at a usage-based cost that is modest
-for this volume.
+**That clause does not bear on this agent, because the agent links no SDK.**
+Every engine adapter is a command-line tool run as a subprocess — see
+[Generalisation](#-generalisation-to-other-agents) — so the agent is a
+*user* of Claude Code, not a product built on the Agent SDK, and it offers
+nobody else a login or a rate limit. The credential never leaves the host and
+no third party authenticates through it.
 
-**The current terms should be checked against Anthropic's legal-and-compliance
-documentation before deploying in subscription mode.**
+What remains is the narrower and older question, which the SDK note does not
+answer: whether a persistent daemon running `claude -p` over **other
+contributors'** pull requests counts as ordinary individual use of a personal
+Max subscription. Anthropic's guidance is explicit that running the CLI from
+cron or CI for one's own work is fine, and equally explicit that 24/7 bots and
+business use belong on API keys. This sits between the two.
+
+The design therefore keeps the escape hatch as configuration:
+`billing.mode: subscription | api_key`. `api_key` mode uses the identical
+governor with USD-denominated windows, removes the ambiguity entirely, gives
+authoritative per-run cost, and eliminates the plan-lockout failure mode, at a
+usage-based cost that is modest for this volume. Subscription mode is retained
+for now, with the circuit breaker built as [BUDGET.md](BUDGET.md) specifies.
+
+**Still to confirm before deploying in subscription mode:** the [Commercial
+Terms](https://www.anthropic.com/legal/commercial-terms) and the consumer
+usage policy, read against unattended Claude Code use specifically. The
+citations and the conclusion belong in this section when that is done.
 
 ## 🛡 Prompt injection is in scope
 
@@ -221,8 +259,9 @@ deletion guarantee.
    absent while appearing to be in force. Bootstrap checks the version
    before it checks the route, for that reason.
 3. **The reviewer account** the agent posts as. Its numeric id goes in
-   `github.agent_user_id`; until it is set, the agent cannot recognise and
-   skip its own comments.
+   `github.agent_user_id`, which is required: without it the agent cannot
+   recognise and skip its own comments, so the loader refuses to start
+   rather than let it answer itself.
 4. **The remaining allowlist members.**
 5. **A GitHub token for the poller.** Read-only access to the three endpoints
    is enough for polling; write scope is only needed once the publisher

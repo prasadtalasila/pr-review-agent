@@ -18,7 +18,8 @@ they are reproduced here so they survive the issue being closed.
 | Daemon loop calling `poll_once()` on a schedule | implemented, unit tested |
 | Budget governor (windows, ladder, reserve-then-settle) | implemented, unit tested |
 | Workspace (fetch, checkout, merge-base diff, teardown) | implemented, unit tested |
-| Engine adapter (`ReviewEngine`) | not started |
+| Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented, unit tested |
+| Engine adapter (a `claude` CLI implementation) | not started |
 | Publisher | not started |
 | Retention sweep | not started |
 

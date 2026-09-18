@@ -17,7 +17,7 @@ host.
 | 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`) and a per-PR lease so reviews of one pull request never overlap. The `head_sha` re-check before posting belongs to the publisher, which is where the live head can be read. | implemented — [QUEUE.md](QUEUE.md) |
 | 5 | **Budget governor** | Layers 4 and 5 of spending control over one ledger; layers 2 and 3 land with the engine. | implemented — [BUDGET.md](BUDGET.md) |
 | 6 | **Workspace** | Fetch a pull request head into a bare mirror, check it out into an isolated worktree, diff it against the merge base, tear it down. Executes nothing from the tree. | implemented — [WORKSPACE.md](WORKSPACE.md) |
-| 7 | **Engine adapter** | A `ReviewEngine` protocol with `claude_sdk`, `claude_cli` and `generic_cli` implementations. | not started |
+| 7 | **Engine adapter** | A `ReviewEngine` protocol and `Capabilities` record, with CLI-subprocess implementations (`claude`, then one other). No vendor SDK is linked. | seam implemented — [ENGINE.md](ENGINE.md); no adapter yet |
 | 8 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
 | 9 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |
 
@@ -78,9 +78,12 @@ src/pr_review_agent/
 │   ├── payloads.py    # raw GitHub dicts → trigger models
 │   ├── pulls.py       # one pull request → PullRequestFacts
 │   └── poller.py      # one sweep across all three endpoints
-└── workspace/
-    ├── gitcmd.py      # the one hardened `git` invocation
-    └── repo.py        # bare mirror, per-run worktree, diff, teardown
+├── workspace/
+│   ├── gitcmd.py      # the one hardened `git` invocation
+│   └── repo.py        # bare mirror, per-run worktree, diff, teardown
+└── engine/
+    ├── models.py      # ReviewEngine protocol, Capabilities, request/result
+    └── fake.py        # an engine that spends nothing, for tests
 ```
 
 ## ⬇ Layering
@@ -92,6 +95,9 @@ Dependencies point one way only:
 - Nothing in `triggers/` imports `poller/`.
 - `poller/pulls.py` imports `workspace`, never the reverse. `workspace/` is
   pure git and filesystem, so its suite runs with no HTTP at all.
+- `engine/` imports `workspace`, `triggers` and `budget`, and nothing imports
+  `engine/` yet — the worker that will is not written. It is the leaf the
+  whole design is arranged around: see [ENGINE.md](ENGINE.md).
 
 That is what keeps the trigger suite free of HTTP: it is pure functions over
 fixtures, needs no network and spends no tokens. The same rule is why
