@@ -58,9 +58,10 @@ with a distinct owner id, all sharing the one queue and the one governor.
 `supervise` restarts a worker that falls over, with a capped exponential
 backoff; see [WORKER.md](WORKER.md#-the-supervisor).
 
-**The engine wired in today is `FakeEngine`**, and startup logs a warning
-saying so. A daemon that looks like it reviews and does not is worse than
-one that says so.
+**The engine is the one `config.engine` names**, built by `build_engine` and
+shared by every worker. Startup logs a warning naming it, its model and the
+budget state, because that line is where the agent starts costing money.
+`FakeEngine` is a test double and never reaches a running daemon.
 
 ## 🥶 Cold start is the spend bound
 

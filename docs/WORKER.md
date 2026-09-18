@@ -9,20 +9,46 @@ request, puts it [on disk](WORKSPACE.md), hands it to a [review
 engine](ENGINE.md), records what it cost, and closes the row.
 
 **It does not publish.** Findings are logged and dropped, because the
-publisher does not exist yet. What runs today is `FakeEngine`, which spends
-nothing — so the whole pipeline is exercised end to end for free, which is
-the last moment at which that is possible.
+publisher does not exist yet.
+
+**It does spend.** The engine it runs is the configured `claude` CLI adapter,
+so a claim here is real money. Everything between the claim and the
+subprocess is what bounds that: the governor's windows and ladder at
+admission, the size gate and path exclusions at checkout, the pre-flight
+estimate immediately before the engine, and `worker.count` over the whole
+lot. `FakeEngine` is a test double and is never wired into a running
+daemon.
 
 ## 🔁 One run
 
 ```text
 claim(admit=governor.admit)        the lease and the reservation, one commit
   → GET /pulls/{n}                 head_sha for a mention, and the size counts
-  → workspace.checkout(...)        the tree and the merge-base diff
-  → engine.review(request)         the only agent-specific step
+  → workspace.checkout(...)        the tree, the merge-base diff, exclusions
+  → governor.preflight(...)        the last free refusal -- releases its own hold
+  → engine.review(request)         the only agent-specific step, and the spend
   → governor.settle(claim, usage)  release whatever was not spent
   → complete / release / abandon   close the row
 ```
+
+### The pre-flight estimate
+
+`governor.preflight(claim, checkout.reviewed.lines, now)` is the last point
+at which a run can be refused for free: the tree is on disk but no engine has
+started, so nothing has been spent. It refuses a pull request predicted to
+cost more than `max_run_tokens`, and one with nothing left to review once
+`budget.excluded_paths` has been applied.
+
+**It releases the reservation inside that call**, so the worker must not
+settle afterwards — a second settle on a settled row is the one mistake this
+arrangement is designed to make impossible. The row is then abandoned: both
+refusals are deterministic for this head, and another attempt would reserve
+allowance only to reach the same answer.
+
+`checkout.reviewed` rather than `facts` is what it is asked about. Those are
+different numbers on purpose: the API's counts cover every changed path,
+while `reviewed` is what survived the exclusions, which is both what the gate
+measures and what the engine is shown.
 
 `settle` runs **before** the queue verb, and both are guarded on the owner.
 A worker whose lease lapsed mid-run gets `False` from `settle` and stops
@@ -81,6 +107,9 @@ A failed run has two possible fates and they are not interchangeable.
 
 | Failure | Fate | Why |
 | :-- | :-- | :-- |
+| `Outcome.TRUNCATED` | `release` | The run was cut off with work outstanding; another attempt may finish it |
+| `Outcome.FAILED` | `abandon` | Anything else that went wrong inside a run that still answered |
+| pre-flight refusal | `abandon` | Deterministic for this head, and already settled at zero |
 | `GitHubClientError` | `release` | 5xx, rate limit, network — transient by construction |
 | `WorkspaceError`, `GitCommandError` | `release` | A failed fetch is a failed network call |
 | the engine raises anything | `release` | May succeed next time; bounded by `max_attempts` |
@@ -89,6 +118,12 @@ A failed run has two possible fates and they are not interchangeable.
 
 `release` returns the row to `pending` with its attempt already counted, so
 three failures reach `abandoned`. `abandon` gives up at once.
+
+The first two rows are not exceptions: a run can end badly and still return a
+`ReviewResult`, because it spent tokens and the ledger has to hear about
+that. `Outcome` decides what becomes of the row; it never decides whether the
+run settles. Only `COMPLETED` counts as progress for the supervisor's
+backoff.
 
 **Why not `complete` for a permanent failure?** Because `done` means
 *reviewed*. A pull request refused for its size was never reviewed, and an
@@ -227,9 +262,8 @@ exists.
 
 ## 🚧 What lands next
 
-The worker is complete; the engine it drives is not. A `claude` CLI adapter
-replaces `FakeEngine`, and with it come the budget pieces that need a
-running engine — the circuit breaker, layer 3's per-turn enforcement, the
-ladder's 60 % rung and the pre-flight token estimate. Then the publisher,
-which is what turns `ReviewResult.findings` from something logged into
-something posted, and which owns the `head_sha` re-check.
+The budget pieces that still need a running engine: the circuit breaker,
+layer 3's per-run enforcement and the ladder's 60 % rung. Then the publisher,
+which turns `ReviewResult.findings` from something logged into something
+posted, and which owns the `head_sha` re-check — until it exists, a review of
+a commit that has since been superseded is simply discarded.

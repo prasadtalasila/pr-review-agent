@@ -39,7 +39,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from .budget import Governor, Usage, UsageConfidence
-from .engine import ReviewEngine, ReviewRequest, ReviewResult
+from .engine import Outcome, ReviewEngine, ReviewRequest, ReviewResult
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
 from .poller.pulls import fetch_pull_request_facts
@@ -139,7 +139,14 @@ class ReviewWorker:
                 facts,
                 max_changed_files=config.max_changed_files,
                 max_changed_lines=config.max_changed_lines,
+                excluded_paths=config.excluded_paths,
             ) as checkout:
+                if not self.governor.preflight(claim, checkout.reviewed.lines, _now()):
+                    # The last free refusal, and it released the reservation
+                    # inside that call -- so this path must not settle again.
+                    # Deterministic for this head, so the row ends here.
+                    self.queue.abandon(claim)
+                    return
                 # From here on a failure may have cost tokens, so it settles
                 # at the ceiling it reserved. The assignment sits on the line
                 # before the call for exactly that reason.
@@ -152,11 +159,13 @@ class ReviewWorker:
                         mode=mode,
                     )
                 )
-            usage = result.usage
-            self.completed += 1
+            usage, finish = result.usage, self._finish_for(result.outcome)
+            if result.outcome is Outcome.COMPLETED:
+                self.completed += 1
             logger.info(
-                "reviewed %s: %d findings, %d tokens",
+                "reviewed %s: %s, %d findings, %d tokens",
                 claim.trigger.dedupe_key,
+                result.outcome,
                 len(result.findings),
                 usage.tokens,
             )
@@ -174,6 +183,20 @@ class ReviewWorker:
             finish = self.queue.release
 
         self._settle_and_finish(claim, usage, finish)
+
+    def _finish_for(self, outcome: Outcome) -> Callable[[Claim], bool]:
+        """Which queue verb closes a row whose run ended this way.
+
+        ``TRUNCATED`` is a run cut off with work outstanding, so another
+        attempt is worth its allowance; ``FAILED`` is anything else that went
+        wrong, which is not. The engine has already been paid for either way
+        -- the outcome decides the row's fate, never whether it settles.
+        """
+        if outcome is Outcome.COMPLETED:
+            return self.queue.complete
+        if outcome is Outcome.TRUNCATED:
+            return self.queue.release
+        return self.queue.abandon
 
     async def _review(self, request: ReviewRequest) -> ReviewResult:
         """Run the engine, converting any failure of it into ``EngineError``."""

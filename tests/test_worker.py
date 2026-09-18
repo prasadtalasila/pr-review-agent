@@ -16,7 +16,7 @@ import pytest
 from pr_review_agent.budget import Governor, Mode, Usage, UsageConfidence
 from pr_review_agent.config import BudgetConfig
 from pr_review_agent.engine import FULL, Capabilities, FakeEngine, ReviewRequest
-from pr_review_agent.engine.models import ReviewResult
+from pr_review_agent.engine.models import Outcome, ReviewResult
 from pr_review_agent.poller.client import GitHubClient, GitHubClientError
 from pr_review_agent.poller.endpoints import RepoEndpoints
 from pr_review_agent.queue import Claim, QueueStatus, ReviewQueue
@@ -550,3 +550,110 @@ async def test_a_lease_lost_mid_review_discards_the_result(wired):
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.CLAIMED
     (row,) = ledger_rows(fixture.store)
     assert (row[3], row[5]) == (7, "other")
+
+
+# -- the pre-flight estimate: the last free refusal -----------------------
+
+
+async def test_a_run_predicted_to_overrun_never_reaches_the_engine(wired):
+    """budget.preflight is free to refuse: no engine has run, no tokens gone."""
+    # One reviewable line against a 1-token ceiling: the prediction cannot fit.
+    fixture = wired(config=budget(max_run_tokens=1))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    engine = fixture.engine
+    assert isinstance(engine, FakeEngine)
+    assert engine.requests == []
+
+
+async def test_a_preflight_refusal_settles_at_zero_and_is_not_retried(wired):
+    """preflight released the hold itself; the row is deterministic, so it ends."""
+    fixture = wired(config=budget(max_run_tokens=1))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    (row,) = ledger_rows(fixture.store)
+    assert (row[3], row[4]) == (0, str(UsageConfidence.EXACT))
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.ABANDONED
+
+
+async def test_the_engine_is_shown_only_what_survived_the_exclusions(wired):
+    """The checkout is built with budget.excluded_paths, not without them."""
+    fixture = wired(config=budget(excluded_paths=("feature.py",)))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    # Everything this pull request changes is excluded, so there is nothing
+    # left to review and preflight refuses before the engine.
+    engine = fixture.engine
+    assert isinstance(engine, FakeEngine)
+    assert engine.requests == []
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.ABANDONED
+
+
+# -- Outcome decides what the row becomes --------------------------------
+
+
+def _result(outcome, tokens=500):
+    return ReviewResult(
+        findings=(),
+        usage=Usage(tokens, UsageConfidence.EXACT, engine="fake", model="fake-1"),
+        outcome=outcome,
+    )
+
+
+@dataclass
+class OutcomeEngine(FakeEngine):
+    """An engine that ends a run the way the adapter's envelope says it did."""
+
+    outcome: Outcome = Outcome.COMPLETED
+
+    async def review(self, request: ReviewRequest) -> ReviewResult:
+        """Answer with the configured outcome, and a real token count."""
+        self.requests.append(request)
+        return _result(self.outcome)
+
+
+async def test_a_truncated_run_is_retried(wired):
+    """Cut off with work outstanding: worth another attempt, tighter."""
+    fixture = wired(engine=OutcomeEngine(outcome=Outcome.TRUNCATED))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.PENDING
+
+
+async def test_a_failed_run_is_not_retried(wired):
+    """`Outcome.FAILED` is everything else that went wrong, which is not."""
+    fixture = wired(engine=OutcomeEngine(outcome=Outcome.FAILED))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.ABANDONED
+
+
+async def test_a_run_that_did_not_complete_still_settles_what_it_spent(wired):
+    """It spent money and produced nothing; the ledger records the money."""
+    fixture = wired(engine=OutcomeEngine(outcome=Outcome.TRUNCATED))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    (row,) = ledger_rows(fixture.store)
+    assert (row[3], row[4]) == (500, str(UsageConfidence.EXACT))
+
+
+async def test_only_a_completed_run_counts_as_progress(wired):
+    """The supervisor's backoff reset must not be fed by failures."""
+    fixture = wired(engine=OutcomeEngine(outcome=Outcome.FAILED))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.worker.completed == 0

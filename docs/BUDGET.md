@@ -115,6 +115,12 @@ cost and refuses it when the prediction exceeds `max_run_tokens` — or when
 nothing is left to review after exclusions, which a lockfile-only pull
 request now is.
 
+The [worker](WORKER.md#the-pre-flight-estimate) calls it once, after the
+checkout and immediately before the engine: the tree has to be on disk for
+the reviewable line count to exist, and nothing may be spent after it says
+no. A refused row is abandoned rather than retried, since the same head
+predicts the same cost.
+
 ```text
 estimate = rate × reviewable lines
 ```

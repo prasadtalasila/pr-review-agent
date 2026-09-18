@@ -28,10 +28,19 @@ BUDGET = {
 # request. Every fixture below therefore carries it.
 GITHUB = {"repo": "a/b", "agent_user_id": 42}
 
+# Required since the worker started calling it: a daemon that claims work
+# with no engine to run would reserve allowance and then fail every review.
+ENGINE = {
+    "model": "claude-sonnet-5",
+    "expected_version": "2.1.274",
+    "timeout_seconds": 900,
+}
+
 VALID = {
     "github": {"repo": "INTO-CPS-Association/DTaaS", "agent_user_id": 42},
     "triggers": {"handle": "claude", "allowlist": [114395272]},
     "budget": BUDGET,
+    "engine": ENGINE,
 }
 
 BUDGET_YAML = (
@@ -39,6 +48,10 @@ BUDGET_YAML = (
     "  session_tokens: 88000\n"
     "  weekly_tokens: 1500000\n"
     "  max_run_tokens: 60000\n"
+    "engine:\n"
+    "  model: claude-sonnet-5\n"
+    "  expected_version: '2.1.274'\n"
+    "  timeout_seconds: 900\n"
 )
 
 
@@ -50,7 +63,12 @@ def test_valid_config_parses():
 
 
 def test_handle_defaults_to_claude():
-    data = {"github": GITHUB, "triggers": {"allowlist": []}, "budget": BUDGET}
+    data = {
+        "github": GITHUB,
+        "triggers": {"allowlist": []},
+        "budget": BUDGET,
+        "engine": ENGINE,
+    }
     assert Config.from_mapping(data).triggers.handle == "claude"
 
 
@@ -59,6 +77,7 @@ def test_handle_accepts_leading_at():
         "github": GITHUB,
         "triggers": {"allowlist": [], "handle": "@aider"},
         "budget": BUDGET,
+        "engine": ENGINE,
     }
     assert Config.from_mapping(data).triggers.handle == "aider"
 
@@ -384,16 +403,16 @@ def test_a_cap_that_is_not_a_positive_integer_is_rejected(value):
 # -- engine: which coding agent reviews -----------------------------------
 
 
-ENGINE = {
-    "model": "claude-sonnet-5",
-    "expected_version": "2.1.274",
-    "timeout_seconds": 900,
-}
+def test_engine_section_is_required():
+    """The worker calls it, so a file that names no engine cannot run."""
+    data = {k: v for k, v in VALID.items() if k != "engine"}
+    with pytest.raises(ConfigError, match="missing required section: 'engine'"):
+        Config.from_mapping(data)
 
 
-def test_engine_section_is_absent_rather_than_defaulted():
+def test_engine_keys_have_no_defaults_that_choose_a_cost():
     """There is no model an operator could be assumed to have chosen."""
-    assert Config.from_mapping(VALID).engine is None
+    assert Config.from_mapping(VALID).engine.model == "claude-sonnet-5"
 
 
 def test_engine_section_is_read():
@@ -513,7 +532,7 @@ def test_the_minimal_example_loads():
 def test_the_minimal_example_carries_only_required_keys():
     """Minimal has to mean minimal: every key in it must be load-bearing."""
     data = yaml.safe_load((EXAMPLES / "config.minimal.example.yaml").read_text())
-    assert set(data) == {"github", "triggers", "budget"}
+    assert set(data) == {"github", "triggers", "budget", "engine"}
     assert set(data["github"]) == {"repo", "agent_user_id"}
     assert set(data["triggers"]) == {"allowlist"}
     assert set(data["budget"]) == {
@@ -521,6 +540,7 @@ def test_the_minimal_example_carries_only_required_keys():
         "weekly_tokens",
         "max_run_tokens",
     }
+    assert set(data["engine"]) == {"model", "expected_version", "timeout_seconds"}
 
 
 def test_the_minimal_example_carries_no_comments():
@@ -586,3 +606,5 @@ def test_the_comprehensive_example_states_the_real_defaults():
     assert shown.budget.excluded_paths == defaults.budget.excluded_paths
     assert shown.store.path == defaults.store.path
     assert shown.workspace.cache_dir == defaults.workspace.cache_dir
+    assert shown.worker.count == defaults.worker.count
+    assert shown.engine.binary == defaults.engine.binary

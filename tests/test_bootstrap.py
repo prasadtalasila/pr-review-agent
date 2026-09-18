@@ -40,6 +40,10 @@ budget:
   session_tokens: 88000
   weekly_tokens: 1500000
   max_run_tokens: 60000
+engine:
+  model: claude-sonnet-5
+  expected_version: '2.1.274'
+  timeout_seconds: 900
 """
 
 

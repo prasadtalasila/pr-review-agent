@@ -42,7 +42,8 @@ from pathlib import Path
 from ._startup import StartupError, startup
 from .budget import Governor
 from .config import Config, ConfigError
-from .engine import FakeEngine, ReviewEngine
+from .engine import ReviewEngine
+from .engine.claude import ClaudeCliEngine
 from .poller import payloads
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import Endpoint, RepoEndpoints
@@ -229,6 +230,30 @@ class Daemon:
         return self.store.advance_watermark(name, now)
 
 
+def build_engine(config: Config) -> ClaudeCliEngine:
+    """The review engine ``config`` names.
+
+    The one place a real, spending engine is constructed. ``FakeEngine``
+    deliberately does not appear here: it is a test double, and a daemon
+    running one would report reviews it never did.
+
+    Only one adapter exists, so this does not dispatch on a name -- a
+    registry keyed on a single entry would be a guess about the second
+    adapter's shape, made before it exists. The ``engine`` section is
+    required, so there is no fallback to choose either. The return type is
+    the concrete adapter for the same reason: it is what this returns, and
+    widening it to the protocol would claim a choice that is not being made.
+    """
+    engine = config.engine
+    return ClaudeCliEngine(
+        model=engine.model,
+        expected_version=engine.expected_version,
+        binary=engine.binary,
+        timeout_seconds=engine.timeout_seconds,
+        standards_paths=engine.standards_paths,
+    )
+
+
 def build_workers(
     daemon: Daemon,
     *,
@@ -357,13 +382,17 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
             # Startup is the only safe moment to clear what a crashed run
             # left behind: no git of ours is running yet.
             await workspace.sweep()
-            engine = FakeEngine()
-            # Loud, because a daemon that looks like it reviews and does not
-            # is worse than one that says so.
+            engine = build_engine(config)
+            # Loud, because this is the line where the agent starts costing
+            # money: every review from here is a real subprocess against a
+            # metered plan, behind the governor and nothing else.
             logger.warning(
-                "no review engine adapter is configured: running %r, which "
-                "spends nothing and publishes nothing",
+                "review engine %r (model %s) will spend real allowance; "
+                "budget.enabled=%s, worker.count=%d",
                 engine.name,
+                config.engine.model,
+                config.budget.enabled,
+                config.worker.count,
             )
             workers = build_workers(
                 daemon,

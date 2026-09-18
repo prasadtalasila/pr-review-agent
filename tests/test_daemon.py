@@ -15,11 +15,12 @@ from pr_review_agent.daemon import (
     EMPTY,
     PULL_REQUESTS,
     Daemon,
+    build_engine,
     build_workers,
     main,
     supervise,
 )
-from pr_review_agent.engine import FakeEngine
+from pr_review_agent.engine.claude import ClaudeCliEngine
 from pr_review_agent.poller.client import GitHubClient
 from pr_review_agent.poller.endpoints import RepoEndpoints
 from pr_review_agent.poller.interval import AdaptiveInterval
@@ -47,6 +48,11 @@ CONFIG = Config.from_mapping(
         "github": {"repo": "o/r", "agent_user_id": 42},
         "triggers": {"allowlist": [ALICE_ID], "handle": "claude"},
         "budget": BUDGET,
+        "engine": {
+            "model": "claude-sonnet-5",
+            "expected_version": "2.1.274",
+            "timeout_seconds": 900,
+        },
     }
 )
 
@@ -325,6 +331,10 @@ def config_yaml(enabled="true", repo="o/r"):
         "  session_tokens: 88000\n"
         "  weekly_tokens: 1500000\n"
         "  max_run_tokens: 60000\n"
+        "engine:\n"
+        "  model: claude-sonnet-5\n"
+        "  expected_version: '2.1.274'\n"
+        "  timeout_seconds: 900\n"
     )
 
 
@@ -488,7 +498,7 @@ def make_workers(tmp_path, count):
     return build_workers(
         daemon,
         workspace=Workspace("o/r", tmp_path / "cache"),
-        engine=FakeEngine(),
+        engine=build_engine(CONFIG),
         client=GitHubClient(token="t"),
         endpoints=RepoEndpoints("o", "r"),
     )
@@ -513,3 +523,33 @@ def test_workers_share_the_queue_and_the_governor(tmp_path):
     workers = make_workers(tmp_path, 3)
     assert len({id(worker.governor) for worker in workers}) == 1
     assert len({id(worker.queue) for worker in workers}) == 1
+
+
+# -- which engine the daemon runs ----------------------------------------
+
+
+def test_the_configured_engine_is_what_the_workers_run():
+    """The seam has a real caller now: this is what makes the agent spend."""
+    engine = build_engine(CONFIG)
+    assert isinstance(engine, ClaudeCliEngine)
+    assert engine.model == "claude-sonnet-5"
+    assert engine.expected_version == "2.1.274"
+    assert engine.timeout_seconds == 900
+
+
+def test_the_engine_carries_the_configured_binary_and_standards():
+    config = replace(
+        CONFIG,
+        engine=replace(
+            CONFIG.engine, binary="/opt/claude", standards_paths=("AGENTS.md",)
+        ),
+    )
+    engine = build_engine(config)
+    assert engine.binary == "/opt/claude"
+    assert engine.standards_paths == ("AGENTS.md",)
+
+
+def test_no_fake_engine_reaches_a_running_daemon(tmp_path):
+    """FakeEngine is a test double; a daemon running one would review nothing."""
+    workers = make_workers(tmp_path, 2)
+    assert all(isinstance(w.engine, ClaudeCliEngine) for w in workers)

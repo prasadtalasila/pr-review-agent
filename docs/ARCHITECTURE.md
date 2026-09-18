@@ -57,11 +57,12 @@ drains: the [review worker](WORKER.md) joins the governor, the workspace and
 the engine seam into one claim-run-settle loop, running as its own task
 beside the poll loop.
 
-What it drives is `FakeEngine`, so the whole path is exercised and **still
-costs nothing**. That is deliberate: it is the last point at which the
-pipeline can be verified for free, and the spending rails were finished
-before anything could spend, so the first adapter arrives into a system that
-can already refuse it.
+What it drives is the configured `claude` CLI adapter, so the path **costs
+real allowance** from the claim onwards. The spending rails were finished
+first, which is the point of the build order: the adapter arrived into a
+system that could already refuse it, and every refusal it meets — the
+windows, the ladder, the size gate, the exclusions, the pre-flight estimate —
+was in place before anything could spend.
 
 The reservation is taken inside the *same* transaction as the queue claim —
 that is the invariant the whole storage choice rests on, and it is spelled out
