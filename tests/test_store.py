@@ -131,7 +131,7 @@ def test_a_failed_transaction_rolls_back(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 7
+        assert store.schema_version == SCHEMA_VERSION == 8
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -311,13 +311,13 @@ def test_runs_arrive_with_the_schema(tmp_path):
 
 
 def test_an_existing_database_adopts_the_runs_table(tmp_path):
-    """A v6 store gains it, and its queued rows survive."""
+    """A v7 store gains it, and its queued rows survive."""
     path = tmp_path / "state.db"
     with SqliteStore(path) as store:
         store.advance_watermark("comments", datetime(2026, 1, 1, tzinfo=timezone.utc))
         with store.transaction() as conn:
             conn.execute("DROP TABLE runs")
-            conn.execute("PRAGMA user_version = 6")
+            conn.execute("PRAGMA user_version = 7")
 
     with SqliteStore(path) as reopened:
         assert reopened.schema_version == SCHEMA_VERSION
