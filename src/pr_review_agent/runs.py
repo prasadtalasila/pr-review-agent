@@ -140,9 +140,16 @@ class RunStore:
         return None if row is None else _run(row)
 
     def mark_published(
-        self, dedupe_key: str, *, comment_id: int, now: datetime
+        self, dedupe_key: str, *, comment_id: int | None, now: datetime
     ) -> bool:
-        """Record that this run's comment is up; ``False`` if it already was."""
+        """Record that this run needs publishing no longer.
+
+        ``comment_id`` is ``None`` for a dry run, which posted nothing but
+        still ran the pipeline: an unstamped run would be re-offered on
+        every claim for the lifetime of the database.
+
+        ``False`` when the run was already stamped.
+        """
         with self._store.transaction() as conn:
             return (
                 conn.execute(
