@@ -99,6 +99,17 @@ budget:
   # to stop the agent rather than setting this to zero.
   reviewer_share_pct: 40
 
+  # Optional, and ABSENT BY DEFAULT: no per-contributor cap. When set, one
+  # contributor may spend at most this percentage of the agent's weekly
+  # allowance, measured over the same rolling week. It is meaningless on a
+  # one-person allowlist -- the only account able to trigger anything would
+  # simply hit its own cap -- and starts to matter once several people can
+  # trigger reviews and one of them could monopolise the week.
+  #
+  # Between 1 and 100, and it must leave room for a whole run: if the
+  # resulting allowance is below max_run_tokens the loader refuses the file.
+  # per_contributor_pct: 50
+
   # Optional (defaults 100 / 5000). Layer 2's diff-size caps: a pull request
   # over either is refused before anything is fetched. Both exist because
   # neither bounds the other -- 2000 one-line files pass a line cap and

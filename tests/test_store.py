@@ -127,9 +127,9 @@ def test_a_failed_transaction_rolls_back(tmp_path):
         assert store.get("/p") == '"v1"'
 
 
-def test_the_ledger_arrives_at_schema_version_three(tmp_path):
+def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 3
+        assert store.schema_version == SCHEMA_VERSION == 4
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -149,5 +149,25 @@ def test_an_existing_database_adopts_the_ledger(tmp_path):
             conn.execute("PRAGMA user_version = 2")
 
     with SqliteStore(path) as reopened:
-        assert reopened.schema_version == 3
+        assert reopened.schema_version == SCHEMA_VERSION
         assert reopened.watermark("comments") is not None
+
+
+def test_the_ledger_is_indexed_by_contributor(tmp_path):
+    """The per-contributor window queries by actor over a trailing window."""
+    with SqliteStore(tmp_path / "state.db") as store, store.transaction() as conn:
+        names = {row[1] for row in conn.execute("PRAGMA index_list(ledger)")}
+    assert "ledger_by_actor" in names
+
+
+def test_an_existing_database_adopts_the_contributor_index(tmp_path):
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store, store.transaction() as conn:
+        conn.execute("DROP INDEX ledger_by_actor")
+        conn.execute("PRAGMA user_version = 3")
+
+    with SqliteStore(path) as reopened:
+        assert reopened.schema_version == SCHEMA_VERSION
+        with reopened.transaction() as conn:
+            names = {row[1] for row in conn.execute("PRAGMA index_list(ledger)")}
+    assert "ledger_by_actor" in names

@@ -58,17 +58,18 @@ it.
 This is the direct answer to "weekly threshold, no overspending": the agent's
 ceiling is deliberately below the plan's.
 
-## 📆 Three windows, one shape
+## 📆 Windows, one shape
 
 Every limit is tokens recorded in the ledger within a trailing duration. The
-effective ceiling for a run is the **tightest** of the three; the ladder rung
-comes from the **worst** utilisation among them.
+effective ceiling for a run is the **tightest** of them; the ladder rung comes
+from the **worst** utilisation among them.
 
 | Window | Duration | Limit |
 | :-- | :-- | :-- |
 | session | 5 h | `session_tokens × share` |
 | weekly | 7 d | `weekly_tokens × share` |
 | daily | 24 h | `weekly_tokens × share ÷ 7` |
+| contributor | 7 d | `weekly_tokens × share × per_contributor_pct` — only when configured |
 
 A weekly cap alone would permit burning the allowance on Monday, which is what
 the daily window prevents: **at most a seventh of the week in any day.**
@@ -80,6 +81,23 @@ week anchor — one the plan does not publish and we would have had to invent �
 and it is *stricter*: an agent idle since Monday cannot burn four days'
 allowance on Friday. Unspent allowance is not a loss here. It is headroom for
 humans, which is the point.
+
+**The contributor window is the only one scoped to a person.** It measures
+what the claim's own `actor_id` has spent over the same rolling week, so it is
+built per claim rather than per configuration, and it joins the list only when
+`per_contributor_pct` is set — unset, the other three behave exactly as they
+did before it existed. Being in the list means it degrades and refuses on the
+ordinary ladder below, but only for the contributor being admitted: everyone
+else's headroom is measured separately, which is the whole purpose. `headroom()`,
+the operator readout, has no contributor to scope to and therefore reports the
+three shared windows only.
+
+The cap is **meaningless on a one-person allowlist** — the one account able to
+trigger anything would simply meet its own cap. It earns its keep once several
+people can trigger reviews and one monopolising the week is a real outcome.
+`actor_id` has been on every ledger row since the governor shipped, precisely
+so this stayed possible: the ledger is append-only, and attribution is the one
+field that cannot be backfilled.
 
 ## 🔒 Reserve-then-settle
 
@@ -217,10 +235,6 @@ exposure. The cost is operator guidance: **set `session_tokens` and
 `weekly_tokens` conservatively low until the breaker lands**, because nothing
 will catch an over-estimate.
 
-**The per-contributor cap.** The allowlist holds one person, so any cap below
-100 % would block the only account that can trigger anything — it would ship
-inert. `actor_id` is on every ledger row regardless, because the ledger is
-append-only and attribution is the one field that cannot be backfilled.
 
 ## 🧪 What the tests pin
 
@@ -230,6 +244,9 @@ cases in `tests/test_queue.py`:
 - a synthetic concurrent load cannot breach any configured window;
 - with `reviewer_share_pct` configured, agent usage never exceeds its share;
 - daily pacing refuses a run the weekly window alone would have allowed;
+- with `per_contributor_pct` unset nothing is scoped to a contributor, and
+  with it set one contributor's second run is refused while another's is still
+  admitted, the refusal naming the contributor window;
 - the ladder is observed at 85 % and 100 %, and at 85 % a refused pull request
   does **not** block a maintainer's `@claude` behind it in the queue;
 - a refusal costs no attempt and leaves the row `pending`;

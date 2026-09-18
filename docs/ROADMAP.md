@@ -62,8 +62,10 @@ suite is deliberately last: the seam is worth defining early and filling late.
 - [ ] **Budget limits are enforced:** a synthetic concurrent load cannot breach
       any configured window (**done**); daily pacing prevents the weekly
       allowance being consumed in one day (**done**); the degradation ladder is
-      observed at 85 / 100 % (**done**) and at 60 % (with the engine); per-run
-      ceilings terminate an over-budget review (with the engine).
+      observed at 85 / 100 % (**done**) and at 60 % (with the engine);
+      `per_contributor_pct` bounds one contributor's share of the week
+      (**done**); per-run ceilings terminate an over-budget review (with the
+      engine).
 - [ ] **Plan lockout is prevented:** with `reviewer_share_pct` configured,
       agent usage never exceeds its share of the session or weekly window
       (**done**), and a usage-limit error trips the breaker and decays the
@@ -112,9 +114,6 @@ bugs:
   lands the governor will report healthy utilisation while the real limit is
   being hit. Set them conservatively low. See
   [BUDGET.md](BUDGET.md#-not-built-yet).
-- **No per-contributor cap.** It would ship inert against a one-person
-  allowlist, so it is deferred; `actor_id` is recorded on every ledger row
-  meanwhile, because an append-only ledger cannot backfill attribution.
 - `claim()`'s `admit` hook is optional, so "nothing spends outside the
   governor" is held by review rather than by the type system. The only caller
   that will ever claim is the worker the engine phase adds.

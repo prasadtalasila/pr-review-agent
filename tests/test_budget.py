@@ -43,24 +43,24 @@ def budget(**overrides):
     return BudgetConfig(**{**base, **overrides})
 
 
-def opened(pr=7, head_sha="abc123"):
+def opened(pr=7, head_sha="abc123", actor_id=114395272):
     return Trigger(
         kind=TriggerKind.PR_OPENED,
         repo=REPO,
         pr_number=pr,
         head_sha=head_sha,
-        actor_id=114395272,
+        actor_id=actor_id,
         dedupe_key=f"pr_opened:{REPO}:{pr}:{head_sha}",
     )
 
 
-def mention(pr=7, comment_id=99):
+def mention(pr=7, comment_id=99, actor_id=114395272):
     return Trigger(
         kind=TriggerKind.MENTION,
         repo=REPO,
         pr_number=pr,
         head_sha=None,
-        actor_id=114395272,
+        actor_id=actor_id,
         dedupe_key=f"mention:{REPO}:{pr}:{comment_id}",
     )
 
@@ -316,6 +316,90 @@ def test_a_run_that_does_not_fit_whole_is_refused(store):
     admitted = admit_all(store, governor, [opened(pr=n) for n in range(20)])
     assert len(admitted) * 1_000 <= daily
     assert governor.headroom(NOON).remaining < 1_000
+
+
+# -- the per-contributor window -----------------------------------------
+
+# A second allowlisted account, so "this contributor is spent" can be told
+# apart from "the agent is spent".
+HEAVY, OTHER = 114395272, 8_675_309
+
+
+def test_without_the_cap_nothing_is_scoped_to_a_contributor(store):
+    """Unset is the default, and it admits exactly what it admits today."""
+    governor = Governor(store, budget())
+    triggers = [opened(pr=n, actor_id=HEAVY) for n in range(20)]
+    admitted = admit_all(store, governor, triggers)
+    assert len(admitted) == budget().daily_limit // 1_000
+    assert governor.headroom(NOON).tightest == "daily"
+
+
+def test_the_cap_refuses_a_second_run_by_the_same_contributor(store):
+    """One contributor's share runs out while another's is untouched.
+
+    1 % of the 10 000-token weekly share is 100 tokens: exactly one run.
+    The daily window has room for fourteen, so only the contributor window
+    can be what stops the second one.
+    """
+    governor = Governor(store, budget(max_run_tokens=100, per_contributor_pct=1))
+    admitted = admit_all(
+        store,
+        governor,
+        [
+            opened(pr=1, actor_id=HEAVY),
+            opened(pr=2, actor_id=HEAVY),
+            opened(pr=3, actor_id=OTHER),
+        ],
+    )
+    assert [claim.trigger.pr_number for claim in admitted] == [1, 3]
+
+
+def test_the_refusal_names_the_contributor_window(store, caplog):
+    governor = Governor(store, budget(max_run_tokens=100, per_contributor_pct=1))
+    with caplog.at_level("WARNING"):
+        admit_all(
+            store,
+            governor,
+            [opened(pr=1, actor_id=HEAVY), opened(pr=2, actor_id=HEAVY)],
+        )
+    assert "contributor window" in caplog.text
+
+
+def test_a_heavy_contributor_degrades_to_mention_only_first(store):
+    """The ladder applies per contributor: auto-review stops, @claude does not.
+
+    Nine 100-token runs against a 1 000-token contributor share is 90 %,
+    past the rung but short of exhaustion.
+    """
+    governor = Governor(store, budget(max_run_tokens=100, per_contributor_pct=10))
+    admit_all(store, governor, [opened(pr=n, actor_id=HEAVY) for n in range(9)])
+
+    queue = ReviewQueue(store)
+    queue.enqueue(opened(pr=900, actor_id=HEAVY), now=NOON)
+    queue.enqueue(
+        mention(pr=901, comment_id=5, actor_id=HEAVY), now=NOON + timedelta(seconds=1)
+    )
+    claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
+    assert claim is not None
+    assert claim.trigger.kind is TriggerKind.MENTION
+
+
+def test_one_spent_contributor_does_not_degrade_another(store):
+    """The window is scoped to the actor being admitted, not to the agent."""
+    governor = Governor(store, budget(max_run_tokens=100, per_contributor_pct=1))
+    admit_all(store, governor, [opened(pr=1, actor_id=HEAVY)])
+
+    queue = ReviewQueue(store)
+    queue.enqueue(opened(pr=2, actor_id=OTHER), now=NOON)
+    assert queue.claim(now=NOON, owner="w", admit=governor.admit) is not None
+
+
+def test_the_operator_readout_stays_global(store):
+    """``headroom`` has no actor to scope to, so it reports the shared windows."""
+    governor = Governor(store, budget(max_run_tokens=100, per_contributor_pct=1))
+    admit_all(store, governor, [opened(pr=1, actor_id=HEAVY)])
+    assert governor.headroom(NOON).tightest != "contributor"
+    assert governor.headroom(NOON).mode is Mode.FULL
 
 
 # -- the kill switch ----------------------------------------------------

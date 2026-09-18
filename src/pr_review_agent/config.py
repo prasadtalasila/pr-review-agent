@@ -147,6 +147,11 @@ class BudgetConfig:
     every claim while it is false.
     """
 
+    # A configuration section is a flat list of keys. Splitting it to satisfy
+    # the attribute count would scatter the spending rails across two types,
+    # which is exactly what keeping them in one section is for.
+    # pylint: disable=too-many-instance-attributes
+
     session_tokens: int
     weekly_tokens: int
     max_run_tokens: int
@@ -154,6 +159,9 @@ class BudgetConfig:
     reviewer_share_pct: int = DEFAULT_REVIEWER_SHARE_PCT
     max_changed_files: int = DEFAULT_MAX_CHANGED_FILES
     max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES
+    #: Optional, and off by default: on a one-person allowlist any cap below
+    #: 100 % would block the only account that can trigger anything.
+    per_contributor_pct: int | None = None
 
     @property
     def session_limit(self) -> int:
@@ -176,6 +184,17 @@ class BudgetConfig:
         """
         return self._share(self.weekly_tokens) // 7
 
+    @property
+    def per_contributor_limit(self) -> int | None:
+        """One contributor's share of the agent's weekly allowance.
+
+        ``None`` when the key is unset, which is how "no per-contributor
+        cap" is spelled: the window is simply not measured.
+        """
+        if self.per_contributor_pct is None:
+            return None
+        return self.weekly_limit * self.per_contributor_pct // 100
+
     def _share(self, plan_tokens: int) -> int:
         return plan_tokens * self.reviewer_share_pct // 100
 
@@ -192,6 +211,16 @@ class BudgetConfig:
             # Zero would make every limit zero and utilisation an undefined
             # 0/0; an operator who wants the agent stopped has `enabled`.
             raise ConfigError("budget.reviewer_share_pct must be between 1 and 100")
+        per_contributor = data.get("per_contributor_pct")
+        if per_contributor is not None and (
+            isinstance(per_contributor, bool)
+            or not isinstance(per_contributor, int)
+            or not 1 <= per_contributor <= 100
+        ):
+            raise ConfigError(
+                "budget.per_contributor_pct must be a whole percentage "
+                "between 1 and 100, or absent for no cap"
+            )
         config = cls(
             session_tokens=_tokens(data, "session_tokens"),
             weekly_tokens=_tokens(data, "weekly_tokens"),
@@ -204,7 +233,20 @@ class BudgetConfig:
             max_changed_lines=_cap(
                 data, "max_changed_lines", DEFAULT_MAX_CHANGED_LINES
             ),
+            per_contributor_pct=per_contributor,
         )
+        if (
+            config.per_contributor_limit is not None
+            and config.per_contributor_limit < config.max_run_tokens
+        ):
+            # The same trap as the daily check below, one window further: a
+            # cap this low admits nobody, including the only contributor on
+            # a one-person allowlist.
+            raise ConfigError(
+                f"budget.max_run_tokens ({config.max_run_tokens}) exceeds one "
+                f"contributor's allowance ({config.per_contributor_limit}); "
+                "no run could ever be admitted"
+            )
         if config.daily_limit < config.max_run_tokens:
             # The daily window is the tightest of the three, so a run that
             # cannot fit inside it can never be admitted at all -- a config
@@ -295,6 +337,7 @@ class Config:
                         "weekly_tokens",
                         "max_run_tokens",
                         "reviewer_share_pct",
+                        "per_contributor_pct",
                         "max_changed_files",
                         "max_changed_lines",
                     },

@@ -95,6 +95,11 @@ _MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX IF NOT EXISTS ledger_window ON ledger (reserved_at);
     """,
+    # The per-contributor window measures one ``actor_id`` over a trailing
+    # duration, which is the first query to select on anything but time.
+    """
+    CREATE INDEX IF NOT EXISTS ledger_by_actor ON ledger (actor_id, reserved_at);
+    """,
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)
