@@ -117,25 +117,46 @@ across a failed publish and its successful retry.
 
 The resume path takes the **ordinary claim** rather than a path of its own.
 That keeps one pull request in one worker's hands; a second lease would be a
-second chance to post the same comment twice. It settles its reservation at
-zero `exact` tokens immediately, because a resume reaches no engine and must
-not be allowed to look as though it did.
+second chance to post the same comment twice.
 
-The cost, stated plainly: **a budget refusal defers publication of an
-already-paid review.** The resume claim goes through `governor.admit` like
-any other, so if every window is exhausted the row waits until one rolls.
-The alternative was a publish path outside the lease, which means a second
-lease implementation and a duplicate-comment race between workers.
+**It reserves nothing and settles nothing.** The worker's `admit` predicate
+consults the governor for everything that could spend, and bypasses it for a
+pull request that already has a recorded, unpublished run. That run reached
+an engine once, under a reservation that has already settled; posting it
+reaches none. Without the bypass an exhausted budget would hold a review the
+allowance was *already spent on* hostage until a window rolled — refusing to
+spend nothing, to avoid a cost paid days ago. And because the ladder's
+`mention_only` rung refuses a `pr_opened` trigger from 85% utilisation, not
+100%, that hostage-taking would start well before the budget was gone.
+
+This is why `CLAUDE.md` §5's rule is stated about **engines** rather than
+about claims. Nothing reaches a review engine outside the governor; a
+publish-only claim reaches no engine, writes no ledger row, and is pinned by
+a test asserting both.
+
+**The lease is re-checked immediately before the write.** The owner guards on
+`complete` and `release` run *after* it — late enough to discard a row, too
+late to unsay a comment.
+
+**A failed post hands the row back unattempted.** `max_attempts` caps what one
+poison trigger may drain from the allowance, and a post that reached no engine
+drained nothing. Counting it would abandon a review after three failed posts
+and leave its findings recorded and permanently invisible — which is exactly
+what would have happened before `release_unattempted` existed.
 
 | Publish outcome | Queue verb | Why |
 | :-- | :-- | :-- |
 | published | `complete` | Done. |
 | dry run | `complete` | The pipeline ran; there is nothing to retry. |
 | superseded | `complete` | The head will never match again. |
-| write failed | `release` | Retryable, and the retry re-publishes rather than re-reviewing. |
+| write failed, engine ran | `release` | Retryable. The attempt counts: this claim did reach an engine. |
+| write failed, publish-only | `release_unattempted` | Retryable, and the attempt does not count: nothing was spent. |
 
-A failed publish still burns a queue attempt, so a permanently rejected
-comment is abandoned after `max_attempts` rather than retrying forever.
+A publish-only retry therefore never exhausts the attempt bound. That is
+deliberate — the bound measures allowance drained, and this drains none — but
+it does mean a comment GitHub will *never* accept is retried on every claim
+for that pull request. The retention sweep is where that eventually stops
+mattering, because a purged run is no longer offered for publication.
 
 ## 🧪 `publish.dry_run`
 

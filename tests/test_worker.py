@@ -293,7 +293,7 @@ def wired_fixture(tmp_path, workspace, git_remote):
 # -- the spending rail ---------------------------------------------------
 
 
-async def test_a_claim_is_taken_only_through_the_governor(wired):
+async def test_a_claim_is_never_taken_without_an_admit_predicate(wired):
     """CLAUDE.md section 5, pinned by a test rather than held by review."""
     fixture = wired(queue_class=SpyQueue)
     fixture.queue.enqueue(opened(), now=NOW)
@@ -301,7 +301,50 @@ async def test_a_claim_is_taken_only_through_the_governor(wired):
     await fixture.worker.run_once()
 
     assert isinstance(fixture.queue, SpyQueue)
-    assert fixture.queue.admits == [fixture.governor.admit]
+    assert fixture.queue.admits == [fixture.worker.admit]
+
+
+async def test_a_refusal_reaches_no_engine(wired):
+    """The predicate is the governor's for anything that could spend."""
+    fixture = wired()
+    fixture.worker.governor.admit = lambda conn, claim, now: False
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    assert await fixture.worker.run_once() is False
+    assert fixture.engine.requests == []
+    assert ledger_rows(fixture.store) == []
+
+
+async def test_the_governor_is_bypassed_only_for_a_run_already_paid_for(
+    wired, git_remote
+):
+    """An exhausted budget must not hold a paid review hostage.
+
+    The allowance this run cost was spent days ago and has already settled.
+    Posting it reaches no engine, so weighing it against a window would be
+    refusing to spend nothing.
+    """
+    fixture = wired()
+    fixture.runs.record(
+        opened(), head_sha=git_remote.head_sha, result=_recorded_result(), now=NOW
+    )
+    fixture.queue.enqueue(opened(), now=NOW)
+    fixture.worker.governor.admit = lambda conn, claim, now: False
+
+    assert await fixture.worker.run_once() is True
+
+    assert fixture.engine.requests == []  # nothing was reviewed
+    assert ledger_rows(fixture.store) == []  # and nothing was reserved
+    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+
+
+def _recorded_result():
+    """A completed review, as the engine would have returned it."""
+    return ReviewResult(
+        findings=(),
+        usage=Usage(1_000, UsageConfidence.EXACT, engine="fake", model="fake-1"),
+        outcome=Outcome.COMPLETED,
+    )
 
 
 async def test_a_timed_out_run_is_distinguishable_from_a_crashed_one(wired):
@@ -907,19 +950,57 @@ async def test_a_failed_publish_is_retried_without_a_second_review(wired, git_re
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
 
 
-async def test_a_republished_run_costs_nothing(wired, git_remote):
-    """A resume reaches no engine, and its ledger row has to say so."""
+async def test_a_republished_run_writes_no_ledger_row(wired, git_remote):
+    """A resume reserves nothing, so there is nothing to settle."""
     github = GitHubDouble(git_remote.head_sha, write_status=502)
     fixture = wired(github=github)
     fixture.queue.enqueue(opened(), now=NOW)
     await fixture.worker.run_once()
+    assert len(ledger_rows(fixture.store)) == 1
 
     github._write_status = 201
     await fixture.worker.run_once()
 
-    resumed = ledger_rows(fixture.store)[-1]
-    assert resumed[3] == 0  # used_tokens
-    assert resumed[4] == str(UsageConfidence.EXACT)
+    assert len(ledger_rows(fixture.store)) == 1  # the resume added none
+
+
+async def test_failed_posts_never_abandon_a_paid_review(wired, git_remote):
+    """The attempt bound caps what a poison trigger drains, not this.
+
+    Three failed *posts* of a review that is already paid for would once
+    have exhausted the bound and abandoned the row, leaving the findings
+    recorded and permanently invisible.
+    """
+    github = GitHubDouble(git_remote.head_sha, write_status=502)
+    fixture = wired(github=github)
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    for _ in range(5):
+        await fixture.worker.run_once()
+
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.PENDING
+    assert len(fixture.engine.requests) == 1
+
+    github._write_status = 201
+    await fixture.worker.run_once()
+
+    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+
+
+async def test_a_resume_whose_lease_lapsed_posts_nothing(wired, git_remote):
+    """The owner guards on `complete` run after the write; this runs before."""
+    fixture = wired()
+    fixture.runs.record(
+        opened(), head_sha=git_remote.head_sha, result=_recorded_result(), now=NOW
+    )
+    fixture.queue.enqueue(opened(), now=NOW)
+    claim = fixture.queue.claim(now=NOW, owner="worker-1", admit=fixture.worker.admit)
+    stale = replace(claim, owner="a-worker-that-died")
+
+    await fixture.worker.run_one(stale)
+
+    assert fixture.github.comments == []
 
 
 async def test_a_lapsed_lease_publishes_nothing(wired):

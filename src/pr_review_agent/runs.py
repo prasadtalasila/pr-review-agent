@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -82,6 +83,17 @@ LIMIT 1
 _PURGE = """
 UPDATE runs SET findings = '[]', content_purged_at = :now
 WHERE repo = :repo AND pr_number = :pr AND content_purged_at IS NULL
+"""
+
+
+# Asked inside the queue's claim transaction, so it takes a connection
+# rather than opening one: `SqliteStore.transaction` issues BEGIN IMMEDIATE,
+# and SQLite has no nested transaction to issue it into.
+_HAS_UNPUBLISHED = """
+SELECT 1 FROM runs
+WHERE repo = :repo AND pr_number = :pr
+  AND published_at IS NULL AND content_purged_at IS NULL
+LIMIT 1
 """
 
 
@@ -144,6 +156,20 @@ class RunStore:
             outcome=result.outcome,
             findings=result.findings,
             comment_id=None,
+        )
+
+    @staticmethod
+    def has_unpublished(conn: sqlite3.Connection, repo: str, pr_number: int) -> bool:
+        """Is a paid review for this pull request still waiting to be posted?
+
+        Takes the caller's connection because its one caller is the queue's
+        ``admit`` predicate, which runs inside the claim transaction. Opening
+        another would mean a ``BEGIN IMMEDIATE`` inside a ``BEGIN
+        IMMEDIATE``, which SQLite refuses.
+        """
+        return (
+            conn.execute(_HAS_UNPUBLISHED, {"repo": repo, "pr": pr_number}).fetchone()
+            is not None
         )
 
     def unpublished_for(self, repo: str, pr_number: int) -> RecordedRun | None:

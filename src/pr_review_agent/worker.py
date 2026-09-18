@@ -4,10 +4,18 @@ The daemon fills the queue; this empties it. Between those two lies the one
 transition that costs money, so the whole module is arranged around three
 rules.
 
-**Nothing claims without the governor.** ``claim`` is called with
-``admit=governor.admit`` and never without it, so the reservation commits in
-the same transaction as the lease. The worker cannot start a run it did not
-pay for in advance.
+**Nothing reaches an engine without the governor.** ``claim`` is called with
+an ``admit`` predicate that consults the governor, so the reservation commits
+in the same transaction as the lease and no review starts that was not paid
+for in advance.
+
+The predicate has exactly one bypass, and it is the reason the rule is stated
+about *engines* rather than about claims. A pull request whose review is
+already recorded and unposted is admitted without reserving anything, because
+publishing it runs nothing and costs nothing. Without that bypass an
+exhausted budget would hold a review the allowance has *already been spent
+on* hostage until a window rolled -- refusing to spend nothing, to avoid a
+cost that was paid days ago.
 
 **Every run settles, including a failed one.** A reservation that is never
 settled stays charged at its full ceiling until it ages out of a rolling
@@ -24,8 +32,9 @@ only irreversible step, so the order after it is fixed: settle, record,
 publish, finish. Recording before publishing is what lets a GitHub write
 fail without costing a second review -- the next claim finds the unpublished
 run and posts it without reaching an engine at all. That resume path is the
-one way into this class that spends nothing, and it settles at zero to say
-so.
+one way into this class that spends nothing: it reserves nothing, settles
+nothing, writes no ledger row, and hands the row back unattempted if the post
+fails again.
 
 **A run leaves nothing behind.** No field on this class outlives the run that
 set it, because the tree under review is untrusted input and the next review
@@ -128,6 +137,22 @@ class ReviewWorker:
             if not await self.run_once():
                 await _wait(stop, WORKER_IDLE)
 
+    def admit(self, conn, claim: Claim, now: datetime) -> bool:
+        """Whether this claim may be taken: the governor, plus one bypass.
+
+        Runs inside the claim transaction, which is why the connection is
+        passed down rather than a new one opened.
+
+        A pull request carrying a recorded, unpublished run is admitted
+        unconditionally and **reserves nothing**. That run reached an engine
+        once, under a reservation that has already settled; posting it
+        reaches none. Weighing it against a window would refuse to spend
+        nothing.
+        """
+        if self.runs.has_unpublished(conn, claim.trigger.repo, claim.trigger.pr_number):
+            return True
+        return self.governor.admit(conn, claim, now)
+
     async def run_once(self) -> bool:
         """Claim and review one trigger; ``False`` if nothing was claimable.
 
@@ -135,9 +160,7 @@ class ReviewWorker:
         here, and deliberately so: both mean there is no work this worker may
         do, and neither is a failure.
         """
-        claim = self.queue.claim(
-            now=_now(), owner=self.owner, admit=self.governor.admit
-        )
+        claim = self.queue.claim(now=_now(), owner=self.owner, admit=self.admit)
         if claim is None:
             return False
         await self.run_one(claim)
@@ -153,14 +176,17 @@ class ReviewWorker:
         unusable payload will fail identically on attempt two, having
         reserved allowance again to do it.
         """
+        # Before the reservation lookup, not after: a resume is admitted
+        # without reserving, so it has no ledger row for `admitted_mode` to
+        # find and would read as a lapsed lease.
+        if await self._resume_publication(claim):
+            return
+
         mode = self.governor.admitted_mode(claim)
         if mode is None:
             # The lease lapsed and somebody else holds this row. Touching
             # either the ledger or the queue now would corrupt their run.
             logger.warning("lease lapsed before %s started", claim.trigger.dedupe_key)
-            return
-
-        if await self._resume_publication(claim):
             return
         # After the claim, before anything slow. The acknowledgement has to
         # beat a review that takes minutes, and it is what makes an adaptive
@@ -277,14 +303,23 @@ class ReviewWorker:
         """Publish a run an earlier attempt paid for but could not post.
 
         ``True`` when this claim was spent on that and nothing else. No
-        facts are fetched, no checkout is made and no engine is reached, so
-        the reservation this claim just took is released at **zero tokens**
-        immediately -- a resume costs nothing and must not be allowed to
-        look as though it did.
+        facts are fetched, no checkout is made, no engine is reached and --
+        because :meth:`admit` let this claim through without reserving --
+        there is nothing on the ledger to settle. A resume costs nothing and
+        writes nothing, which is the honest record of it.
 
         Taking the ordinary claim rather than a path of its own is what
         keeps one pull request in one worker's hands: a second lease would
-        be a second chance to post the same comment twice.
+        be a second chance to post the same comment twice. The lease is
+        re-checked immediately before the write, because the owner guards on
+        ``complete`` and ``release`` only run *after* it -- late enough to
+        discard a row, too late to unsay a comment.
+
+        A failure hands the row back **unattempted**. The attempt bound caps
+        what one poison trigger may drain, and a post that reached no engine
+        drained nothing; counting it would abandon a review after three
+        failed posts and leave its findings recorded and permanently
+        invisible.
         """
         pending = self.runs.unpublished_for(claim.trigger.repo, claim.trigger.pr_number)
         if pending is None:
@@ -293,18 +328,13 @@ class ReviewWorker:
             "%s was reviewed already; publishing without a second review",
             pending.dedupe_key,
         )
-        if not self.governor.settle(
-            claim,
-            Usage(0, UsageConfidence.EXACT),
-            now=_now(),
-            # The review this posts did complete; only its publication did
-            # not, and that is not a reason a *run* stopped.
-            stop_reason=StopReason.COMPLETED,
-        ):
+        if not self.queue.holds(claim, now=_now()):
             logger.warning("lease lapsed before %s republished", pending.dedupe_key)
             return True
-        finish = await self._publish(claim, pending)
-        finish(claim)
+        if await self._published(claim, pending):
+            self.queue.complete(claim)
+        else:
+            self.queue.release_unattempted(claim)
         return True
 
     async def _settle_publish_and_finish(
@@ -330,20 +360,31 @@ class ReviewWorker:
             )
             return
         if reviewed is not None:
-            finish = await self._publish(claim, reviewed)
+            # This attempt *did* reach an engine, so a failed post counts
+            # against the bound like any other retry -- unlike the
+            # publish-only resume, which spent nothing.
+            finish = (
+                self.queue.complete
+                if await self._published(claim, reviewed)
+                else self.queue.release
+            )
         finish(claim)
 
-    async def _publish(self, claim: Claim, run: RecordedRun) -> Callable:
-        """Post ``run``, and say which queue verb its outcome calls for.
+    async def _published(self, claim: Claim, run: RecordedRun) -> bool:
+        """Post ``run``; ``False`` if the row should be handed back.
 
-        A failed write hands the row back: the findings are already durable,
-        so the retry republishes rather than re-reviewing, and the attempt
-        bound stops a permanently rejected comment retrying forever.
+        A failed write is worth another attempt: the findings are already
+        durable, so the retry republishes rather than re-reviewing.
 
-        A superseded head completes instead. Nothing here will ever make it
-        match again -- a push to an existing pull request is not a trigger --
-        so another attempt would re-read the same stale sha and reserve
-        allowance to do it.
+        A superseded head is not. Nothing here will ever make it match again
+        -- a push to an existing pull request is not a trigger -- so another
+        attempt would re-read the same stale sha, and if it re-reviewed it
+        would reserve allowance to do it.
+
+        A boolean rather than the queue verb itself: the two callers hand the
+        row back differently, one counting the attempt and one not, and a
+        method that returned ``self.queue.release`` would invite comparing
+        bound methods for identity, which does not work.
         """
         key = claim.trigger.dedupe_key
         try:
@@ -355,10 +396,10 @@ class ReviewWorker:
                 key,
                 exc_info=True,
             )
-            return self.queue.release
+            return False
         if published.outcome is PublishOutcome.SUPERSEDED:
             logger.info("%s was superseded before it could be posted", key)
-        return self.queue.complete
+        return True
 
 
 def _now() -> datetime:

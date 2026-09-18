@@ -138,3 +138,31 @@ def test_a_naive_timestamp_is_refused(runs):
         runs.record(
             trigger(), head_sha=HEAD, result=result(), now=datetime(2026, 9, 18, 12)
         )
+
+
+def test_has_unpublished_sees_a_waiting_run(runs):
+    """Asked inside the claim transaction, so it takes the connection."""
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    with runs._store.transaction() as conn:  # noqa: SLF001
+        assert runs.has_unpublished(conn, REPO, 7) is True
+
+
+def test_has_unpublished_is_false_once_published(runs):
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    runs.mark_published("pr_opened:o/r:7:deadbeef", comment_id=555, now=LATER)
+    with runs._store.transaction() as conn:  # noqa: SLF001
+        assert runs.has_unpublished(conn, REPO, 7) is False
+
+
+def test_has_unpublished_is_false_for_another_pull_request(runs):
+    runs.record(trigger(pr=8, key="k8"), head_sha=HEAD, result=result(), now=NOON)
+    with runs._store.transaction() as conn:  # noqa: SLF001
+        assert runs.has_unpublished(conn, REPO, 7) is False
+
+
+def test_has_unpublished_ignores_a_purged_run(runs):
+    """Its findings are gone, so it is not work waiting to be posted."""
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    runs.purge_content(REPO, 7, now=LATER)
+    with runs._store.transaction() as conn:  # noqa: SLF001
+        assert runs.has_unpublished(conn, REPO, 7) is False

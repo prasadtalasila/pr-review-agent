@@ -141,13 +141,12 @@ bugs:
 - The primary GitHub rate limit carries `x-ratelimit-reset` but no
   `Retry-After`, so the client raises rather than sleeping to the reset. See
   [POLLER.md](POLLER.md#-rate-limits-and-retries).
-- **A budget refusal defers publication of an already-paid review.** The
-  publish-only retry goes through `queue.claim`, so it passes
-  `governor.admit` like any other claim; if every window is exhausted the row
-  waits until one rolls. The alternative was a publish path outside the
-  per-pull-request lease, which means a second lease implementation and a
-  duplicate-comment race between workers. See
-  [PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
+- **A comment GitHub will never accept is retried on every claim for that
+  pull request.** A publish-only retry deliberately does not count against
+  `max_attempts` — the bound measures allowance drained, and a post that
+  reaches no engine drains none — so nothing eventually gives up on it. The
+  retention sweep is where this stops mattering: a purged run is no longer
+  offered for publication.
 - **Review content accumulates in `runs` and nothing purges it yet.**
   `RunStore.purge_content` exists and has no caller; the retention sweep is
   the next component.

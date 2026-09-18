@@ -129,5 +129,9 @@ a GitHub read, and it has to happen at publish time rather than claim time to
 be worth anything.
 
 The queue also does not know that a run has been *paid for but not posted*.
-That lives in `runs`, and the worker consults it before claiming work of its
-own — see [PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
+That lives in `runs`. The worker's `admit` predicate consults it, and admits
+such a claim without reserving anything — publishing reaches no engine, so
+weighing it against a budget window would be refusing to spend nothing. Such
+a claim is also handed back with `release_unattempted` if the post fails,
+because `max_attempts` bounds allowance drained and this drains none. See
+[PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
