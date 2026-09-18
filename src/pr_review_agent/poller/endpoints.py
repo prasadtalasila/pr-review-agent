@@ -66,6 +66,16 @@ class RepoEndpoints:
         """
         return f"/repos/{self.owner}/{self.name}/pulls/{number}"
 
+    def repository(self) -> str:
+        """The repository itself, read once by the bootstrap checks.
+
+        Never polled: it carries no event the agent reacts to. It is read to
+        learn whether the token may write, which is a question worth an
+        extra request exactly once, at startup, before anything has been
+        reviewed and thrown away.
+        """
+        return f"/repos/{self.owner}/{self.name}"
+
     def issue_comments(self, number: int) -> str:
         """Where the publisher posts a new comment on a pull request.
 
