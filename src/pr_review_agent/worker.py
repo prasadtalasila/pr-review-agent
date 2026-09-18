@@ -19,6 +19,14 @@ at zero; at or after it, a killed CLI adapter may have spent anything, so the
 run settles at its full reservation. Pessimism is the safe direction for a
 spending control.
 
+**A paid review is published, or kept until it can be.** The engine is the
+only irreversible step, so the order after it is fixed: settle, record,
+publish, finish. Recording before publishing is what lets a GitHub write
+fail without costing a second review -- the next claim finds the unpublished
+run and posts it without reaching an engine at all. That resume path is the
+one way into this class that spends nothing, and it settles at zero to say
+so.
+
 **A run leaves nothing behind.** No field on this class outlives the run that
 set it, because the tree under review is untrusted input and the next review
 must not be able to see it. The checkout is removed by its context manager,
@@ -43,7 +51,9 @@ from .engine import EngineTimeout, Outcome, ReviewEngine, ReviewRequest, ReviewR
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
 from .poller.pulls import fetch_pull_request_facts
+from .publisher import Publisher, PublishOutcome
 from .queue import Claim, ReviewQueue
+from .runs import RecordedRun, RunStore
 from .triggers.models import PayloadError
 from .workspace import PullRequestTooLarge, Workspace, WorkspaceError
 
@@ -106,6 +116,8 @@ class ReviewWorker:
     engine: ReviewEngine
     client: GitHubClient
     endpoints: RepoEndpoints
+    publisher: Publisher
+    runs: RunStore
     owner: str
     #: Runs that reached the end of a review. Read by the supervisor.
     completed: int = 0
@@ -148,11 +160,19 @@ class ReviewWorker:
             logger.warning("lease lapsed before %s started", claim.trigger.dedupe_key)
             return
 
+        if await self._resume_publication(claim):
+            return
+        # After the claim, before anything slow. The acknowledgement has to
+        # beat a review that takes minutes, and it is what makes an adaptive
+        # poll interval feel like an answer rather than a silence.
+        await self.publisher.acknowledge(claim.trigger)
+
         usage = Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name)
         # Everything that can fail before the engine starts is infrastructure,
         # so it stands as the answer until something narrows it.
         reason = StopReason.INFRASTRUCTURE
         finish = self.queue.complete
+        reviewed: RecordedRun | None = None
         try:
             facts = await fetch_pull_request_facts(
                 self.client, self.endpoints, claim.trigger.pr_number
@@ -186,6 +206,15 @@ class ReviewWorker:
             reason = _REASON_FOR[result.outcome]
             if result.outcome is Outcome.COMPLETED:
                 self.completed += 1
+                # Recorded before the settle so the content outlives any
+                # failure after it. Only a completed run has publishable
+                # findings -- the seam enforces that -- so only one is kept.
+                reviewed = self.runs.record(
+                    claim.trigger,
+                    head_sha=facts.head_sha,
+                    result=result,
+                    now=_now(),
+                )
             logger.info(
                 "reviewed %s: %s, %d findings, %d tokens",
                 claim.trigger.dedupe_key,
@@ -214,7 +243,7 @@ class ReviewWorker:
             )
             finish = self.queue.release
 
-        self._settle_and_finish(claim, usage, reason, finish)
+        await self._settle_publish_and_finish(claim, usage, reason, finish, reviewed)
 
     def _finish_for(self, outcome: Outcome) -> Callable[[Claim], bool]:
         """Which queue verb closes a row whose run ended this way.
@@ -244,18 +273,55 @@ class ReviewWorker:
                 f"{self.engine.name} failed: {exc}", StopReason.ENGINE_ERROR
             ) from exc
 
-    def _settle_and_finish(
+    async def _resume_publication(self, claim: Claim) -> bool:
+        """Publish a run an earlier attempt paid for but could not post.
+
+        ``True`` when this claim was spent on that and nothing else. No
+        facts are fetched, no checkout is made and no engine is reached, so
+        the reservation this claim just took is released at **zero tokens**
+        immediately -- a resume costs nothing and must not be allowed to
+        look as though it did.
+
+        Taking the ordinary claim rather than a path of its own is what
+        keeps one pull request in one worker's hands: a second lease would
+        be a second chance to post the same comment twice.
+        """
+        pending = self.runs.unpublished_for(claim.trigger.repo, claim.trigger.pr_number)
+        if pending is None:
+            return False
+        logger.info(
+            "%s was reviewed already; publishing without a second review",
+            pending.dedupe_key,
+        )
+        if not self.governor.settle(
+            claim,
+            Usage(0, UsageConfidence.EXACT),
+            now=_now(),
+            # The review this posts did complete; only its publication did
+            # not, and that is not a reason a *run* stopped.
+            stop_reason=StopReason.COMPLETED,
+        ):
+            logger.warning("lease lapsed before %s republished", pending.dedupe_key)
+            return True
+        finish = await self._publish(claim, pending)
+        finish(claim)
+        return True
+
+    async def _settle_publish_and_finish(
         self,
         claim: Claim,
         usage: Usage,
         reason: StopReason,
         finish: Callable[[Claim], bool],
+        reviewed: RecordedRun | None,
     ) -> None:
-        """Record what the run cost, then close its row -- in that order.
+        """Record what the run cost, post it, then close its row.
 
-        Both are guarded on the owner. A worker whose lease lapsed mid-run
-        gets ``False`` from ``settle`` and stops there, which is how it
-        learns to discard a result it is no longer entitled to publish.
+        All three are guarded on the owner. A worker whose lease lapsed
+        mid-run gets ``False`` from ``settle`` and stops there, which is how
+        it learns to discard a result it is no longer entitled to publish --
+        now with teeth, because the thing being discarded is a comment under
+        the agent's own account.
         """
         if not self.governor.settle(claim, usage, now=_now(), stop_reason=reason):
             logger.warning(
@@ -263,7 +329,36 @@ class ReviewWorker:
                 claim.trigger.dedupe_key,
             )
             return
+        if reviewed is not None:
+            finish = await self._publish(claim, reviewed)
         finish(claim)
+
+    async def _publish(self, claim: Claim, run: RecordedRun) -> Callable:
+        """Post ``run``, and say which queue verb its outcome calls for.
+
+        A failed write hands the row back: the findings are already durable,
+        so the retry republishes rather than re-reviewing, and the attempt
+        bound stops a permanently rejected comment retrying forever.
+
+        A superseded head completes instead. Nothing here will ever make it
+        match again -- a push to an existing pull request is not a trigger --
+        so another attempt would re-read the same stale sha and reserve
+        allowance to do it.
+        """
+        key = claim.trigger.dedupe_key
+        try:
+            published = await self.publisher.publish(run)
+        except (GitHubClientError, PayloadError):
+            logger.warning(
+                "could not publish %s; the review is kept and will be "
+                "posted without being run again",
+                key,
+                exc_info=True,
+            )
+            return self.queue.release
+        if published.outcome is PublishOutcome.SUPERSEDED:
+            logger.info("%s was superseded before it could be posted", key)
+        return self.queue.complete
 
 
 def _now() -> datetime:

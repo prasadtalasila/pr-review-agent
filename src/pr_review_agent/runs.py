@@ -111,13 +111,17 @@ class RunStore:
         head_sha: str,
         result: ReviewResult,
         now: datetime,
-    ) -> None:
+    ) -> RecordedRun:
         """Store what this run produced, before anything is posted.
 
         ``head_sha`` is passed rather than read off the trigger: a mention's
         trigger carries no sha, and the one that matters is the head the
         review actually ran against, which the worker resolved when it
         claimed.
+
+        Returns what was stored, so the caller publishes the row it just
+        wrote rather than querying for "the oldest unpublished run" and
+        hoping that is the same one.
         """
         with self._store.transaction() as conn:
             conn.execute(
@@ -132,6 +136,15 @@ class RunStore:
                     "now": _stamp(now),
                 },
             )
+        return RecordedRun(
+            dedupe_key=trigger.dedupe_key,
+            repo=trigger.repo,
+            pr_number=trigger.pr_number,
+            head_sha=head_sha,
+            outcome=result.outcome,
+            findings=result.findings,
+            comment_id=None,
+        )
 
     def unpublished_for(self, repo: str, pr_number: int) -> RecordedRun | None:
         """The oldest recorded run for this pull request still to be posted."""

@@ -25,7 +25,9 @@ from pr_review_agent.poller.client import GitHubClient
 from pr_review_agent.poller.endpoints import RepoEndpoints
 from pr_review_agent.poller.interval import AdaptiveInterval
 from pr_review_agent.poller.poller import Poller
+from pr_review_agent.publisher import Publisher
 from pr_review_agent.queue import ReviewQueue
+from pr_review_agent.runs import RunStore
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.worker import ReviewWorker
 from pr_review_agent.workspace import Workspace
@@ -112,9 +114,11 @@ def responder(pulls=None, issue_comments=None, review_comments=None):
 
 def make_daemon(tmp_path, handler) -> Daemon:
     store = SqliteStore(tmp_path / "state.db")
+    client = GitHubClient(token="t", transport=httpx.MockTransport(handler))
+    endpoints = RepoEndpoints("o", "r")
     poller = Poller(
-        client=GitHubClient(token="t", transport=httpx.MockTransport(handler)),
-        endpoints=RepoEndpoints("o", "r"),
+        client=client,
+        endpoints=endpoints,
         etags=store,
         # Zero keeps run_forever's wait instant; run_once ignores it.
         interval=AdaptiveInterval(min_seconds=0, max_seconds=0),
@@ -125,6 +129,12 @@ def make_daemon(tmp_path, handler) -> Daemon:
         store=store,
         queue=ReviewQueue(store),
         governor=Governor(store, CONFIG.budget),
+        publisher=Publisher(
+            client=client,
+            endpoints=endpoints,
+            runs=RunStore(store),
+            config=CONFIG.publish,
+        ),
     )
 
 
@@ -323,10 +333,11 @@ def test_main_with_an_unreadable_config_exits_two(tmp_path, monkeypatch, capsys)
 # -- SIGHUP: the kill switch must not need a restart ---------------------
 
 
-def config_yaml(enabled="true", repo="o/r"):
+def config_yaml(enabled="true", repo="o/r", dry_run="false"):
     return (
         f"github:\n  repo: {repo}\n  agent_user_id: 42\n"
         f"triggers:\n  handle: claude\n  allowlist:\n    - {ALICE_ID}\n"
+        f"publish:\n  dry_run: {dry_run}\n"
         f"budget:\n  enabled: {enabled}\n"
         "  session_tokens: 88000\n"
         "  weekly_tokens: 1500000\n"
@@ -366,6 +377,30 @@ def test_sighup_with_a_broken_file_keeps_the_previous_config(tmp_path, caplog):
 
     assert daemon.governor.config.enabled is True
     assert "keeping the previous configuration" in caplog.text
+
+
+def test_sighup_reloads_the_quieter_brake(tmp_path):
+    """`publish.dry_run` takes the mechanism `budget.enabled` built."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml(dry_run="false"))
+    assert daemon.publisher.config.dry_run is False
+
+    path.write_text(config_yaml(dry_run="true"), encoding="utf-8")
+    daemon.reload_config()
+
+    assert daemon.publisher.config.dry_run is True
+    assert daemon.config.publish.dry_run is True
+
+
+def test_sighup_with_a_broken_file_keeps_the_previous_dry_run(tmp_path):
+    """A typo must not silently start posting what a dry run was hiding."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml(dry_run="true"))
+    daemon.reload_config()
+    assert daemon.publisher.config.dry_run is True
+
+    path.write_text("github: [unclosed\n", encoding="utf-8")
+    daemon.reload_config()
+
+    assert daemon.publisher.config.dry_run is True
 
 
 def test_sighup_does_not_swap_a_changed_repository(tmp_path, caplog):
@@ -523,6 +558,18 @@ def test_workers_share_the_queue_and_the_governor(tmp_path):
     workers = make_workers(tmp_path, 3)
     assert len({id(worker.governor) for worker in workers}) == 1
     assert len({id(worker.queue) for worker in workers}) == 1
+
+
+def test_workers_share_one_publisher(tmp_path):
+    """A second publisher would be a second thing for SIGHUP to find."""
+    workers = make_workers(tmp_path, 3)
+    assert len({id(worker.publisher) for worker in workers}) == 1
+
+
+def test_every_worker_can_record_a_run(tmp_path):
+    """One SQLite file, so a RunStore each is a view rather than a copy."""
+    workers = make_workers(tmp_path, 3)
+    assert all(worker.runs is not None for worker in workers)
 
 
 # -- which engine the daemon runs ----------------------------------------

@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from pr_review_agent.budget import Governor, Mode, StopReason, Usage, UsageConfidence
-from pr_review_agent.config import BudgetConfig
+from pr_review_agent.config import BudgetConfig, PublishConfig
 from pr_review_agent.engine import (
     FULL,
     Capabilities,
@@ -25,9 +25,11 @@ from pr_review_agent.engine import (
 from pr_review_agent.engine.models import Outcome, ReviewResult
 from pr_review_agent.poller.client import GitHubClient, GitHubClientError
 from pr_review_agent.poller.endpoints import RepoEndpoints
+from pr_review_agent.publisher import Publisher
 from pr_review_agent.queue import Claim, QueueStatus, ReviewQueue
+from pr_review_agent.runs import RunStore
 from pr_review_agent.store import SqliteStore
-from pr_review_agent.triggers.models import Trigger, TriggerKind
+from pr_review_agent.triggers.models import CommentSource, Trigger, TriggerKind
 from pr_review_agent.worker import ReviewWorker
 
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
@@ -71,6 +73,8 @@ def mention(comment_id=99) -> Trigger:
         head_sha=None,
         actor_id=114395272,
         dedupe_key=f"mention:{REPO}:{PR}:{comment_id}",
+        comment_id=comment_id,
+        comment_source=CommentSource.ISSUE,
     )
 
 
@@ -93,6 +97,60 @@ def client_returning(body: dict | None, status: int = 200) -> GitHubClient:
         return httpx.Response(status, json=body)
 
     return GitHubClient(token="fake-token", transport=httpx.MockTransport(handler))
+
+
+class GitHubDouble:
+    """Answers reads with the pull request and writes with a comment id.
+
+    Records every request, because half of what the publisher has to get
+    right is *which* call it made and in what order.
+    """
+
+    def __init__(
+        self,
+        head_sha: str,
+        comment_id: int = 555,
+        write_status: int = 201,
+        head_moves_to: str | None = None,
+    ):
+        self.requests: list[httpx.Request] = []
+        self._head_sha = head_sha
+        self._comment_id = comment_id
+        self._write_status = write_status
+        # The worker and the publisher read the same endpoint minutes apart,
+        # so a superseded head is a head that changes *between* those two
+        # reads -- not one that was always wrong.
+        self._head_moves_to = head_moves_to
+        self._reads = 0
+
+    def client(self) -> GitHubClient:
+        return GitHubClient(
+            token="fake-token", transport=httpx.MockTransport(self._handle)
+        )
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.method == "GET":
+            self._reads += 1
+            head = self._head_sha
+            if self._head_moves_to is not None and self._reads > 1:
+                head = self._head_moves_to
+            return httpx.Response(200, json=payload(head))
+        if self._write_status >= 400:
+            return httpx.Response(self._write_status, text="nope")
+        return httpx.Response(self._write_status, json={"id": self._comment_id})
+
+    @property
+    def paths(self) -> list[str]:
+        return [r.url.path for r in self.requests]
+
+    @property
+    def comments(self) -> list[httpx.Request]:
+        return [r for r in self.requests if "/comments" in r.url.path]
+
+    @property
+    def reactions(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.url.path.endswith("/reactions")]
 
 
 @dataclass
@@ -152,6 +210,8 @@ class Fixture:
     queue: ReviewQueue
     governor: Governor
     engine: object
+    runs: RunStore
+    github: GitHubDouble | None = None
     ledger: list = field(default_factory=list)
 
 
@@ -174,18 +234,38 @@ def stop_reasons(store: SqliteStore) -> list[str]:
 def wired_fixture(tmp_path, workspace, git_remote):
     """A worker over the git double, with a client that answers /pulls/7."""
 
-    def build(engine=None, config=None, client=None, queue_class=ReviewQueue):
+    def build(
+        engine=None,
+        config=None,
+        client=None,
+        queue_class=ReviewQueue,
+        dry_run=False,
+        github=None,
+    ):
         store = SqliteStore(tmp_path / "state.db")
         store.__enter__()
         queue = queue_class(store)
         governor = Governor(store, config or budget())
+        runs = RunStore(store)
+        endpoints = RepoEndpoints("owner", "name")
+        if client is None and github is None:
+            github = GitHubDouble(git_remote.head_sha)
+        resolved = github.client() if client is None and github else client
+        assert resolved is not None
         worker = ReviewWorker(
             queue=queue,
             governor=governor,
             workspace=workspace,
             engine=engine or FakeEngine(),
-            client=client or client_returning(payload(git_remote.head_sha)),
-            endpoints=RepoEndpoints("owner", "name"),
+            client=resolved,
+            endpoints=endpoints,
+            publisher=Publisher(
+                client=resolved,
+                endpoints=endpoints,
+                runs=runs,
+                config=PublishConfig(dry_run=dry_run),
+            ),
+            runs=runs,
             owner="worker-1",
         )
         return Fixture(
@@ -194,6 +274,8 @@ def wired_fixture(tmp_path, workspace, git_remote):
             queue=queue,
             governor=governor,
             engine=worker.engine,
+            runs=runs,
+            github=github,
         )
 
     built: list[Fixture] = []
@@ -734,3 +816,156 @@ async def test_only_a_completed_run_counts_as_progress(wired):
     await fixture.worker.run_once()
 
     assert fixture.worker.completed == 0
+
+
+# -- the publisher's two call sites --------------------------------------
+#
+# The acknowledgement is immediate and the publication is late, and the
+# order between them is what the 15 s criterion rests on.
+
+
+async def test_the_trigger_is_acknowledged_before_anything_slow(wired):
+    """A review takes minutes; the 👀 must not queue behind it."""
+    fixture = wired()
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.github.paths[0].endswith("/reactions")
+
+
+async def test_a_mention_is_acknowledged_on_its_own_comment(wired):
+    fixture = wired()
+    fixture.queue.enqueue(mention(comment_id=4321), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.github.reactions[0].url.path == (
+        "/repos/owner/name/issues/comments/4321/reactions"
+    )
+
+
+async def test_a_failed_acknowledgement_still_yields_a_review(wired, git_remote):
+    """Losing a courtesy must not cost a reserved review."""
+    github = GitHubDouble(git_remote.head_sha, write_status=500)
+    fixture = wired(github=github)
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.engine.requests  # the engine still ran
+    (row,) = ledger_rows(fixture.store)
+    assert row[3] == 1_000  # and it still settled what it spent
+
+
+async def test_a_completed_review_is_recorded_then_published(wired):
+    fixture = wired()
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.github.comments[0].method == "POST"
+    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+
+
+async def test_a_superseded_head_is_never_posted(wired, git_remote):
+    """The review ran against a head the pull request has since left.
+
+    The head moves between the worker's read and the publisher's, which is
+    the only way it can move: both read the same endpoint.
+    """
+    github_moving = GitHubDouble(
+        git_remote.head_sha, head_moves_to="a-newer-commit-entirely"
+    )
+    fixture = wired(github=github_moving)
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.github.comments == []
+    # Done rather than retried: a push is not a trigger, so another attempt
+    # would re-read the same stale sha and reserve allowance to do it.
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+
+
+async def test_a_failed_publish_is_retried_without_a_second_review(wired, git_remote):
+    """The money is already spent; a flaky write must not spend it again."""
+    github = GitHubDouble(git_remote.head_sha, write_status=502)
+    fixture = wired(github=github)
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.PENDING
+    assert len(fixture.engine.requests) == 1
+
+    github._write_status = 201  # GitHub recovers
+    await fixture.worker.run_once()
+
+    assert len(fixture.engine.requests) == 1  # the engine was not run again
+    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+
+
+async def test_a_republished_run_costs_nothing(wired, git_remote):
+    """A resume reaches no engine, and its ledger row has to say so."""
+    github = GitHubDouble(git_remote.head_sha, write_status=502)
+    fixture = wired(github=github)
+    fixture.queue.enqueue(opened(), now=NOW)
+    await fixture.worker.run_once()
+
+    github._write_status = 201
+    await fixture.worker.run_once()
+
+    resumed = ledger_rows(fixture.store)[-1]
+    assert resumed[3] == 0  # used_tokens
+    assert resumed[4] == str(UsageConfidence.EXACT)
+
+
+async def test_a_lapsed_lease_publishes_nothing(wired):
+    """`settle` returning False is how a worker learns to discard a result.
+
+    It now discards a comment under the agent's own account, not just a
+    number.
+    """
+    fixture = wired()
+    fixture.queue.enqueue(opened(), now=NOW)
+    claim = fixture.queue.claim(now=NOW, owner="worker-1", admit=fixture.governor.admit)
+    stale = replace(claim, owner="a-worker-that-died")
+
+    await fixture.worker.run_one(stale)
+
+    assert fixture.github.comments == []
+
+
+@pytest.mark.parametrize("outcome", [Outcome.TRUNCATED, Outcome.FAILED])
+async def test_an_unfinished_run_publishes_nothing(wired, outcome):
+    """Only a completed run carries publishable findings."""
+    fixture = wired(engine=OutcomeEngine(outcome=outcome))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.github.comments == []
+    assert fixture.runs.unpublished_for(REPO, PR) is None
+
+
+async def test_a_dry_run_reviews_and_posts_nothing(wired):
+    """The full pipeline, spending the same tokens, with no comment."""
+    fixture = wired(dry_run=True)
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.engine.requests
+    assert fixture.github.comments == []
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+
+
+async def test_a_dry_run_is_not_re_offered_forever(wired):
+    fixture = wired(dry_run=True)
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.runs.unpublished_for(REPO, PR) is None
