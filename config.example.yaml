@@ -16,10 +16,10 @@
 #   section -- including plausible-looking near-misses like `reviewer_share`
 #   for `reviewer_share_pct`.
 #
-#   ONLY SETTINGS SOMETHING READS ARE ACCEPTED. There is no `engine` or
-#   `publish` section yet because those components do not exist; they arrive
-#   with the code that reads them. A setting that quietly does nothing is
-#   the failure this rule prevents.
+#   ONLY SETTINGS SOMETHING READS ARE ACCEPTED. There is no `publish`
+#   section yet because that component does not exist; it arrives with the
+#   code that reads it. A setting that quietly does nothing is the failure
+#   this rule prevents.
 #
 # CREDENTIALS ARE NOT IN THIS FILE. The GitHub token is read from the
 # GITHUB_TOKEN environment variable, so it can come from a systemd
@@ -196,3 +196,41 @@ workspace:
   # The setting that bounds what a checkout may COST is not here -- it is
   # budget.max_changed_files / max_changed_lines, with every other cap.
   cache_dir: .cache/repos
+
+# ---------------------------------------------------------------------------
+# engine -- optional for now. Which coding agent reviews, and how it is run.
+# ---------------------------------------------------------------------------
+#
+# Optional only because nothing drains the queue yet, so an absent section
+# cannot spend anything. The change that wires a worker to the seam is the
+# one that makes it required.
+#
+# Every adapter is a command-line tool invoked as a subprocess; no vendor SDK
+# is linked. See docs/ENGINE.md for the argv this produces and why each flag
+# is in it.
+engine:
+  # Optional (default claude). The executable to run, found on PATH.
+  binary: claude
+
+  # REQUIRED, no default. A default model would be a cost nobody chose.
+  model: claude-sonnet-5
+
+  # REQUIRED, no default. What this adapter was written against. A mismatch
+  # WARNS and proceeds rather than refusing: the output parse is what
+  # actually protects the run and it already fails loudly, while refusing
+  # would take the reviewer offline on a routine upgrade.
+  expected_version: '2.1.274'
+
+  # REQUIRED. Wall clock for one review. The process is killed past it --
+  # and a killed run leaves tokens spent with no envelope to measure them,
+  # so this is a real spending setting, not just a liveness one.
+  timeout_seconds: 900
+
+  # Optional (default none). Files in the REVIEWED repository that describe
+  # its review standards. They are read AT THE MERGE BASE, never at the pull
+  # request head, so opening a pull request cannot rewrite the reviewer's
+  # instructions. Anyone who can merge to the base branch still can.
+  #
+  # A path that does not exist in the repository is skipped.
+  standards_paths:
+    - AGENTS.md

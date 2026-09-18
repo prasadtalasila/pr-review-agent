@@ -22,9 +22,9 @@ fail at startup, not silently fall back to a default that spends tokens. That
 applies to unknown top-level sections and to unknown keys inside a section.
 
 Only the sections backed by implemented components are accepted today. The
-`publish` and `engine` sections described in [BUDGET.md](BUDGET.md) will be
-added with the components that read them — adding them earlier would mean
-accepting settings that do nothing, which is the failure this rule exists to
+`publish` section described in [BUDGET.md](BUDGET.md) will be added with the
+component that reads it — adding it earlier would mean accepting settings
+that do nothing, which is the failure this rule exists to
 prevent. The same rule is why `budget` carries `max_run_tokens` but not
 `max_turns`: the governor reserves against the first, and nothing yet reads
 the second.
@@ -188,6 +188,39 @@ spending cap. Unknown keys inside `workspace` are still rejected.
 
 A relative path is resolved against the working directory the daemon starts
 in, and logged absolute at `INFO`, exactly as `store.path` is.
+
+### `engine`
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `model` | string | yes | Passed to the CLI's `--model`. |
+| `expected_version` | string | yes | What the adapter was written against. A mismatch warns; it does not refuse. |
+| `timeout_seconds` | number | yes | Wall clock for one review. The process is killed past it. |
+| `binary` | string | no (default `claude`) | The executable to run, found on `PATH`. |
+| `standards_paths` | list of strings | no (default none) | Files in the *reviewed* repository holding its review standards. |
+
+The **third** optional section, and unlike `store` and `workspace` its
+argument is temporal rather than structural: nothing drains the queue yet, so
+an absent `engine` section cannot spend anything. The change that wires a
+worker to the seam is the change that makes it required.
+
+Inside the section nothing is softened. `model` and `expected_version` have
+no defaults for the same reason the plan token counts have none — a default
+model is a cost nobody chose, and a default version pin is a claim about
+output nobody checked. `timeout_seconds` is a spending setting and not merely
+a liveness one: a killed run leaves tokens spent with no envelope to measure
+them.
+
+**`standards_paths` are read at the merge base, never at the pull request
+head.** The engine is generic and the standards are per-repository, so they
+have to come from the repository under review — but a pull request that could
+rewrite the reviewer's instructions has talked its way past every other
+control in the system. Reading at the merge base narrows the trusted set to
+people who can merge to the base branch. That set is smaller, not empty, and
+[DESIGN.md](DESIGN.md#-prompt-injection-is-in-scope) says so. A configured
+path that does not exist in the repository is skipped.
+
+See [ENGINE.md](ENGINE.md) for the argv these keys produce.
 
 ## 📄 A minimal file
 

@@ -6,10 +6,19 @@ tools -- ``claude``, ``codex``, ``opencode`` -- invoked as subprocesses; no
 vendor SDK is linked. See ``docs/ENGINE.md``.
 """
 
+from .claude import ClaudeCliEngine
+from .cli import (
+    CliEngine,
+    EngineError,
+    EngineProtocolError,
+    EngineTimeout,
+    EngineUnavailable,
+)
 from .fake import FULL, FakeEngine
 from .models import (
     Capabilities,
     Finding,
+    Outcome,
     ReviewEngine,
     ReviewRequest,
     ReviewResult,
@@ -19,8 +28,15 @@ from .models import (
 __all__ = [
     "FULL",
     "Capabilities",
+    "ClaudeCliEngine",
+    "CliEngine",
+    "EngineError",
+    "EngineProtocolError",
+    "EngineTimeout",
+    "EngineUnavailable",
     "FakeEngine",
     "Finding",
+    "Outcome",
     "ReviewEngine",
     "ReviewRequest",
     "ReviewResult",

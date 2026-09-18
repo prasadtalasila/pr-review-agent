@@ -44,6 +44,10 @@ pythonpath = ["src"]
 # The client and poller are asyncio-native; every async test in the suite
 # wants the default event loop, so marking each one individually is noise.
 asyncio_mode = "auto"
+# A `live` test runs a real coding agent and spends real tokens, so it is
+# deselected by default and never runs in CI. `-m live` opts in.
+addopts = ["-m", "not live"]
+markers = ["live: runs a real engine binary and spends tokens; opt in with -m live"]
 
 [tool.coverage.run]
 source = ["src/pr_review_agent"]

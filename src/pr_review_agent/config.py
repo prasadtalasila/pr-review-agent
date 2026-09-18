@@ -363,6 +363,69 @@ class WorkspaceConfig:
         return cls(cache_dir=cache_dir)
 
 
+#: The CLI an adapter runs when the operator does not name one.
+DEFAULT_ENGINE_BINARY = "claude"
+
+
+@dataclass(frozen=True)
+class EngineConfig:
+    """Which coding agent reviews, and the rails around one invocation.
+
+    ``model`` and ``expected_version`` have no defaults for the same reason
+    the plan token counts have none: a default model is a cost nobody chose,
+    and a default version pin is a claim about output nobody checked.
+
+    ``standards_paths`` are read from the repository under review **at the
+    merge base**, never at the pull request head, so opening a pull request
+    cannot rewrite the reviewer's instructions.
+    """
+
+    model: str
+    expected_version: str
+    timeout_seconds: float
+    binary: str = DEFAULT_ENGINE_BINARY
+    standards_paths: tuple[str, ...] = ()
+
+    @classmethod
+    def parse(cls, data: dict) -> EngineConfig:
+        """Validate the ``engine`` section."""
+        return cls(
+            model=_text(data, "model"),
+            expected_version=_text(data, "expected_version"),
+            timeout_seconds=_timeout(data),
+            binary=(
+                _text(data, "binary") if "binary" in data else DEFAULT_ENGINE_BINARY
+            ),
+            standards_paths=_standards_paths(data),
+        )
+
+
+def _text(data: dict, key: str) -> str:
+    """Read a required non-empty string from the ``engine`` section."""
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"engine.{key} must be a non-empty string")
+    return value
+
+
+def _timeout(data: dict) -> float:
+    """Read the wall clock one review may not outlive."""
+    value = data.get("timeout_seconds")
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        raise ConfigError("engine.timeout_seconds must be a positive number")
+    return float(value)
+
+
+def _standards_paths(data: dict) -> tuple[str, ...]:
+    """Read the optional list of standards files."""
+    value = data.get("standards_paths", [])
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ConfigError("engine.standards_paths must be a list of repository paths")
+    return tuple(value)
+
+
 @dataclass(frozen=True)
 class Config:
     """The whole configuration file."""
@@ -372,6 +435,10 @@ class Config:
     budget: BudgetConfig
     store: StoreConfig
     workspace: WorkspaceConfig
+    #: Optional only until something drains the queue: nothing calls an
+    #: engine yet, so an absent section cannot spend. The change that wires
+    #: a worker to the seam is the one that makes it required.
+    engine: EngineConfig | None = None
 
     @classmethod
     def from_mapping(cls, data: Any) -> Config:
@@ -379,7 +446,7 @@ class Config:
         if not isinstance(data, dict):
             raise ConfigError("configuration root must be a mapping")
         unknown = sorted(
-            set(data) - {"github", "triggers", "budget", "store", "workspace"}
+            set(data) - {"github", "triggers", "budget", "store", "workspace", "engine"}
         )
         if unknown:
             raise ConfigError(f"unknown top-level sections: {unknown}")
@@ -427,6 +494,26 @@ class Config:
                 _section(data, "workspace", {"cache_dir"})
                 if "workspace" in data
                 else {}
+            ),
+            # Absent is a real answer here, not a default: there is no model
+            # an operator could be assumed to have chosen. Present means
+            # every key that decides a cost has been supplied.
+            engine=(
+                EngineConfig.parse(
+                    _section(
+                        data,
+                        "engine",
+                        {
+                            "binary",
+                            "model",
+                            "timeout_seconds",
+                            "standards_paths",
+                            "expected_version",
+                        },
+                    )
+                )
+                if "engine" in data
+                else None
             ),
         )
 

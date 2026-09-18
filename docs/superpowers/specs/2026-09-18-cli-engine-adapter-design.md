@@ -35,7 +35,7 @@ Three deliberate extensions beyond "the adapter and nothing else", each
 justified below rather than smuggled in:
 
 1. `ReviewResult` gains an `outcome` field (§ The seam change).
-2. `Workspace` gains a `show(ref, path)` read (§ Standards).
+2. A standards read at the merge base (§ Standards).
 3. `config.yaml` gains an `engine` section (§ Configuration).
 
 ## What the CLI actually offers
@@ -147,9 +147,17 @@ whoever opened the pull request.
 
 They are read at `checkout.merge_base`, which is already a field on
 `Checkout` and already fetched, so this needs no second network path:
-`git show <merge_base>:<path>` against the mirror, via a new
-`Workspace.show(ref, path)`. The paths are configured; a missing path is
-skipped; the total is capped so one large file cannot crowd out the diff.
+`git show <merge_base>:<path>`, through the existing hardened `run_git`.
+
+**Implemented differently from the first draft of this section**, which put
+the read on `Workspace` as `show(ref, path)`. That would have made the engine
+hold a `Workspace`, and it is not needed: a linked worktree shares the
+mirror's object database, so running `git show` with `-C checkout.path`
+reaches a commit that is not checked out. The read lives in
+`engine/standards.py` and takes only the `Checkout` it is already given.
+
+The paths are configured; a missing path is skipped; the total is capped so
+one large file cannot crowd out the diff.
 
 **The trust statement, recorded explicitly in `DESIGN.md`:** base-ref
 standards are trusted at merge-permission level. Anyone who can merge to the
@@ -253,14 +261,14 @@ nothing still has to settle.
 | `structured_output` | `true` | `--json-schema` validates and re-prompts |
 | `usage_reporting` | `true` | the envelope reports tokens |
 | `read_only_sandbox` | `true` | `--tools` plus `--restricted` |
-| `subagents` | `true` | the CLI can fan out |
+| `subagents` | `false` | the CLI can fan out; this tool set does not let it |
 | `prompt_caching` | `true` | the envelope reports cache tokens, so it happens |
 
-`subagents` describes the engine, not this run: the configured tool set omits
-the fan-out tool, so no review actually spawns one. The flag has no consumer
-yet, and answering it about the engine is the question it asks. The docstring
-in `models.py` already says the last three flags are declared rather than
-used.
+`subagents` was `true` in the first draft, on the argument that the flag
+describes the engine rather than the run. That is inconsistent with
+`read_only_sandbox`, which is a claim about the argv and nothing else: if one
+is answered as configured then both must be. The configured tool set has no
+fan-out tool, so the honest answer is `false`.
 
 ## Version
 

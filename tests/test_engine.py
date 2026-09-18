@@ -1,6 +1,7 @@
 """The engine seam: the contract, and the conformance every engine owes it."""
 
 import dataclasses
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,8 +11,10 @@ from pr_review_agent.budget import Governor, Mode, Usage, UsageConfidence
 from pr_review_agent.config import BudgetConfig
 from pr_review_agent.engine import (
     FULL,
+    ClaudeCliEngine,
     FakeEngine,
     Finding,
+    Outcome,
     ReviewEngine,
     ReviewRequest,
     ReviewResult,
@@ -54,6 +57,37 @@ def request(tmp_path: Path) -> ReviewRequest:
     )
 
 
+class StubbedClaude(ClaudeCliEngine):
+    """The real adapter with the subprocess taken out.
+
+    Every rule below is about what an engine returns, not about how it got
+    there, so the adapter can sit in the conformance suite without a binary,
+    a network or a token.
+    """
+
+    ENVELOPE = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "usage": {"input_tokens": 900, "output_tokens": 100},
+            "structured_output": {"findings": []},
+        }
+    )
+
+    async def preflight(self) -> None:
+        """No binary to ask for a version."""
+
+    async def run(self, argv, prompt, *, cwd) -> str:
+        """Return a recorded envelope instead of running anything."""
+        del argv, prompt, cwd
+        return self.ENVELOPE
+
+    async def prompt(self, request) -> str:
+        """Skip the git read; the prompt is not what these rules are about."""
+        del request
+        return "review the diff"
+
+
 # Every engine in the suite. A second adapter joins this list rather than
 # growing its own copy of the rules below.
 ENGINES = [
@@ -63,6 +97,7 @@ ENGINES = [
         capabilities=dataclasses.replace(FULL, usage_reporting=False),
         usage=Usage(tokens=0, confidence=UsageConfidence.UNAVAILABLE, engine="silent"),
     ),
+    StubbedClaude(model="claude-sonnet-5", expected_version="2.1.274"),
 ]
 
 
@@ -96,6 +131,13 @@ async def test_declared_usage_reporting_matches_what_is_returned(engine, tmp_pat
         assert result.usage.confidence is UsageConfidence.UNAVAILABLE
 
 
+@pytest.mark.parametrize("engine", ENGINES, ids=lambda e: e.name)
+async def test_findings_are_published_only_by_a_completed_run(engine, tmp_path):
+    """A run that was cut off did not review the pull request."""
+    result = await engine.review(request(tmp_path))
+    assert result.outcome is Outcome.COMPLETED or result.findings == ()
+
+
 # -- the result invariants --
 
 
@@ -119,6 +161,30 @@ def test_unavailable_usage_with_no_tokens_is_fine():
         usage=Usage(tokens=0, confidence=UsageConfidence.UNAVAILABLE, engine="fake"),
     )
     assert result.usage.tokens == 0
+
+
+@pytest.mark.parametrize("outcome", [Outcome.TRUNCATED, Outcome.FAILED])
+def test_a_run_that_did_not_complete_cannot_carry_findings(outcome):
+    # "The publisher may post these" is a property of the seam, so it is
+    # enforced where the result is built rather than in each adapter.
+    with pytest.raises(ValueError, match="publishable findings"):
+        ReviewResult(
+            findings=(
+                Finding(path="x", line=1, severity=Severity.NIT, body="stopped early"),
+            ),
+            usage=Usage(tokens=10, confidence=UsageConfidence.EXACT, engine="fake"),
+            outcome=outcome,
+        )
+
+
+def test_a_run_that_did_not_complete_still_carries_its_usage():
+    """The money is spent whatever the run concluded."""
+    result = ReviewResult(
+        findings=(),
+        usage=Usage(tokens=10, confidence=UsageConfidence.EXACT, engine="fake"),
+        outcome=Outcome.TRUNCATED,
+    )
+    assert result.usage.tokens == 10
 
 
 @pytest.mark.parametrize("engine_name", [None, ""])
