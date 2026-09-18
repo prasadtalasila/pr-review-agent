@@ -39,7 +39,13 @@ import logging
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 
-from ..triggers.models import Actor, Comment, PayloadError, PullRequest
+from ..triggers.models import (
+    Actor,
+    Comment,
+    CommentSource,
+    PayloadError,
+    PullRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +81,11 @@ def comments(repo: str, items: Iterable[dict]) -> Iterator[Comment]:
     Both endpoints are handled by one function because the classifier treats
     a conversation comment and an inline diff comment identically: the only
     difference in the payloads is which URL field names the pull request.
+
+    That difference is recorded on ``Comment.source`` all the same. The
+    publisher reacts on the comment somebody typed the mention into, and the
+    two endpoints take reactions at different URLs -- so the one field that
+    distinguishes them is worth keeping while it is still in hand.
     """
     for item in items:
         try:
@@ -88,9 +99,23 @@ def comments(repo: str, items: Iterable[dict]) -> Iterator[Comment]:
                 author=Actor.from_api(item.get("user")),
                 body=item.get("body") or "",
                 updated_at=parse_timestamp(item["updated_at"]),
+                source=_source(item),
             )
         except (PayloadError, AttributeError, KeyError, TypeError, ValueError) as exc:
             _skip("comment", item, exc)
+
+
+def _source(item: dict) -> CommentSource:
+    """Which endpoint this payload came from.
+
+    ``pull_request_url`` is present on an inline diff comment and absent on
+    a conversation one -- the same field ``_pr_number`` already branches on.
+    """
+    return (
+        CommentSource.REVIEW
+        if item.get("pull_request_url") is not None
+        else CommentSource.ISSUE
+    )
 
 
 def _pr_number(item: dict) -> int | None:

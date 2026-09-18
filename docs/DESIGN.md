@@ -220,8 +220,12 @@ vector. Three mitigations, none of which relies on the model behaving:
 1. The review prompt frames diffs and comments explicitly as data.
 2. The worker runs with a read-only tool set.
 3. The publisher takes no approval or merge action regardless of what a review
-   concludes — output is always event `COMMENT`, never `REQUEST_CHANGES`, so a
-   machine's judgement can neither block nor authorise a merge.
+   concludes, so a machine's judgement can neither block nor authorise a
+   merge. As built this is stronger than "always event `COMMENT`": the
+   publisher never calls the reviews endpoint at all, and the only writes it
+   knows how to make are a reaction and an ordinary issue comment. The
+   capability is **absent** rather than guarded — see
+   [PUBLISHER.md](PUBLISHER.md#-the-publisher-cannot-approve-anything).
 
 Under a CLI adapter the first two stop being prompt wording and become argv
 the tool itself enforces — `--tools` naming a read-only set, `--restricted`
@@ -288,7 +292,9 @@ deletion guarantee.
    recognise and skip its own comments, so the loader refuses to start
    rather than let it answer itself.
 4. **The remaining allowlist members.**
-5. **A GitHub token for the poller.** Read-only access to the three endpoints
-   is enough for polling; write scope is only needed once the publisher
-   exists. The checkout deliberately does **not** use it: the fetch is
+5. **A GitHub token.** Read-only access to the three endpoints is enough for
+   polling, but the publisher exists now, so **write scope is required** --
+   `python -m pr_review_agent.bootstrap` refuses to pass without it, because
+   the alternative is a review that is paid for and then 403s on the last
+   call. The checkout deliberately does **not** use it: the fetch is
    anonymous, so no credential can reach the git command line or `.git/config`.

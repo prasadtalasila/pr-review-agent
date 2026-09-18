@@ -536,6 +536,36 @@ def test_unknown_key_in_worker_is_rejected():
         Config.from_mapping(data)
 
 
+# -- publish: the second operator brake ----------------------------------
+#
+# `dry_run` runs the whole pipeline and posts nothing. Unlike the budget
+# token counts it has a safe default -- posting is the point of the agent --
+# so the section is optional.
+
+
+def test_publish_section_is_optional_and_posts_by_default():
+    assert Config.from_mapping(VALID).publish.dry_run is False
+
+
+def test_dry_run_is_read():
+    data = {**VALID, "publish": {"dry_run": True}}
+    assert Config.from_mapping(data).publish.dry_run is True
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, []])
+def test_an_unusable_dry_run_is_rejected(value):
+    """`dry_run: "no"` is truthy in Python and would post for real."""
+    data = {**VALID, "publish": {"dry_run": value}}
+    with pytest.raises(ConfigError, match="publish.dry_run"):
+        Config.from_mapping(data)
+
+
+def test_unknown_key_in_publish_is_rejected():
+    data = {**VALID, "publish": {"dryrun": True}}
+    with pytest.raises(ConfigError, match="unknown keys in 'publish'"):
+        Config.from_mapping(data)
+
+
 # -- the shipped examples, which documentation has already got wrong once --
 
 EXAMPLES = Path(__file__).resolve().parent.parent
@@ -594,6 +624,7 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
         "workspace",
         "engine",
         "worker",
+        "publish",
     }
     assert set(data["github"]) == {"repo", "agent_user_id"}
     assert set(data["triggers"]) == {"allowlist", "handle"}
@@ -608,6 +639,7 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
         "excluded_paths",
     }
     assert set(data["store"]) == {"path"}
+    assert set(data["publish"]) == {"dry_run"}
     assert set(data["workspace"]) == {"cache_dir"}
     assert set(data["engine"]) == {
         "binary",
@@ -631,4 +663,5 @@ def test_the_comprehensive_example_states_the_real_defaults():
     assert shown.store.path == defaults.store.path
     assert shown.workspace.cache_dir == defaults.workspace.cache_dir
     assert shown.worker.count == defaults.worker.count
+    assert shown.publish.dry_run == defaults.publish.dry_run
     assert shown.engine.binary == defaults.engine.binary

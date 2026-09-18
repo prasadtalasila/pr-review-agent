@@ -1,12 +1,13 @@
 """ReviewQueue: dedupe, the per-pull-request lease, and the retry bound."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from pr_review_agent.queue import DEFAULT_LEASE, QueueStatus, ReviewQueue
 from pr_review_agent.store import SqliteStore
-from pr_review_agent.triggers.models import Trigger, TriggerKind
+from pr_review_agent.triggers.models import CommentSource, Trigger, TriggerKind
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 REPO = "INTO-CPS-Association/DTaaS"
@@ -31,6 +32,8 @@ def mention(pr=7, comment_id=99):
         head_sha=None,
         actor_id=114395272,
         dedupe_key=f"mention:{REPO}:{pr}:{comment_id}",
+        comment_id=comment_id,
+        comment_source=CommentSource.ISSUE,
     )
 
 
@@ -292,3 +295,82 @@ def test_a_lapsed_worker_cannot_abandon_the_new_workers_row(queue):
     assert queue.claim(now=later, owner="w2") is not None
     assert queue.abandon(stale) is False
     assert queue.status(stale.trigger.dedupe_key) is QueueStatus.CLAIMED
+
+
+# -- the fields the publisher reacts on ----------------------------------
+
+
+def test_a_claim_restores_the_comment_it_came_from(queue):
+    queue.enqueue(mention(comment_id=4321), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert claim.trigger.comment_id == 4321
+    assert claim.trigger.comment_source is CommentSource.ISSUE
+
+
+def test_a_claim_restores_a_review_comment_source(queue):
+    trigger = replace(mention(), comment_source=CommentSource.REVIEW)
+    queue.enqueue(trigger, now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert claim.trigger.comment_source is CommentSource.REVIEW
+
+
+def test_a_pull_request_claim_names_no_comment(queue):
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert claim.trigger.comment_id is None
+    assert claim.trigger.comment_source is None
+
+
+def test_release_unattempted_hands_the_row_back_without_the_attempt(queue):
+    """For work that reached no engine: it drained nothing to measure."""
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert claim.attempts == 1
+
+    assert queue.release_unattempted(claim) is True
+
+    again = queue.claim(now=NOON, owner="w1")
+    assert again.attempts == 1
+
+
+def test_release_unattempted_never_abandons_a_row(queue):
+    """Three failed posts of a paid review must not exhaust the bound."""
+    queue.enqueue(opened(), now=NOON)
+    for _ in range(5):
+        claim = queue.claim(now=NOON, owner="w1")
+        assert claim is not None
+        queue.release_unattempted(claim)
+    assert queue.status(opened().dedupe_key) is QueueStatus.PENDING
+
+
+def test_release_unattempted_is_owner_guarded(queue):
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    stale = replace(claim, owner="w2")
+    assert queue.release_unattempted(stale) is False
+
+
+def test_holds_is_true_while_the_lease_lives(queue):
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert queue.holds(claim, now=NOON) is True
+
+
+def test_holds_is_false_once_the_lease_lapses(queue):
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert queue.holds(claim, now=NOON + DEFAULT_LEASE + timedelta(seconds=1)) is False
+
+
+def test_holds_is_false_for_another_owner(queue):
+    """Asked before a write that cannot be taken back."""
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert queue.holds(replace(claim, owner="w2"), now=NOON) is False
+
+
+def test_holds_is_false_once_the_row_is_finished(queue):
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    queue.complete(claim)
+    assert queue.holds(claim, now=NOON) is False

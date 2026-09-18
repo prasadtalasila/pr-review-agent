@@ -97,7 +97,9 @@ CREATE TABLE queue (
     attempts     INTEGER NOT NULL DEFAULT 0,
     enqueued_at  TEXT NOT NULL,      -- aware UTC, ISO-8601
     leased_until TEXT,
-    owner        TEXT
+    owner        TEXT,
+    comment_id     INTEGER,          -- the comment a mention came from
+    comment_source TEXT              -- issue|review: which endpoint it was on
 );
 CREATE TABLE ledger (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,7 +117,32 @@ CREATE TABLE ledger (
     reviewed_lines   INTEGER,         -- what the estimate is fitted against
     stop_reason      TEXT             -- why the run ended; NULL until settled
 );
+CREATE TABLE runs (
+    dedupe_key        TEXT PRIMARY KEY, -- the queue row and ledger rows it joins
+    repo              TEXT NOT NULL,
+    pr_number         INTEGER NOT NULL,
+    head_sha          TEXT NOT NULL,    -- the commit the review describes
+    outcome           TEXT NOT NULL,    -- completed|truncated|failed
+    findings          TEXT NOT NULL,    -- JSON array; emptied by the purge
+    comment_id        INTEGER,          -- NULL until published
+    recorded_at       TEXT NOT NULL,
+    published_at      TEXT,             -- NULL until posted (or dry-run)
+    content_purged_at TEXT
+);
 ```
+
+`runs` is the **only** table holding review content, and therefore the only
+one the retention sweep purges. It is written before the publisher is asked,
+which is what lets a failed GitHub write be retried without a second review —
+see [PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
+
+`content_purged_at` is stamped separately from emptying `findings`, so a run
+whose content was deleted after a merge stays distinguishable from a run that
+looked and found nothing.
+
+`queue.comment_id` and `queue.comment_source` are NULL together for a
+`pr_opened` row: nobody wrote a comment to acknowledge, so the 👀 goes on the
+pull request itself.
 
 The ledger is append-only and **never** pruned, even when review content is
 purged after a merge: the rolling budget windows are computed from it, so
@@ -158,10 +185,12 @@ Schema changes are an ordered list applied on connect, with the file's
 watermark tables; version 2 adds the queue; version 3 adds the ledger; version
 4 indexes the ledger by `(actor_id, reserved_at)` for the per-contributor
 budget window; version 5 adds `ledger.reviewed_lines`; version 6 adds
-`ledger.stop_reason`.
+`ledger.stop_reason`; version 7 adds `queue.comment_id` and
+`queue.comment_source`, which is what lets the publisher acknowledge the
+comment a mention was written in; version 8 adds `runs`.
 
 **Each migration and its version bump commit together**, in one transaction.
-That is what lets versions 5 and 6 be an `ALTER TABLE ADD COLUMN`, which
+That is what lets versions 5, 6 and 7 be `ALTER TABLE ADD COLUMN`, which
 SQLite has no `IF NOT EXISTS` form for and which fails outright on a second
 application.
 A crash mid-migration rolls the pair back and the migration is simply

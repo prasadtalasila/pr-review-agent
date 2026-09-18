@@ -48,7 +48,9 @@ from .poller import payloads
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import Endpoint, RepoEndpoints
 from .poller.poller import PollCycle, Poller
+from .publisher import Publisher
 from .queue import ReviewQueue
+from .runs import RunStore
 from .store import SqliteStore
 from .triggers.models import Decision
 from .worker import ReviewWorker
@@ -102,13 +104,16 @@ class Daemon:
     store: SqliteStore
     queue: ReviewQueue
     governor: Governor
+    publisher: Publisher
     config_path: Path | None = None
 
     def reload_config(self) -> None:
-        """Re-read ``config.yaml`` and adopt its ``budget`` section.
+        """Re-read ``config.yaml`` and adopt its ``budget`` and ``publish``
+        sections.
 
-        ``budget.enabled: false`` is the emergency brake, so it must take
-        effect without a restart. Only the budget section is swapped: a
+        ``budget.enabled: false`` is the emergency brake and
+        ``publish.dry_run: true`` is the quieter one, so both must take
+        effect without a restart. Only those two sections are swapped: a
         changed repository or store path mid-flight would mean the daemon's
         watermarks no longer describe what it is polling.
 
@@ -129,16 +134,19 @@ class Daemon:
             self.config.store,
         ):
             logger.warning(
-                "SIGHUP: only the budget section is reloaded; changes to "
-                "github, triggers or store need a restart"
+                "SIGHUP: only the budget and publish sections are reloaded; "
+                "changes to github, triggers or store need a restart"
             )
-        self.config = replace(self.config, budget=fresh.budget)
+        self.config = replace(self.config, budget=fresh.budget, publish=fresh.publish)
         self.governor.reload(fresh.budget)
+        self.publisher.reload(fresh.publish)
         logger.info(
-            "SIGHUP: budget reloaded, enabled=%s session=%d weekly=%d",
+            "SIGHUP: budget reloaded, enabled=%s session=%d weekly=%d; "
+            "publish.dry_run=%s",
             fresh.budget.enabled,
             fresh.budget.session_limit,
             fresh.budget.weekly_limit,
+            fresh.publish.dry_run,
         )
 
     def seed_watermarks(self, *, now: datetime) -> None:
@@ -264,10 +272,11 @@ def build_workers(
 ) -> list[ReviewWorker]:
     """The workers ``daemon``'s configuration asks for.
 
-    They share the queue and the governor, because both are views of one
-    SQLite file: a second governor would measure the same windows and reach
-    the same answers, but a second *queue* would be an invitation to forget
-    that the lease is what serialises them.
+    They share the queue, the governor and the publisher, because all three
+    are views of one SQLite file and one HTTP client: a second governor would
+    measure the same windows and reach the same answers, but a second *queue*
+    would be an invitation to forget that the lease is what serialises them,
+    and a second publisher would be a second thing for ``SIGHUP`` to find.
 
     Each owner is distinct, and that is load-bearing rather than cosmetic:
     ``complete``, ``release``, ``abandon`` and ``settle`` are all guarded on
@@ -281,6 +290,8 @@ def build_workers(
             engine=engine,
             client=client,
             endpoints=endpoints,
+            publisher=daemon.publisher,
+            runs=RunStore(daemon.store),
             owner=f"worker-{index + 1}-{uuid.uuid4().hex[:8]}",
         )
         for index in range(daemon.config.worker.count)
@@ -375,6 +386,12 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
                 # workers claim through, and SIGHUP has something live to
                 # reload.
                 governor=Governor(store, config.budget),
+                publisher=Publisher(
+                    client=client,
+                    endpoints=endpoints,
+                    runs=RunStore(store),
+                    config=config.publish,
+                ),
                 config_path=config_path,
             )
             _install_signal_handlers(stop, daemon.reload_config)

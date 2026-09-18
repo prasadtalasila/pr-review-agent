@@ -4,6 +4,7 @@ are dropped before the classifier ever sees them."""
 from datetime import datetime, timezone
 
 from pr_review_agent.poller.payloads import comments, parse_timestamp, pull_requests
+from pr_review_agent.triggers.models import CommentSource
 
 REPO = "o/r"
 ALICE = {"id": 7, "login": "alice", "type": "User"}
@@ -121,3 +122,26 @@ def test_parse_timestamp_accepts_the_z_suffix():
     assert parse_timestamp("2026-09-17T07:11:00Z") == datetime(
         2026, 9, 17, 7, 11, tzinfo=timezone.utc
     )
+
+
+# -- which endpoint a comment came from ----------------------------------
+#
+# The reaction endpoints differ -- /issues/comments/{id}/reactions and
+# /pulls/comments/{id}/reactions -- so the publisher needs to know which one
+# a mention arrived on. The distinction is already computed here for free.
+
+
+def test_an_issue_comment_names_its_source():
+    (comment,) = comments(REPO, [issue_comment()])
+    assert comment.source is CommentSource.ISSUE
+
+
+def test_a_review_comment_names_its_source():
+    (comment,) = comments(REPO, [review_comment()])
+    assert comment.source is CommentSource.REVIEW
+
+
+def test_the_source_follows_the_url_field_not_the_id():
+    """`pull_request_url` is the only thing that distinguishes the two."""
+    (comment,) = comments(REPO, [review_comment(id=555)])
+    assert comment.source is CommentSource.REVIEW

@@ -88,7 +88,41 @@ async def check_github(
         if revisit is None and result.etag is not None:
             revisit = (path, result.etag)
     results.append(await _check_conditional(client, revisit))
+    results.append(await _check_write_scope(client, endpoints))
     return results
+
+
+async def _check_write_scope(
+    client: GitHubClient, endpoints: RepoEndpoints
+) -> CheckResult:
+    """Can this token post a review comment?
+
+    Read-only scope was sufficient while nothing published, and DESIGN.md
+    said so. It is not now: without write scope a review is polled for,
+    claimed, paid for and computed, and then fails on the last call -- the
+    most expensive possible way to find out about a misconfigured token.
+
+    An absent ``permissions`` object warns rather than fails. A fine-grained
+    token need not report one, and refusing to start over a field GitHub
+    chose not to send would make the check worse than no check.
+    """
+    name = "github write scope"
+    try:
+        result = await client.get(endpoints.repository())
+    except GitHubClientError as exc:
+        return CheckResult(name, False, str(exc))
+    permissions = (
+        result.data.get("permissions") if isinstance(result.data, dict) else None
+    )
+    if not isinstance(permissions, dict) or "push" not in permissions:
+        return CheckResult(
+            name, True, "could not determine write scope from this token"
+        )
+    if not permissions["push"]:
+        return CheckResult(
+            name, False, "the token has no write access; the publisher cannot post"
+        )
+    return CheckResult(name, True, "the token may post comments")
 
 
 async def check_git(repo: str, base_url: str = GITHUB_BASE) -> list[CheckResult]:

@@ -117,7 +117,7 @@ class GitHubClient:
     async def get(self, path: str, etag: str | None = None) -> PollResult:
         """Conditionally GET ``path``, sending ``etag`` as If-None-Match."""
         headers = {"If-None-Match": etag} if etag else {}
-        response = await self._send_with_retries(path, headers)
+        response = await self._send_with_retries("GET", path, headers)
         rate_limit = RateLimit.from_headers(response.headers)
         if response.status_code == 304:
             return PollResult(
@@ -138,20 +138,70 @@ class GitHubClient:
             rate_limit=rate_limit,
         )
 
+    async def post(self, path: str, json: dict) -> dict:
+        """POST ``json`` to ``path`` and return the decoded response body.
+
+        The first verb on this client that changes something. It returns the
+        body rather than a ``PollResult`` because a write has no 304 case
+        and no ETag to carry: two of that type's four fields could never
+        mean anything here.
+
+        A 200 is as acceptable as a 201. Reacting twice to the same comment
+        returns the existing reaction with a 200, and a re-claimed trigger
+        acknowledging again is ordinary rather than an error.
+        """
+        return await self._write("POST", path, json)
+
+    async def patch(self, path: str, json: dict) -> dict:
+        """PATCH ``json`` onto ``path`` and return the decoded response body."""
+        return await self._write("PATCH", path, json)
+
+    async def _write(self, method: str, path: str, json: dict) -> dict:
+        """One write, sharing ``get``'s rate-limit retry and error shape."""
+        response = await self._send_with_retries(method, path, {}, json=json)
+        if response.status_code not in (200, 201):
+            raise GitHubClientError(
+                f"{method} {path} -> {response.status_code}: {response.text[:200]}"
+            )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise GitHubClientError(
+                f"{method} {path} returned a non-JSON body"
+            ) from exc
+        if not isinstance(body, dict):
+            raise GitHubClientError(
+                f"{method} {path} returned {type(body).__name__}, not an object"
+            )
+        return body
+
     async def _send_with_retries(
-        self, path: str, headers: dict[str, str]
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        json: dict | None = None,
     ) -> httpx.Response:
-        """Send the GET, retrying a rate-limited response that names a
+        """Send the request, retrying a rate-limited response that names a
         cooldown this client is willing to wait out. Anything else -- a
         permanent error, or a cooldown longer than
         ``MAX_RETRY_AFTER_SECONDS`` -- is returned for the caller to raise
-        on."""
+        on.
+
+        Shared by the read and the write paths so a secondary rate limit is
+        honoured the same way whichever one hit it. A retried write is safe
+        here because both writes the publisher makes are idempotent in
+        effect: a repeated reaction is a no-op, and a repeated comment edit
+        sets the same body.
+        """
         attempt = 0
         while True:
             try:
-                response = await self._http.get(path, headers=headers)
+                response = await self._http.request(
+                    method, path, headers=headers, json=json
+                )
             except httpx.HTTPError as exc:
-                raise GitHubClientError(f"GET {path} failed: {exc}") from exc
+                raise GitHubClientError(f"{method} {path} failed: {exc}") from exc
             delay = retry_delay(response.headers.get("retry-after"))
             if (
                 delay is None
@@ -160,7 +210,8 @@ class GitHubClient:
             ):
                 return response
             logger.warning(
-                "rate limited on GET %s (status=%s), retrying in %ss",
+                "rate limited on %s %s (status=%s), retrying in %ss",
+                method,
                 path,
                 response.status_code,
                 delay,

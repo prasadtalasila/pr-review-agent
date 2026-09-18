@@ -6,6 +6,7 @@ from .mention import has_mention, strip_non_prose
 from .models import (
     Actor,
     Comment,
+    CommentSource,
     Decision,
     PayloadError,
     PullRequest,
@@ -19,6 +20,7 @@ __all__ = [
     "AllowlistConfigError",
     "Classifier",
     "Comment",
+    "CommentSource",
     "Decision",
     "PayloadError",
     "PullRequest",

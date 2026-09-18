@@ -82,7 +82,7 @@ async def test_a_reachable_repository_passes_every_check():
         ),
         ENDPOINTS,
     )
-    assert len(results) == 4
+    assert len(results) == 5
     assert all(result.ok for result in results)
 
 
@@ -295,3 +295,55 @@ async def test_a_reachable_remote_passes(git_remote, monkeypatch):
     monkeypatch.setenv("GIT_SSL_CAINFO", str(git_remote.ca))
     results = await check_git(git_remote.repo, base_url=git_remote.base_url)
     assert [result.ok for result in results] == [True, True]
+
+
+# -- write scope ---------------------------------------------------------
+#
+# DESIGN.md recorded that read-only sufficed until the publisher existed. It
+# does not now, and the failure mode without this check is a review that is
+# paid for, computed, and then 403s at the last step.
+
+
+def repo_serving(permissions):
+    """Answer the repository read with ``permissions``, everything else 200."""
+    body = {"name": "DTaaS"}
+    if permissions is not None:
+        body["permissions"] = permissions
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/INTO-CPS-Association/DTaaS":
+            return httpx.Response(200, json=body, headers=HEALTHY)
+        return httpx.Response(200, json=[], headers=HEALTHY)
+
+    return handler
+
+
+async def test_a_token_that_can_write_passes():
+    results = await check_github(make_client(repo_serving({"push": True})), ENDPOINTS)
+    assert by_name(results)["github write scope"].ok
+
+
+async def test_a_read_only_token_fails_the_write_check():
+    """The publisher exists now, so read-only is no longer sufficient."""
+    results = await check_github(make_client(repo_serving({"push": False})), ENDPOINTS)
+    check = by_name(results)["github write scope"]
+    assert not check.ok
+    assert "write" in check.detail
+
+
+async def test_an_unreported_permission_warns_rather_than_fails():
+    """A fine-grained token need not report the field; guessing is worse."""
+    results = await check_github(make_client(repo_serving(None)), ENDPOINTS)
+    check = by_name(results)["github write scope"]
+    assert check.ok
+    assert "could not" in check.detail
+
+
+async def test_an_unreadable_repository_fails_the_write_check():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/INTO-CPS-Association/DTaaS":
+            return httpx.Response(404, text="Not Found")
+        return httpx.Response(200, json=[], headers=HEALTHY)
+
+    results = await check_github(make_client(handler), ENDPOINTS)
+    assert not by_name(results)["github write scope"].ok

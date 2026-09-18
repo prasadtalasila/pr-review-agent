@@ -58,6 +58,22 @@ class PullRequest:
     is_draft: bool = False
 
 
+class CommentSource(StrEnum):
+    """Which comments endpoint a comment arrived on.
+
+    The two payloads are interchangeable to the classifier, which is why
+    ``payloads.comments`` maps both with one function. They are not
+    interchangeable to the publisher: reacting to a conversation comment is
+    ``/issues/comments/{id}/reactions`` and reacting to an inline diff
+    comment is ``/pulls/comments/{id}/reactions``, so a reaction posted to
+    the wrong one 404s. The distinction is free here -- it is which URL
+    field the payload carried -- and unrecoverable later.
+    """
+
+    ISSUE = "issue"  # PR conversation comment
+    REVIEW = "review"  # inline diff comment
+
+
 @dataclass(frozen=True)
 class Comment:
     """A PR conversation comment or an inline diff comment.
@@ -83,6 +99,7 @@ class Comment:
     body: str
     updated_at: datetime
     head_sha: str | None = None
+    source: CommentSource = CommentSource.ISSUE
 
 
 class TriggerKind(StrEnum):
@@ -98,6 +115,13 @@ class Trigger:
 
     ``head_sha`` is ``None`` for a mention whose payload did not name one;
     the worker resolves it when it claims the trigger.
+
+    ``comment_id`` and ``comment_source`` are what the publisher acknowledges
+    on, and are ``None`` together for a ``pr_opened`` trigger -- nobody wrote
+    a comment to react to, so the reaction goes on the pull request itself.
+    The id is also embedded in a mention's dedupe key, but that key is an
+    opaque identity string and parsing it back out would make a storage
+    format into an interface.
     """
 
     kind: TriggerKind
@@ -106,6 +130,8 @@ class Trigger:
     head_sha: str | None
     actor_id: int
     dedupe_key: str
+    comment_id: int | None = None
+    comment_source: CommentSource | None = None
 
 
 @dataclass(frozen=True)

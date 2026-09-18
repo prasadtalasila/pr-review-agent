@@ -50,7 +50,7 @@ from datetime import datetime, timedelta
 
 from ._compat import StrEnum
 from .store import SqliteStore, to_utc
-from .triggers.models import Trigger, TriggerKind
+from .triggers.models import CommentSource, Trigger, TriggerKind
 
 #: The budget governor's hook into :meth:`ReviewQueue.claim`. It is handed
 #: the claim's own transaction, so whatever it writes commits with the lease
@@ -91,8 +91,10 @@ class Claim:
 
 _ENQUEUE = """
 INSERT OR IGNORE INTO queue
-    (dedupe_key, kind, repo, pr_number, head_sha, actor_id, status, enqueued_at)
-VALUES (:key, :kind, :repo, :pr, :sha, :actor, :pending, :now)
+    (dedupe_key, kind, repo, pr_number, head_sha, actor_id, status, enqueued_at,
+     comment_id, comment_source)
+VALUES (:key, :kind, :repo, :pr, :sha, :actor, :pending, :now,
+        :comment_id, :comment_source)
 """
 
 # The complement of _CLAIMABLE's attempts test: a row that would otherwise be
@@ -115,7 +117,8 @@ WHERE attempts >= :max_attempts
 # so it happens in Python, by which point a single row would have discarded
 # every alternative. See ``claim``.
 _CLAIMABLE = """
-SELECT dedupe_key, kind, repo, pr_number, head_sha, actor_id, attempts
+SELECT dedupe_key, kind, repo, pr_number, head_sha, actor_id, attempts,
+       comment_id, comment_source
 FROM queue AS q
 WHERE q.attempts < :max_attempts
   AND (q.status = :pending OR (q.status = :claimed AND q.leased_until <= :now))
@@ -142,6 +145,26 @@ UPDATE queue SET status = :status, leased_until = NULL, owner = NULL
 WHERE dedupe_key = :key AND owner = :owner
 """
 
+# `release`, minus the attempt. The bound exists so a poison trigger cannot
+# drain the weekly allowance one retry at a time; work that reached no engine
+# drained nothing, so counting it would abandon a review that has already been
+# paid for. MAX() because attempts is only ever decremented inside the claim
+# that incremented it, and a floor is cheaper than trusting that forever.
+_RELEASE_UNATTEMPTED = """
+UPDATE queue
+SET status = :status, leased_until = NULL, owner = NULL,
+    attempts = MAX(attempts - 1, 0)
+WHERE dedupe_key = :key AND owner = :owner
+"""
+
+# Whether this worker still holds the row it claimed. Read immediately before
+# a GitHub write that cannot be taken back.
+_HOLDS = """
+SELECT 1 FROM queue
+WHERE dedupe_key = :key AND owner = :owner
+  AND status = :claimed AND leased_until > :now
+"""
+
 
 class ReviewQueue:
     """Durable queue of accepted triggers, with one lease per pull request."""
@@ -166,6 +189,8 @@ class ReviewQueue:
             "pr": trigger.pr_number,
             "sha": trigger.head_sha,
             "actor": trigger.actor_id,
+            "comment_id": trigger.comment_id,
+            "comment_source": _text(trigger.comment_source),
             "pending": str(QueueStatus.PENDING),
             "now": _stamp(now, "enqueued_at"),
         }
@@ -224,6 +249,41 @@ class ReviewQueue:
         lease; ``False`` if the lease is no longer held."""
         return self._finish(claim, QueueStatus.PENDING)
 
+    def release_unattempted(self, claim: Claim) -> bool:
+        """Hand ``claim`` back **without** counting the attempt.
+
+        For work that reached no review engine and so spent nothing: the
+        publish-only retry. ``max_attempts`` bounds how much allowance one
+        poison trigger may drain, and a run that drained none has no business
+        being measured against it -- three failed *posts* of a review that
+        was already paid for would otherwise abandon it, leaving the
+        findings recorded and permanently invisible.
+        """
+        params = {
+            "status": str(QueueStatus.PENDING),
+            "key": claim.trigger.dedupe_key,
+            "owner": claim.owner,
+        }
+        with self._store.transaction() as conn:
+            return conn.execute(_RELEASE_UNATTEMPTED, params).rowcount == 1
+
+    def holds(self, claim: Claim, *, now: datetime) -> bool:
+        """Does ``claim``'s owner still hold a live lease on its row?
+
+        ``complete``, ``release`` and ``settle`` are all owner-guarded, which
+        is enough when the thing being discarded is a database row. It is not
+        enough when it is a comment: those guards run *after* the write. This
+        is the same question asked before one.
+        """
+        params = {
+            "key": claim.trigger.dedupe_key,
+            "owner": claim.owner,
+            "claimed": str(QueueStatus.CLAIMED),
+            "now": _stamp(now, "now"),
+        }
+        with self._store.transaction() as conn:
+            return conn.execute(_HOLDS, params).fetchone() is not None
+
     def abandon(self, claim: Claim) -> bool:
         """Give ``claim`` up permanently; ``False`` if its lease is gone.
 
@@ -279,11 +339,18 @@ def _claim(row: tuple, *, owner: str, leased_until: datetime) -> Claim:
             head_sha=row[4],
             actor_id=row[5],
             dedupe_key=row[0],
+            comment_id=row[7],
+            comment_source=None if row[8] is None else CommentSource(row[8]),
         ),
         attempts=row[6] + 1,
         owner=owner,
         leased_until=leased_until,
     )
+
+
+def _text(source: CommentSource | None) -> str | None:
+    """A comment source as it is stored, or ``None`` when there is none."""
+    return None if source is None else str(source)
 
 
 def _stamp(value: datetime, what: str) -> str:

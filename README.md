@@ -121,7 +121,7 @@ publisher lands.
 | Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented |
 | Review worker (claim → run → settle) | implemented |
 | Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, wired to the worker |
-| Publisher | not started |
+| Publisher (👀, head re-check, one comment per pull request) | implemented |
 | Retention sweep | not started |
 
 [docs/ROADMAP.md](docs/ROADMAP.md) has the build order and the acceptance
@@ -171,12 +171,16 @@ queue beside it — claiming through the [budget governor](docs/BUDGET.md),
 checking the pull request out and running the `claude` CLI over it. **This
 spends real allowance.** Every run passes the governor's windows, the
 degradation ladder and the pre-flight estimate first, and `worker.count`
-bounds how many can be in flight; nothing is posted to GitHub, because the
-publisher does not exist yet. See [docs/DAEMON.md](docs/DAEMON.md) and
-[docs/WORKER.md](docs/WORKER.md).
+bounds how many can be in flight. The [publisher](docs/PUBLISHER.md) then
+posts the result: a 👀 as soon as the trigger is claimed, and one comment per
+pull request, edited in place on re-review. **The token now needs write
+scope**; `python -m pr_review_agent.bootstrap` checks it. See
+[docs/DAEMON.md](docs/DAEMON.md) and [docs/WORKER.md](docs/WORKER.md).
 
-`budget.enabled: false` in `config.yaml`, followed by a `SIGHUP`, is the
-emergency brake: it stops the agent reviewing without a restart.
+Two brakes, both live over `SIGHUP` and neither needing a restart.
+`budget.enabled: false` stops the agent *reviewing*. `publish.dry_run: true`
+lets it review exactly as before and post nothing, logging the comment it
+would have written — useful for watching what it would say, and no cheaper.
 
 The suite needs no network and spends no tokens: the trigger pipeline is pure
 functions over fixtures, and the poller tests drive `httpx.MockTransport`.
@@ -197,6 +201,7 @@ the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key.
 | [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
 | [docs/BUDGET.md](docs/BUDGET.md) | The rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, and what is deferred to the engine phase |
 | [docs/WORKER.md](docs/WORKER.md) | What drains the queue? The claim-run-settle loop, what a failed run settles at and why, which failures retry and which are permanent, what a run leaves behind, the supervisor, and why not a process per review |
+| [docs/PUBLISHER.md](docs/PUBLISHER.md) | How does a review become visible, and what stops the agent approving anything? The 👀 at claim time, the live `head_sha` re-check, one comment per pull request, `publish.dry_run`, and why a failed publish never costs a second review |
 | [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
 | [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |

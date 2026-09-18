@@ -22,7 +22,7 @@ they are reproduced here so they survive the issue being closed.
 | Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented, unit tested |
 | Review worker (claim → run → settle), and its supervisor | implemented, unit tested |
 | Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, unit tested, wired |
-| Publisher | not started |
+| Publisher (👀, head re-check, one comment per PR) | implemented, unit tested |
 | Retention sweep | not started |
 
 The ordering is deliberate: the **budget governor lands before the review
@@ -40,11 +40,9 @@ worker**, so the spending rails exist before anything can spend.
    not, because every way to build one assumes an engine that reports tokens,
    and it belongs with the breaker. See
    [BUDGET.md](BUDGET.md#where-layer-3s-three-ceilings-ended-up).
-2. **Publisher.** One line-anchored review, event `COMMENT`, with the
-   `head_sha` re-check immediately before posting. It is also the consumer
-   `ReviewResult.outcome` is waiting for: findings are publishable only from a
-   run that completed.
-3. **Retention sweep.** Purge content on merge; keep the ledger.
+2. **Retention sweep.** Purge content on merge; keep the ledger. It is
+   specified in terms of the `runs` table the publisher added, and
+   `RunStore.purge_content` is already there waiting for a caller.
 
 The queue now drains, and **the agent can spend.** The
 [review worker](WORKER.md) claims through the [governor](BUDGET.md), checks
@@ -55,8 +53,14 @@ and `worker.count`. `CLAUDE.md` §5's rule — nothing reaches an engine outside
 the governor — is doing work rather than describing a property the code had
 for free, and a test pins it.
 
-What is missing is anywhere to put the result: findings are logged and
-dropped until the publisher lands.
+The [publisher](PUBLISHER.md) now makes the result visible: a 👀 at claim
+time, a live `head_sha` re-check, and one comment per pull request edited in
+place on re-review. It can make no other kind of write, which is how
+[DESIGN.md](DESIGN.md#-prompt-injection-is-in-scope)'s third mitigation stops
+being a promise about code and becomes a property of it.
+
+What is missing is anywhere for a finished pull request's content to go:
+review bodies accumulate in `runs` until the retention sweep lands.
 
 A second engine plus a shared conformance suite is deliberately last: the
 seam is worth defining early and filling late. It will be another CLI —
@@ -66,11 +70,19 @@ linked.
 
 ## ✅ Acceptance criteria
 
-- [ ] **Feature is accessible:** the agent posts a line-anchored review on a
-      freshly opened pull request from an allowlisted author, and on an
-      allowlisted maintainer's `@claude` comment, with a 👀 acknowledgement
-      within 15 s of the trigger.
-- [ ] **A clean review** posts a single "no issues found" comment, edited in
+- [x] **Feature is accessible:** the agent posts a review comment on a freshly
+      opened pull request from an allowlisted author, and on an allowlisted
+      maintainer's `@claude` comment, with a 👀 acknowledgement within 15 s of
+      the trigger **being seen**. The original criterion said "a line-anchored
+      review ... within 15 s of the trigger"; both halves were reworded when
+      the publisher landed. Findings are posted in one comment rather than
+      inline, because inline comments require the reviews endpoint and with it
+      an `event` field — see
+      [PUBLISHER.md](PUBLISHER.md#-the-publisher-cannot-approve-anything). And
+      the poll interval is 10–600 s, so no acknowledgement can be within 15 s
+      of a comment being *written*; the 👀 is what makes that latency
+      imperceptible, which is the reason it was specified.
+- [x] **A clean review** posts a single "no issues found" comment, edited in
       place rather than duplicated on re-review.
 - [ ] **Triggers are correctly scoped:** no review on pushes to an existing
       pull request, no auto-review of an unlisted contributor's pull request,
@@ -91,10 +103,11 @@ linked.
       agent usage never exceeds its share of the session or weekly window
       (**done**), and a usage-limit error trips the breaker and decays the
       calibrated estimate (with the engine).
-- [ ] `budget.enabled: false` takes effect without a restart (**done**);
-      `publish.dry_run: true` does too, with the publisher.
-- [ ] **Every posted comment is traceable** to a ledger row recording engine,
-      model, mode, token usage and `usage_confidence`.
+- [x] `budget.enabled: false` takes effect without a restart, and so does
+      `publish.dry_run: true`.
+- [x] **Every posted comment is traceable** to a ledger row recording engine,
+      model, mode, token usage and `usage_confidence`: `runs.dedupe_key` joins
+      the queue row and the ledger rows that paid for it.
 - [ ] **Operates entirely outbound:** no inbound port opened on the host,
       verified end to end from the target server.
 - [ ] **Retention behaves as specified:** review content is purged after a pull
@@ -128,12 +141,15 @@ bugs:
 - The primary GitHub rate limit carries `x-ratelimit-reset` but no
   `Retry-After`, so the client raises rather than sleeping to the reset. See
   [POLLER.md](POLLER.md#-rate-limits-and-retries).
-- A claimed trigger's `head_sha` is the head seen at classification time, and
-  is `None` for a mention. The worker resolves it from `GET /pulls/{n}` when
-  it claims, and reviews the head that read reported. **Re-checking it against
-  the live head immediately before posting is still the publisher's**, and
-  until that exists a review of a superseded commit would be published — see
-  [QUEUE.md](QUEUE.md#-what-the-queue-does-not-do).
+- **A comment GitHub will never accept is retried on every claim for that
+  pull request.** A publish-only retry deliberately does not count against
+  `max_attempts` — the bound measures allowance drained, and a post that
+  reaches no engine drains none — so nothing eventually gives up on it. The
+  retention sweep is where this stops mattering: a purged run is no longer
+  offered for publication.
+- **Review content accumulates in `runs` and nothing purges it yet.**
+  `RunStore.purge_content` exists and has no caller; the retention sweep is
+  the next component.
 - **Nothing validates the configured token limits.** They are the operator's
   guess at a quota the plan does not publish, and until the circuit breaker
   lands the governor will report healthy utilisation while the real limit is
