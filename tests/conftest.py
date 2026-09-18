@@ -112,10 +112,14 @@ def _write_cert(directory: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
 class GitRemote:
     """A loopback HTTPS remote serving one bare repository."""
 
+    #: The server root, as a `Workspace` takes it: no repository path.
+    base_url: str
+    #: The full clone URL, for tests that drive git directly.
     url: str
     ca: pathlib.Path
     serve_root: pathlib.Path
     head_sha: str
+    repo: str = "owner/name"
     base_ref: str = "main"
     requests: list[dict[str, str]] = field(default_factory=list)
 
@@ -214,9 +218,11 @@ def git_remote(tmp_path_factory: pytest.TempPathFactory) -> Iterator[GitRemote]:
     server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
+    base_url = f"https://127.0.0.1:{server.server_address[1]}"
     try:
         yield GitRemote(
-            url=f"https://127.0.0.1:{server.server_address[1]}/owner/name.git",
+            base_url=base_url,
+            url=f"{base_url}/owner/name.git",
             ca=ca,
             serve_root=serve,
             head_sha=head_sha,
