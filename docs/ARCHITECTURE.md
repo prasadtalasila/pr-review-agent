@@ -25,6 +25,14 @@ The ordering is deliberate rather than convenient: **the budget governor lands
 before the review worker**, so the spending rails exist before anything can
 spend.
 
+Component 7 is the only one that is agent-specific, and it is a **process
+boundary, not a library call**: every adapter is a command-line tool
+(`claude`, `codex`, `opencode`) run as a subprocess, and no vendor SDK is
+linked. That is what makes the boundary a containment boundary — its own
+working directory, its own environment, a kill-on-timeout — over a tree the
+agent treats as untrusted. [DESIGN.md](DESIGN.md#-generalisation-to-other-agents)
+has the reasoning and the cost.
+
 ## 🔁 The path an event takes
 
 ```text
@@ -43,10 +51,21 @@ GitHub REST ──► Poller ──► payload mapping ──► Classifier ─�
                                                              Publisher
 ```
 
-Everything down to the queue exists today, and the [daemon
-loop](DAEMON.md) is what drives it on a schedule. Everything below the queue
-does not exist: the queue fills and nothing drains it, which is the intended
-state until the governor lands.
+Every box in that diagram exists except the publisher — and yet **nothing
+drains the queue**, which is still the intended state.
+
+The pieces are there and the wiring between them is not. The [daemon
+loop](DAEMON.md) drives everything down to `enqueue`. The governor can
+`reserve` and `settle`, the [workspace](WORKSPACE.md) can put a pull request
+on disk, and the [engine seam](ENGINE.md) defines what a review engine is
+handed and must return. What does not exist is the **worker**: the thing that
+claims a row, checks the code out, calls an engine and settles the ledger.
+Nor does any engine that could spend, which is why a queue that fills and
+never drains costs nothing.
+
+That ordering is the point. The spending rails were built before anything
+could spend, so the first adapter arrives into a system that can already
+refuse it.
 
 The reservation is taken inside the *same* transaction as the queue claim —
 that is the invariant the whole storage choice rests on, and it is spelled out
@@ -61,6 +80,7 @@ src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
 ├── _startup.py        # token + config, shared by both entry points
 ├── bootstrap.py       # pre-flight egress checks for a new host
+├── budget.py          # rolling windows, the ladder, reserve-then-settle
 ├── config.py          # config.yaml → frozen dataclasses
 ├── daemon.py          # the poll-classify-enqueue loop, and its entry point
 ├── queue.py           # claim protocol and per-pull-request leases

@@ -143,9 +143,12 @@ no `#`.
 constructible, its own tests rely on that, and widening #14 into it is the
 unrelated refactor `CLAUDE.md` §3 rules out.
 
-**Both ids in the shipped examples are placeholders.** `agent_user_id:
-123456789` matches no real account and must be replaced with the reviewer
-account's id before the agent posts anything.
+The reviewer account is **9206466**, and it appears twice in the shipped
+examples: as `agent_user_id`, and again in the allowlist. The second is belt
+and braces only — `Classifier._is_self` runs before the allowlist is
+consulted in both decision paths, so the entry can never be reached. It is
+there so the list reads as the complete set of accounts the deployment knows
+about.
 
 ## Verification
 

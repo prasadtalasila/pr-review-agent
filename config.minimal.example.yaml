@@ -1,10 +1,11 @@
 github:
   repo: INTO-CPS-Association/DTaaS
-  agent_user_id: 123456789
+  agent_user_id: 9206466
 
 triggers:
   allowlist:
     - 114395272
+    - 9206466
 
 budget:
   session_tokens: 88000

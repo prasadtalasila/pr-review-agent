@@ -179,18 +179,21 @@ Every key below is required; everything else has a default. This is
 no comments: it is meant to be copied and edited, and the reasoning belongs
 on this page rather than in a file that becomes somebody's `config.yaml`.
 
-Both numeric ids in it are examples. `agent_user_id` in particular is a
-placeholder and matches no real account — replace it with the reviewer
-account's id before the agent posts anything.
+The agent's own id appears twice: once as `agent_user_id`, and once in the
+allowlist. The second is belt and braces — the `self_author` /
+`self_commenter` checks run *before* the allowlist is consulted, so that
+entry is never reached — and it is there so the list reads as the complete
+set of accounts the deployment knows about.
 
 ```yaml
 github:
   repo: INTO-CPS-Association/DTaaS
-  agent_user_id: 123456789
+  agent_user_id: 9206466
 
 triggers:
   allowlist:
     - 114395272
+    - 9206466
 
 budget:
   session_tokens: 88000
