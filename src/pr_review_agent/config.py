@@ -46,10 +46,16 @@ def _section(data: dict, name: str, allowed: set[str]) -> dict:
 
 @dataclass(frozen=True)
 class GitHubConfig:
-    """The repository to poll and the agent's own identity."""
+    """The repository to poll and the agent's own identity.
+
+    Both are required. Without ``agent_user_id`` the agent cannot recognise
+    its own comments, so a posted review can re-trigger a review of the same
+    pull request -- a loop that spends real tokens and is only visible after
+    it has run. A field whose absence costs money is not optional.
+    """
 
     repo: str
-    agent_user_id: int | None = None
+    agent_user_id: int
 
     @property
     def owner(self) -> str:
@@ -70,7 +76,10 @@ class GitHubConfig:
         if not all(part.strip() for part in repo.split("/")):
             raise ConfigError(f"github.repo must be 'owner/name', got {repo!r}")
         agent_id = data.get("agent_user_id")
-        if agent_id is not None and not isinstance(agent_id, int):
+        # `bool` is excluded for the same reason the token counts exclude it:
+        # it is a subclass of `int`, so `agent_user_id: true` would validate
+        # as user 1 -- a real account, and not the agent's.
+        if isinstance(agent_id, bool) or not isinstance(agent_id, int):
             raise ConfigError("github.agent_user_id must be a numeric user id")
         return cls(repo=repo, agent_user_id=agent_id)
 

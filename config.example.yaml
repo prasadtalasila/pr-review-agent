@@ -35,12 +35,14 @@ github:
   # "/", both halves non-empty.
   repo: INTO-CPS-Association/DTaaS
 
-  # Optional (default null). The numeric id of the account the agent posts
-  # as. Once set, the agent ignores its own comments, so a posted review can
-  # never re-trigger a review. Until then the self_author / self_commenter
-  # rejections never fire -- fill it in as soon as the reviewer account
-  # exists on the host.
-  agent_user_id: null
+  # REQUIRED. The numeric id of the account the agent posts as. It is how
+  # the agent ignores its own comments, so a posted review can never
+  # re-trigger a review of the same pull request. There is no default: a
+  # missing id means the self_author / self_commenter rejections never
+  # fire, and the resulting loop spends real tokens before anyone sees it.
+  #
+  #     curl -s https://api.github.com/users/<login> | grep '"id"'
+  agent_user_id: 9206466
 
 # ---------------------------------------------------------------------------
 # triggers -- REQUIRED. Who may start a review, and what summons one.
@@ -57,6 +59,11 @@ triggers:
   # An empty list is valid and allows nobody. It is the safe starting state.
   allowlist:
     - 114395272  # 8ohamed (Mohamed Abdulkarim)
+    # The agent's own account. Belt and braces: the self_author /
+    # self_commenter checks run before the allowlist is consulted, so this
+    # entry is never reached. It is here so the list reads as the complete
+    # set of accounts the deployment knows about.
+    - 9206466
 
   # Optional (default "claude"). The handle that summons a review:
   # "@claude review this". A leading "@" is stripped. This is what makes the

@@ -98,9 +98,11 @@ rests on, the retry rules, and why the notifications API was not used.
 
 ## 📊 Status
 
-Early. The trigger pipeline, the poller, the persistence layer, the queue and
-the daemon loop that drives them are implemented and unit tested. The daemon
-fills the queue; nothing drains it and nothing posts to GitHub yet.
+Early. The trigger pipeline, the poller, the persistence layer, the queue,
+the budget governor, the checkout and the daemon loop that drives them are
+implemented and unit tested, as is the seam a review engine plugs into. The
+daemon fills the queue; nothing drains it, and nothing posts to GitHub or
+spends anything yet.
 
 | Component | State |
 | :-- | :-- |
@@ -114,7 +116,8 @@ fills the queue; nothing drains it and nothing posts to GitHub yet.
 | Daemon loop (`python -m pr_review_agent.daemon`) | implemented |
 | Budget governor (windows, ladder, reserve-then-settle) | implemented |
 | Workspace (fetch, checkout, merge-base diff, teardown) | implemented |
-| Engine adapter (`ReviewEngine`) | not started |
+| Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented |
+| Engine adapter (a `claude` CLI implementation) | not started |
 | Publisher | not started |
 | Retention sweep | not started |
 
@@ -140,7 +143,8 @@ command -v poetry                       # must print <repo>/.venv/bin/poetry
 poetry install
 poetry run pytest
 
-cp config.minimal.example.yaml config.yaml   # then edit: repo, allowlist, budget
+cp config.minimal.example.yaml config.yaml   # then edit: repo, agent_user_id,
+                                             # allowlist, budget
 ```
 
 Before deploying on a new host, confirm it can reach what the daemon needs:
@@ -160,8 +164,8 @@ GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
 ```
 
 It polls, classifies and enqueues. It does **not** review anything yet: the
-queue fills and nothing drains it until the engine adapter lands, so nothing
-it does can spend allowance. The [budget governor](docs/BUDGET.md) is already
+queue fills and nothing drains it until the worker and the first engine
+adapter land, so nothing it does can spend allowance. The [budget governor](docs/BUDGET.md) is already
 in place ahead of it, which is the point of the build order — the spending
 rails exist before anything can spend. See [docs/DAEMON.md](docs/DAEMON.md).
 
@@ -186,6 +190,7 @@ the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key.
 | [docs/QUEUE.md](docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
 | [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
 | [docs/BUDGET.md](docs/BUDGET.md) | The rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, and what is deferred to the engine phase |
+| [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
 | [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |
 | [DEVELOPER.md](DEVELOPER.md) | How do I set up, test, lint and build this? |

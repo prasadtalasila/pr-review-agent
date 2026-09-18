@@ -156,8 +156,8 @@ GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
 
 It polls on the adaptive interval, classifies what changed, and enqueues what
 the classifier accepts. It claims nothing and calls no review engine, so it
-cannot spend allowance — the queue fills and nothing drains it until the engine
-adapter lands. The [budget governor](docs/BUDGET.md) is already in place ahead
+cannot spend allowance — the queue fills and nothing drains it until the worker
+and the first engine adapter land. The [budget governor](docs/BUDGET.md) is already in place ahead
 of it, so the spending rails exist before anything can spend.
 
 Same conventions as the bootstrap checks: `GITHUB_TOKEN` from the environment,

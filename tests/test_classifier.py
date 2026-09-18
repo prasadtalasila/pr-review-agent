@@ -78,6 +78,27 @@ def test_ineligible_pull_requests_are_rejected(classifier, pr, reason):
     assert decision.reason == reason
 
 
+def test_an_allowlisted_agent_still_cannot_trigger_itself():
+    """The shipped config lists the agent's own id, so this ordering matters.
+
+    `config.example.yaml` puts the reviewer account in the allowlist as belt
+    and braces. That is only harmless because the self checks run *before*
+    the allowlist is consulted -- reverse them and the agent's own review
+    comment would summon another review, indefinitely.
+    """
+    classifier = Classifier(
+        allowlist=Allowlist.from_config([ALICE.user_id, AGENT.user_id]),
+        since=SINCE,
+        agent_user_id=AGENT.user_id,
+    )
+    assert classifier.classify_pull_request(make_pr(author=AGENT)).reason == (
+        "self_author"
+    )
+    assert classifier.classify_comment(make_comment(author=AGENT)).reason == (
+        "self_commenter"
+    )
+
+
 def test_mention_from_allowlisted_maintainer_is_accepted(classifier):
     decision = classifier.classify_comment(make_comment())
     assert decision.accepted

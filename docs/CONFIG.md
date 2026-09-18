@@ -43,13 +43,15 @@ is gitignored regardless, because it names real accounts.
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
 | `repo` | `owner/name` | yes | The repository to poll. Reviews are posted here. |
-| `agent_user_id` | integer or `null` | no | The numeric id of the account the agent posts as. Its own comments are then ignored, so a posted review can never re-trigger a review. |
+| `agent_user_id` | integer | yes | The numeric id of the account the agent posts as. Its own comments are then ignored, so a posted review can never re-trigger a review. |
 
 `repo` must contain exactly one `/`, with both halves non-empty.
 
-Until `agent_user_id` is set, the agent cannot recognise and skip its own
-comments — the `self_author` / `self_commenter` rejections never fire. Fill it
-in as soon as the reviewer account exists.
+`agent_user_id` has no default and the loader refuses a file that omits it.
+Without it the `self_author` / `self_commenter` rejections never fire, so the
+agent can answer its own review — a loop that spends real tokens and is only
+visible after it has run. Like the allowlist it is a **numeric id, never a
+login**: a login can be renamed and the freed name registered by a stranger.
 
 ### `triggers`
 
@@ -172,16 +174,26 @@ in, and logged absolute at `INFO`, exactly as `store.path` is.
 ## 📄 A minimal file
 
 Every key below is required; everything else has a default. This is
-[`config.minimal.example.yaml`](../config.minimal.example.yaml), and
-`tests/test_config.py` loads it, so it cannot drift.
+[`config.minimal.example.yaml`](../config.minimal.example.yaml) verbatim, and
+`tests/test_config.py` loads it, so it cannot drift. The shipped file carries
+no comments: it is meant to be copied and edited, and the reasoning belongs
+on this page rather than in a file that becomes somebody's `config.yaml`.
+
+The agent's own id appears twice: once as `agent_user_id`, and once in the
+allowlist. The second is belt and braces — the `self_author` /
+`self_commenter` checks run *before* the allowlist is consulted, so that
+entry is never reached — and it is there so the list reads as the complete
+set of accounts the deployment knows about.
 
 ```yaml
 github:
   repo: INTO-CPS-Association/DTaaS
+  agent_user_id: 9206466
 
 triggers:
   allowlist:
     - 114395272
+    - 9206466
 
 budget:
   session_tokens: 88000

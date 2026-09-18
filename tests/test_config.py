@@ -18,6 +18,11 @@ BUDGET = {
     "max_run_tokens": 60_000,
 }
 
+# Required for the same reason: without it the agent cannot recognise its own
+# comments, so a posted review can re-trigger a review of the same pull
+# request. Every fixture below therefore carries it.
+GITHUB = {"repo": "a/b", "agent_user_id": 42}
+
 VALID = {
     "github": {"repo": "INTO-CPS-Association/DTaaS", "agent_user_id": 42},
     "triggers": {"handle": "claude", "allowlist": [114395272]},
@@ -40,22 +45,38 @@ def test_valid_config_parses():
 
 
 def test_handle_defaults_to_claude():
-    data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}, "budget": BUDGET}
+    data = {"github": GITHUB, "triggers": {"allowlist": []}, "budget": BUDGET}
     assert Config.from_mapping(data).triggers.handle == "claude"
 
 
 def test_handle_accepts_leading_at():
     data = {
-        "github": {"repo": "a/b"},
+        "github": GITHUB,
         "triggers": {"allowlist": [], "handle": "@aider"},
         "budget": BUDGET,
     }
     assert Config.from_mapping(data).triggers.handle == "aider"
 
 
-def test_agent_user_id_is_optional():
+def test_agent_user_id_is_required():
+    """Without it the agent can answer its own review, which spends tokens.
+
+    A field whose absence costs money is not optional, so the loader refuses
+    rather than defaulting to "recognises nobody".
+    """
     data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}, "budget": BUDGET}
-    assert Config.from_mapping(data).github.agent_user_id is None
+    with pytest.raises(ConfigError, match="agent_user_id"):
+        Config.from_mapping(data)
+
+
+@pytest.mark.parametrize("value", [None, "42", 1.5, True, "8ohamed"])
+def test_an_unusable_agent_user_id_is_rejected(value):
+    # True is here for the same reason as in the token limits: bool
+    # subclasses int, so "agent_user_id: true" would otherwise parse as user
+    # 1 -- a real account, and not the agent's.
+    data = {**VALID, "github": {"repo": "a/b", "agent_user_id": value}}
+    with pytest.raises(ConfigError, match="agent_user_id"):
+        Config.from_mapping(data)
 
 
 @pytest.mark.parametrize(
@@ -71,7 +92,7 @@ def test_invalid_repo_rejected(repo):
 def test_login_in_allowlist_fails_loudly():
     # Would otherwise never match, silently disabling every trigger.
     data = {
-        "github": {"repo": "a/b"},
+        "github": GITHUB,
         "triggers": {"allowlist": ["8ohamed"]},
         "budget": BUDGET,
     }
@@ -82,10 +103,10 @@ def test_login_in_allowlist_fails_loudly():
 @pytest.mark.parametrize(
     "data",
     [
-        {"github": {"repo": "a/b"}},
+        {"github": GITHUB},
         {"triggers": {"allowlist": []}},
         # budget is required too: no limits means no reviews, not no bounds.
-        {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}},
+        {"github": GITHUB, "triggers": {"allowlist": []}},
         {},
     ],
 )
@@ -116,7 +137,7 @@ def test_typo_in_key_rejected(section, bad):
 
 def test_allowlist_must_be_a_list():
     data = {
-        "github": {"repo": "a/b"},
+        "github": GITHUB,
         "triggers": {"allowlist": 114395272},
         "budget": BUDGET,
     }
@@ -127,7 +148,7 @@ def test_allowlist_must_be_a_list():
 def test_load_reads_yaml_file(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
-        "github:\n  repo: INTO-CPS-Association/DTaaS\n"
+        "github:\n  repo: INTO-CPS-Association/DTaaS\n  agent_user_id: 42\n"
         "triggers:\n  allowlist:\n    - 114395272\n" + BUDGET_YAML,
         encoding="utf-8",
     )
@@ -361,13 +382,23 @@ def test_the_minimal_example_carries_only_required_keys():
     """Minimal has to mean minimal: every key in it must be load-bearing."""
     data = yaml.safe_load((EXAMPLES / "config.minimal.example.yaml").read_text())
     assert set(data) == {"github", "triggers", "budget"}
-    assert set(data["github"]) == {"repo"}
+    assert set(data["github"]) == {"repo", "agent_user_id"}
     assert set(data["triggers"]) == {"allowlist"}
     assert set(data["budget"]) == {
         "session_tokens",
         "weekly_tokens",
         "max_run_tokens",
     }
+
+
+def test_the_minimal_example_carries_no_comments():
+    """It is copied verbatim to config.yaml; the reasoning lives in CONFIG.md.
+
+    A comment here becomes a comment in somebody's real configuration, where
+    it ages without anyone reviewing it.
+    """
+    text = (EXAMPLES / "config.minimal.example.yaml").read_text()
+    assert "#" not in text
 
 
 def test_the_comprehensive_example_loads():

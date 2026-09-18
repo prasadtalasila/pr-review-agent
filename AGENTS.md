@@ -52,12 +52,17 @@ locally-hosted PR review agent.
 ```text
 src/pr_review_agent/          importable package (src layout)
   _compat.py                  stdlib shims for the oldest supported Python
+  _startup.py                 token + config, shared by both entry points
   bootstrap.py                pre-flight egress checks for a new host
+  budget.py                   rolling windows, ladder, reserve-then-settle
   config.py                   config.yaml loader and validation
+  daemon.py                   the poll-classify-enqueue loop and entry point
   queue.py                    claim protocol and per-pull-request leases
   store.py                    SQLite schema, watermarks, ETags, queue table
   triggers/                   allowlist, @mention parsing, classifier
   poller/                     GitHub REST polling, ETags, adaptive interval
+  workspace/                  bare mirror, per-run worktree, diff, teardown
+  engine/                     the ReviewEngine seam and a fake engine
 tests/                        pytest suite, one test_*.py per module
 .github/workflows/python-ci.yml   the single CI workflow
 ```
@@ -73,7 +78,9 @@ tests/                        pytest suite, one test_*.py per module
   dependency change.
 - Tests live in `tests/` and follow the `test_*.py` naming convention.
 - The trigger and poller suites are pure functions over fixtures: they must
-  stay free of network access and must never call a real LLM.
+  stay free of network access and must never call a real LLM. The engine
+  suite runs against `FakeEngine` for the same reason — that is what the
+  seam is for.
 
 ## RESTRICTIONS
 

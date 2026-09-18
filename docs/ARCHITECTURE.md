@@ -17,13 +17,21 @@ host.
 | 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`) and a per-PR lease so reviews of one pull request never overlap. The `head_sha` re-check before posting belongs to the publisher, which is where the live head can be read. | implemented — [QUEUE.md](QUEUE.md) |
 | 5 | **Budget governor** | Layers 4 and 5 of spending control over one ledger; layers 2 and 3 land with the engine. | implemented — [BUDGET.md](BUDGET.md) |
 | 6 | **Workspace** | Fetch a pull request head into a bare mirror, check it out into an isolated worktree, diff it against the merge base, tear it down. Executes nothing from the tree. | implemented — [WORKSPACE.md](WORKSPACE.md) |
-| 7 | **Engine adapter** | A `ReviewEngine` protocol with `claude_sdk`, `claude_cli` and `generic_cli` implementations. | not started |
+| 7 | **Engine adapter** | A `ReviewEngine` protocol and `Capabilities` record, with CLI-subprocess implementations (`claude`, then one other). No vendor SDK is linked. | seam implemented — [ENGINE.md](ENGINE.md); no adapter yet |
 | 8 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
 | 9 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |
 
 The ordering is deliberate rather than convenient: **the budget governor lands
 before the review worker**, so the spending rails exist before anything can
 spend.
+
+Component 7 is the only one that is agent-specific, and it is a **process
+boundary, not a library call**: every adapter is a command-line tool
+(`claude`, `codex`, `opencode`) run as a subprocess, and no vendor SDK is
+linked. That is what makes the boundary a containment boundary — its own
+working directory, its own environment, a kill-on-timeout — over a tree the
+agent treats as untrusted. [DESIGN.md](DESIGN.md#-generalisation-to-other-agents)
+has the reasoning and the cost.
 
 ## 🔁 The path an event takes
 
@@ -43,10 +51,21 @@ GitHub REST ──► Poller ──► payload mapping ──► Classifier ─�
                                                              Publisher
 ```
 
-Everything down to the queue exists today, and the [daemon
-loop](DAEMON.md) is what drives it on a schedule. Everything below the queue
-does not exist: the queue fills and nothing drains it, which is the intended
-state until the governor lands.
+Every box in that diagram exists except the publisher — and yet **nothing
+drains the queue**, which is still the intended state.
+
+The pieces are there and the wiring between them is not. The [daemon
+loop](DAEMON.md) drives everything down to `enqueue`. The governor can
+`reserve` and `settle`, the [workspace](WORKSPACE.md) can put a pull request
+on disk, and the [engine seam](ENGINE.md) defines what a review engine is
+handed and must return. What does not exist is the **worker**: the thing that
+claims a row, checks the code out, calls an engine and settles the ledger.
+Nor does any engine that could spend, which is why a queue that fills and
+never drains costs nothing.
+
+That ordering is the point. The spending rails were built before anything
+could spend, so the first adapter arrives into a system that can already
+refuse it.
 
 The reservation is taken inside the *same* transaction as the queue claim —
 that is the invariant the whole storage choice rests on, and it is spelled out
@@ -61,6 +80,7 @@ src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
 ├── _startup.py        # token + config, shared by both entry points
 ├── bootstrap.py       # pre-flight egress checks for a new host
+├── budget.py          # rolling windows, the ladder, reserve-then-settle
 ├── config.py          # config.yaml → frozen dataclasses
 ├── daemon.py          # the poll-classify-enqueue loop, and its entry point
 ├── queue.py           # claim protocol and per-pull-request leases
@@ -78,9 +98,12 @@ src/pr_review_agent/
 │   ├── payloads.py    # raw GitHub dicts → trigger models
 │   ├── pulls.py       # one pull request → PullRequestFacts
 │   └── poller.py      # one sweep across all three endpoints
-└── workspace/
-    ├── gitcmd.py      # the one hardened `git` invocation
-    └── repo.py        # bare mirror, per-run worktree, diff, teardown
+├── workspace/
+│   ├── gitcmd.py      # the one hardened `git` invocation
+│   └── repo.py        # bare mirror, per-run worktree, diff, teardown
+└── engine/
+    ├── models.py      # ReviewEngine protocol, Capabilities, request/result
+    └── fake.py        # an engine that spends nothing, for tests
 ```
 
 ## ⬇ Layering
@@ -92,6 +115,9 @@ Dependencies point one way only:
 - Nothing in `triggers/` imports `poller/`.
 - `poller/pulls.py` imports `workspace`, never the reverse. `workspace/` is
   pure git and filesystem, so its suite runs with no HTTP at all.
+- `engine/` imports `workspace`, `triggers` and `budget`, and nothing imports
+  `engine/` yet — the worker that will is not written. It is the leaf the
+  whole design is arranged around: see [ENGINE.md](ENGINE.md).
 
 That is what keeps the trigger suite free of HTTP: it is pure functions over
 fixtures, needs no network and spends no tokens. The same rule is why
