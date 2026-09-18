@@ -174,7 +174,22 @@ async def test_a_rate_limited_revisit_fails_the_conditional_check():
     assert conditional.ok is False and "403" in conditional.detail
 
 
-async def test_run_checks_covers_github_and_anthropic(monkeypatch, tmp_path):
+def _stub_git_checks(monkeypatch, results: list[CheckResult]) -> None:
+    """Replace the git checks, which would otherwise reach github.com.
+
+    Every other check here is driven through a MockTransport. `check_git`
+    shells out instead, so without this the test would perform real network
+    egress -- passing on a runner with internet and failing on one without,
+    which is precisely the kind of test that lies.
+    """
+
+    async def canned(repo: str, base_url: str = "") -> list[CheckResult]:
+        return results
+
+    monkeypatch.setattr(bootstrap, "check_git", canned)
+
+
+async def test_run_checks_covers_github_git_and_anthropic(monkeypatch, tmp_path):
     handler = serve(httpx.Response(200, json=[], headers=HEALTHY), httpx.Response(304))
     # Both clients are built before httpx.AsyncClient is patched out, since
     # GitHubClient constructs one of its own.
@@ -184,9 +199,39 @@ async def test_run_checks_covers_github_and_anthropic(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(bootstrap, "GitHubClient", lambda token: github)
     monkeypatch.setattr(bootstrap.httpx, "AsyncClient", lambda: anthropic)
+    _stub_git_checks(
+        monkeypatch,
+        [
+            CheckResult("git version", True, "found 2.43, need at least 2.32"),
+            CheckResult("git fetch route", True, "answers"),
+        ],
+    )
+
     results = await bootstrap.run_checks(config(tmp_path), "fake-token")
-    assert [result.name for result in results][-1] == "anthropic reachable"
+
+    names = [result.name for result in results]
+    assert names[-1] == "anthropic reachable"
+    # The checkout's route is a different host from the API's, so it has to
+    # be its own line in the report rather than assumed from the poller's.
+    assert "git version" in names and "git fetch route" in names
     assert all(result.ok for result in results)
+
+
+async def test_a_failed_git_check_fails_the_run(monkeypatch, tmp_path):
+    handler = serve(httpx.Response(200, json=[], headers=HEALTHY), httpx.Response(304))
+    github = make_client(handler)
+    anthropic = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(401))
+    )
+    monkeypatch.setattr(bootstrap, "GitHubClient", lambda token: github)
+    monkeypatch.setattr(bootstrap.httpx, "AsyncClient", lambda: anthropic)
+    _stub_git_checks(
+        monkeypatch, [CheckResult("git version", False, "found 2.25, need 2.32")]
+    )
+
+    results = await bootstrap.run_checks(config(tmp_path), "fake-token")
+
+    assert not all(result.ok for result in results)
 
 
 def test_main_reports_each_check_and_succeeds(monkeypatch, capsys, tmp_path):
