@@ -43,13 +43,15 @@ is gitignored regardless, because it names real accounts.
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
 | `repo` | `owner/name` | yes | The repository to poll. Reviews are posted here. |
-| `agent_user_id` | integer or `null` | no | The numeric id of the account the agent posts as. Its own comments are then ignored, so a posted review can never re-trigger a review. |
+| `agent_user_id` | integer | yes | The numeric id of the account the agent posts as. Its own comments are then ignored, so a posted review can never re-trigger a review. |
 
 `repo` must contain exactly one `/`, with both halves non-empty.
 
-Until `agent_user_id` is set, the agent cannot recognise and skip its own
-comments — the `self_author` / `self_commenter` rejections never fire. Fill it
-in as soon as the reviewer account exists.
+`agent_user_id` has no default and the loader refuses a file that omits it.
+Without it the `self_author` / `self_commenter` rejections never fire, so the
+agent can answer its own review — a loop that spends real tokens and is only
+visible after it has run. Like the allowlist it is a **numeric id, never a
+login**: a login can be renamed and the freed name registered by a stranger.
 
 ### `triggers`
 
@@ -172,12 +174,19 @@ in, and logged absolute at `INFO`, exactly as `store.path` is.
 ## 📄 A minimal file
 
 Every key below is required; everything else has a default. This is
-[`config.minimal.example.yaml`](../config.minimal.example.yaml), and
-`tests/test_config.py` loads it, so it cannot drift.
+[`config.minimal.example.yaml`](../config.minimal.example.yaml) verbatim, and
+`tests/test_config.py` loads it, so it cannot drift. The shipped file carries
+no comments: it is meant to be copied and edited, and the reasoning belongs
+on this page rather than in a file that becomes somebody's `config.yaml`.
+
+Both numeric ids in it are examples. `agent_user_id` in particular is a
+placeholder and matches no real account — replace it with the reviewer
+account's id before the agent posts anything.
 
 ```yaml
 github:
   repo: INTO-CPS-Association/DTaaS
+  agent_user_id: 123456789
 
 triggers:
   allowlist:

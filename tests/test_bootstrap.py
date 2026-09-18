@@ -33,6 +33,7 @@ def by_name(results) -> dict:
 CONFIG_YAML = """
 github:
   repo: INTO-CPS-Association/DTaaS
+  agent_user_id: 42
 triggers:
   allowlist: [114395272]
 budget:
