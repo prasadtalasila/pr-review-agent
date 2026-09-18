@@ -6,6 +6,7 @@ building the drainer while the only engine is a fake one.
 """
 
 import asyncio
+import sys
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
@@ -27,6 +28,13 @@ NOW = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
 REPO = "owner/name"
 PR = 7
 MAX_RUN_TOKENS = 1_000
+
+# Every test here drives a real checkout, so this file skips where the git
+# tests do: the daemon is deployed on POSIX, and Git for Windows differs.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the daemon is deployed on POSIX hosts; Git for Windows differs",
+)
 
 
 def budget(**overrides) -> BudgetConfig:
