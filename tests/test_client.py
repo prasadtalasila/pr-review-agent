@@ -1,5 +1,6 @@
 """GitHubClient: a 304 is free; a 200 carries data and a fresh ETag."""
 
+import json
 from datetime import datetime, timezone
 
 import httpx
@@ -222,3 +223,97 @@ async def test_aclose_releases_the_connection_pool():
     await client.aclose()
     with pytest.raises(RuntimeError):
         await client.get("/repos/o/r/pulls")
+
+
+# -- write verbs ---------------------------------------------------------
+#
+# The first requests this client makes that change something. `get` returns a
+# PollResult because a conditional request has a 304 case; a write has none,
+# so these return the decoded body and raise on anything but a 2xx.
+
+
+async def test_post_returns_the_created_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert json.loads(request.content) == {"body": "hello"}
+        return httpx.Response(201, json={"id": 9, "body": "hello"})
+
+    assert await make_client(handler).post("/x", {"body": "hello"}) == {
+        "id": 9,
+        "body": "hello",
+    }
+
+
+async def test_patch_returns_the_updated_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PATCH"
+        return httpx.Response(200, json={"id": 9, "body": "edited"})
+
+    assert await make_client(handler).patch("/x", {"body": "edited"}) == {
+        "id": 9,
+        "body": "edited",
+    }
+
+
+async def test_a_200_from_post_is_accepted():
+    """A duplicate reaction returns 200 rather than 201, and is not a failure."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": 9})
+
+    assert await make_client(handler).post("/x", {}) == {"id": 9}
+
+
+@pytest.mark.parametrize("status", [404, 422, 500])
+async def test_a_failed_write_raises(status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text="nope")
+
+    with pytest.raises(GitHubClientError, match=str(status)):
+        await make_client(handler).post("/x", {})
+
+
+async def test_a_write_retries_a_rate_limit_it_can_wait_out():
+    """The same retry path `get` uses, reached through one helper."""
+    sleeps: list = []
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"retry-after": "1"}, text="slow down")
+        return httpx.Response(201, json={"id": 9})
+
+    client = GitHubClient(
+        token="t", transport=httpx.MockTransport(handler), retry_sleep=record(sleeps)
+    )
+    assert await client.post("/x", {}) == {"id": 9}
+    assert sleeps == [1.0]
+
+
+async def test_a_transport_failure_on_a_write_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route")
+
+    with pytest.raises(GitHubClientError, match="failed"):
+        await make_client(handler).post("/x", {})
+
+
+async def test_a_non_json_write_response_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, text="<html>")
+
+    with pytest.raises(GitHubClientError, match="non-JSON"):
+        await make_client(handler).post("/x", {})
+
+
+async def test_a_write_sends_no_if_none_match():
+    """Conditional headers belong to polling; a write is unconditional."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["if_none_match"] = request.headers.get("if-none-match")
+        return httpx.Response(201, json={})
+
+    await make_client(handler).post("/x", {})
+    assert seen["if_none_match"] is None
