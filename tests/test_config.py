@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pr_review_agent.config import Config, ConfigError
+from pr_review_agent.config import DEFAULT_EXCLUDED_PATHS, Config, ConfigError
 from pr_review_agent.triggers.models import Actor
 
 # Required, so every fixture below carries it. A config that names no
@@ -327,6 +327,46 @@ def test_size_caps_can_be_tightened():
     assert budget.max_changed_lines == 200
 
 
+def test_excluded_paths_defaults_to_the_four_categories():
+    """Lockfiles, vendored, generated, minified -- BUDGET.md layer 2's list."""
+    budget = Config.from_mapping(VALID).budget
+    assert budget.excluded_paths == DEFAULT_EXCLUDED_PATHS
+    assert "**/vendor/**" in budget.excluded_paths
+
+
+def test_excluded_paths_can_be_replaced_outright():
+    """Including with nothing: a repository may want its lockfiles read."""
+    data = {**VALID, "budget": {**BUDGET, "excluded_paths": ["*.generated.ts"]}}
+    assert Config.from_mapping(data).budget.excluded_paths == ("*.generated.ts",)
+    empty = {**VALID, "budget": {**BUDGET, "excluded_paths": []}}
+    assert Config.from_mapping(empty).budget.excluded_paths == ()
+
+
+@pytest.mark.parametrize("value", ["", "   ", 5, None, True])
+def test_an_unusable_exclusion_pattern_is_rejected(value):
+    data = {**VALID, "budget": {**BUDGET, "excluded_paths": [value]}}
+    with pytest.raises(ConfigError, match="excluded_paths"):
+        Config.from_mapping(data)
+
+
+def test_a_pattern_may_not_open_its_own_pathspec_magic():
+    """The ``:(exclude,glob)`` prefix is the agent's to supply.
+
+    A pattern free to start with ``:`` could mean something an operator
+    cannot predict from reading their own configuration file -- ``:(attr:)``,
+    or a bare ``:`` re-anchoring the path.
+    """
+    data = {**VALID, "budget": {**BUDGET, "excluded_paths": [":(attr:binary)"]}}
+    with pytest.raises(ConfigError, match="may not begin with"):
+        Config.from_mapping(data)
+
+
+def test_excluded_paths_must_be_a_list():
+    data = {**VALID, "budget": {**BUDGET, "excluded_paths": "**/vendor/**"}}
+    with pytest.raises(ConfigError, match="excluded_paths"):
+        Config.from_mapping(data)
+
+
 @pytest.mark.parametrize("value", [0, -1, True, "500", 2.5, None])
 def test_a_cap_that_is_not_a_positive_integer_is_rejected(value):
     # True is here for the same reason as in the token limits: bool
@@ -421,6 +461,7 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
         "reviewer_share_pct",
         "max_changed_files",
         "max_changed_lines",
+        "excluded_paths",
     }
     assert set(data["store"]) == {"path"}
     assert set(data["workspace"]) == {"cache_dir"}
@@ -435,5 +476,6 @@ def test_the_comprehensive_example_states_the_real_defaults():
     assert shown.budget.reviewer_share_pct == defaults.budget.reviewer_share_pct
     assert shown.budget.max_changed_files == defaults.budget.max_changed_files
     assert shown.budget.max_changed_lines == defaults.budget.max_changed_lines
+    assert shown.budget.excluded_paths == defaults.budget.excluded_paths
     assert shown.store.path == defaults.store.path
     assert shown.workspace.cache_dir == defaults.workspace.cache_dir

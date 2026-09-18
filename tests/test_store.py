@@ -2,9 +2,11 @@
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 import pytest
 
+from pr_review_agent import store as store_module
 from pr_review_agent.store import SCHEMA_VERSION, SqliteStore
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
@@ -129,7 +131,7 @@ def test_a_failed_transaction_rolls_back(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 4
+        assert store.schema_version == SCHEMA_VERSION == 5
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -164,6 +166,11 @@ def test_an_existing_database_adopts_the_contributor_index(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as store, store.transaction() as conn:
         conn.execute("DROP INDEX ledger_by_actor")
+        # Migration 5's column goes too: rewinding the version without
+        # undoing what came after it would replay an ALTER against a table
+        # that already has the column, which is a state no real database
+        # reaches.
+        conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_lines")
         conn.execute("PRAGMA user_version = 3")
 
     with SqliteStore(path) as reopened:
@@ -171,3 +178,55 @@ def test_an_existing_database_adopts_the_contributor_index(tmp_path):
         with reopened.transaction() as conn:
             names = {row[1] for row in conn.execute("PRAGMA index_list(ledger)")}
     assert "ledger_by_actor" in names
+
+
+def test_an_existing_database_adopts_the_reviewed_lines_column(tmp_path):
+    """A v4 store gains the estimator's predictor column, not an error.
+
+    Existing rows keep a NULL, which is what stops a run recorded before the
+    column existed from being fitted as "spent N tokens on zero lines".
+    """
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store, store.transaction() as conn:
+        conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_lines")
+        conn.execute(
+            "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
+            "reserved_tokens, reserved_at) VALUES ('k', 'w', 1, 'full', 10, 'x')"
+        )
+        conn.execute("PRAGMA user_version = 4")
+
+    with SqliteStore(path) as reopened:
+        assert reopened.schema_version == SCHEMA_VERSION
+        with reopened.transaction() as conn:
+            assert conn.execute("SELECT reviewed_lines FROM ledger").fetchone() == (
+                None,
+            )
+
+
+def test_a_failed_migration_leaves_the_version_behind(tmp_path):
+    """The script and its version bump commit together, or neither does.
+
+    Without that, a crash between them would leave a half-applied schema at
+    a version claiming it was finished -- and ``ALTER TABLE ADD COLUMN``,
+    unlike every ``CREATE`` above it, cannot be written to tolerate a replay.
+    """
+    path = tmp_path / "state.db"
+    SqliteStore(path).close()
+
+    broken = (*store_module._MIGRATIONS, "CREATE TABLE ok (a INTEGER); NOT SQL;")
+    with (
+        mock.patch.object(store_module, "_MIGRATIONS", broken),
+        pytest.raises(sqlite3.OperationalError),
+    ):
+        SqliteStore(path)
+
+    with SqliteStore(path) as reopened:
+        assert reopened.schema_version == SCHEMA_VERSION
+        with reopened.transaction() as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+    assert "ok" not in tables

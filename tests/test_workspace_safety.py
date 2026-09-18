@@ -143,7 +143,9 @@ async def test_a_gitattributes_cannot_blank_the_diff(workspace, git_remote):
     add_to_pull_head(git_remote, hide)
 
     async with workspace.checkout(facts(git_remote), **CAPS) as checkout:
-        assert "Binary files" not in checkout.diff
+        # Scoped to the file the attribute targets: the fixture also adds a
+        # genuinely binary blob, which git is right to render this way.
+        assert "Binary files a/feature.py" not in checkout.diff
         assert "def added():" in checkout.diff
 
 

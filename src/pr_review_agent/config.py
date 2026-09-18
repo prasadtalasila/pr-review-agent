@@ -118,6 +118,35 @@ DEFAULT_REVIEWER_SHARE_PCT = 40
 DEFAULT_MAX_CHANGED_FILES = 100
 DEFAULT_MAX_CHANGED_LINES = 5000
 
+#: Paths excluded from both the size gate and the diff the engine is shown.
+#: The four categories BUDGET.md layer 2 names -- lockfiles, vendored trees,
+#: generated code, minified bundles -- where reviewing a line is close to
+#: worthless while the line still counts against a cap.
+#:
+#: A default rather than a fixed list, because a repository that genuinely
+#: reviews its lockfiles exists; and reloadable on ``SIGHUP``, like every
+#: other key in this section, so an operator who finds the agent blind to
+#: something can fix it without a restart.
+DEFAULT_EXCLUDED_PATHS: tuple[str, ...] = (
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/poetry.lock",
+    "**/Cargo.lock",
+    "**/Gemfile.lock",
+    "**/composer.lock",
+    "**/go.sum",
+    "**/vendor/**",
+    "**/node_modules/**",
+    "**/third_party/**",
+    "**/*.pb.go",
+    "**/*_pb2.py",
+    "**/*.generated.*",
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.map",
+)
+
 
 def _tokens(data: dict, key: str) -> int:
     """Read a required positive token count from the ``budget`` section.
@@ -130,6 +159,35 @@ def _tokens(data: dict, key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ConfigError(f"budget.{key} must be a positive number of tokens")
     return value
+
+
+def _excluded_paths(data: dict) -> tuple[str, ...]:
+    """Read the optional list of excluded path patterns.
+
+    A pattern may not begin with ``:``. ``exclusions.py`` builds a
+    ``:(exclude,glob)`` prefix in front of each one, and a pattern free to
+    open magic of its own -- ``:(attr:...)``, or a bare ``:`` re-anchoring
+    the path -- is not something an operator can predict from reading their
+    own configuration file. It cannot reach outside the argument it sits in;
+    it can make that argument mean something else.
+    """
+    value = data.get("excluded_paths")
+    if value is None:
+        return DEFAULT_EXCLUDED_PATHS
+    if not isinstance(value, list):
+        raise ConfigError("budget.excluded_paths must be a list of path patterns")
+    for pattern in value:
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise ConfigError(
+                f"budget.excluded_paths entries must be non-empty patterns, "
+                f"got {pattern!r}"
+            )
+        if pattern.startswith(":"):
+            raise ConfigError(
+                f"budget.excluded_paths entry {pattern!r} may not begin with ':': "
+                "the pathspec magic is supplied by the agent"
+            )
+    return tuple(value)
 
 
 def _cap(data: dict, key: str, default: int) -> int:
@@ -168,6 +226,7 @@ class BudgetConfig:
     reviewer_share_pct: int = DEFAULT_REVIEWER_SHARE_PCT
     max_changed_files: int = DEFAULT_MAX_CHANGED_FILES
     max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES
+    excluded_paths: tuple[str, ...] = DEFAULT_EXCLUDED_PATHS
     #: Optional, and off by default: on a one-person allowlist any cap below
     #: 100 % would block the only account that can trigger anything.
     per_contributor_pct: int | None = None
@@ -243,6 +302,7 @@ class BudgetConfig:
                 data, "max_changed_lines", DEFAULT_MAX_CHANGED_LINES
             ),
             per_contributor_pct=per_contributor,
+            excluded_paths=_excluded_paths(data),
         )
         if (
             config.per_contributor_limit is not None
@@ -349,6 +409,7 @@ class Config:
                         "per_contributor_pct",
                         "max_changed_files",
                         "max_changed_lines",
+                        "excluded_paths",
                     },
                 )
             ),

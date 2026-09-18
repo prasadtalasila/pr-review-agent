@@ -18,6 +18,7 @@ they are reproduced here so they survive the issue being closed.
 | Daemon loop calling `poll_once()` on a schedule | implemented, unit tested |
 | Budget governor (windows, ladder, reserve-then-settle) | implemented, unit tested |
 | Workspace (fetch, checkout, merge-base diff, teardown) | implemented, unit tested |
+| Budget layer 2 (path exclusions, pre-flight estimate) | implemented, unit tested |
 | Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented, unit tested |
 | Engine adapter (a `claude` CLI implementation) | not started |
 | Publisher | not started |
@@ -30,11 +31,11 @@ worker**, so the spending rails exist before anything can spend.
 
 1. **Engine adapter and publisher.** One line-anchored review, event `COMMENT`,
    with the `head_sha` re-check immediately before posting. It also carries the
-   budget pieces that need a running engine: the circuit breaker, layer 3's
-   per-turn enforcement, the ladder's 60 % rung, and the rest of layer 2 —
-   path exclusions and the pre-flight token estimate. Layer 2's diff-size
-   caps already landed with the [workspace](WORKSPACE.md), which is the first
-   thing that needed them. The code to review is now on disk for it.
+   budget pieces that need a *running* engine: the circuit breaker, layer 3's
+   per-turn enforcement, and the ladder's 60 % rung. [Layer 2 is
+   complete](BUDGET.md#-path-exclusions) — it needed only a diff, so the
+   adapter is handed one with excluded paths already absent, and a run
+   predicted to cost more than `max_run_tokens` never reaches it.
 2. **Retention sweep.** Purge content on merge; keep the ledger.
 
 The [daemon loop](DAEMON.md) fills the queue and nothing drains it, which is
@@ -69,8 +70,10 @@ linked.
       allowance being consumed in one day (**done**); the degradation ladder is
       observed at 85 / 100 % (**done**) and at 60 % (with the engine);
       `per_contributor_pct` bounds one contributor's share of the week
-      (**done**); per-run ceilings terminate an over-budget review (with the
-      engine).
+      (**done**); path exclusions keep a vendored-only change from being
+      refused on size, and a pre-flight estimate over `max_run_tokens`
+      refuses a run and releases its reservation (**done**); per-run ceilings
+      terminate an over-budget review (with the engine).
 - [ ] **Plan lockout is prevented:** with `reviewer_share_pct` configured,
       agent usage never exceeds its share of the session or weekly window
       (**done**), and a usage-limit error trips the breaker and decays the

@@ -34,6 +34,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from .exclusions import pathspec
 from .gitcmd import WorkspaceError, run_git
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,41 @@ class PullRequestFacts:
 
 
 @dataclass(frozen=True)
+class DiffSize:
+    """How much there is to review, once exclusions have been applied.
+
+    Not the same numbers as :class:`PullRequestFacts`, and deliberately so.
+    Those are the API's totals over every changed path; these are what
+    survived ``budget.excluded_paths``, which is both what the size gate
+    counts and what the engine will be shown.
+    """
+
+    files: int
+    lines: int
+
+    @classmethod
+    def from_numstat(cls, numstat: str) -> DiffSize:
+        """Count ``git diff --numstat`` output.
+
+        One row per changed file: ``added``, ``deleted``, ``path``. A binary
+        file reports ``-`` for both counts, and is one file of zero lines.
+
+        The path is never parsed -- only the row count and the first two
+        columns are needed -- so a path containing a newline, which git
+        quotes, cannot confuse the count.
+        """
+        files = lines = 0
+        for row in numstat.splitlines():
+            if not row.strip():
+                continue
+            files += 1
+            added, deleted = row.split("\t", 2)[:2]
+            if added != "-":
+                lines += int(added) + int(deleted)
+        return cls(files=files, lines=lines)
+
+
+@dataclass(frozen=True)
 class Checkout:
     """An untrusted tree on disk, and the diff that describes it."""
 
@@ -75,16 +111,30 @@ class Checkout:
     head_sha: str
     merge_base: str
     diff: str
+    reviewed: DiffSize
 
 
 class PullRequestTooLarge(WorkspaceError):
-    """A size cap fired, before anything was written to disk."""
+    """A size cap fired, before a worktree was created.
 
-    def __init__(self, cap: str, observed: int, limit: int) -> None:
+    ``observed`` is the reviewable figure -- after ``excluded_paths`` -- and
+    the message also reports the API's own totals, because "refused at 120
+    files" is baffling next to a pull request GitHub says has 900. The gap
+    between the two numbers *is* the explanation.
+    """
+
+    def __init__(
+        self, cap: str, observed: int, limit: int, facts: PullRequestFacts
+    ) -> None:
         self.cap = cap
         self.observed = observed
         self.limit = limit
-        super().__init__(f"{cap}: {observed} exceeds the configured {limit}")
+        self.facts = facts
+        super().__init__(
+            f"{cap}: {observed} exceeds the configured {limit} "
+            f"(the pull request reports {facts.changed_files} files, "
+            f"{facts.changed_lines} lines, before exclusions)"
+        )
 
 
 class Workspace:
@@ -161,6 +211,7 @@ class Workspace:
         *,
         max_changed_files: int,
         max_changed_lines: int,
+        excluded_paths: tuple[str, ...] = (),
     ) -> AsyncIterator[Checkout]:
         """Check the pull request head out, and take it away afterwards.
 
@@ -168,62 +219,116 @@ class Workspace:
         reloaded on ``SIGHUP``: a workspace holding a snapshot taken at
         construction would silently ignore a tightened cap, which is the
         exact failure the reload mechanism exists to prevent.
-        """
-        self._gate(facts, max_changed_files, max_changed_lines)
+        ``excluded_paths`` travels with them for the same reason.
 
+        The gate fires after the fetch rather than before it, because
+        exclusions cannot be subtracted from the API's three aggregate
+        integers -- see ``_gate``.
+        """
         run_id = uuid.uuid4().hex[:12]
         ref = f"{RUN_REF_PREFIX}/{run_id}"
         run_path = self.runs / run_id
 
         head_sha = await self._fetch(facts, ref)
-        merge_base = (
+        # Everything between the fetch and the worktree now has a routine
+        # way to fail -- the gate -- rather than only a crashing one, and a
+        # refused pull request must not leave its ref behind for the next
+        # startup sweep to find.
+        try:
+            merge_base = (
+                await run_git(
+                    "-C",
+                    str(self.mirror),
+                    "merge-base",
+                    f"refs/heads/{facts.base_ref}",
+                    head_sha,
+                )
+            ).strip()
+            paths = pathspec(excluded_paths)
+            numstat = await run_git(
+                "-C",
+                str(self.mirror),
+                "diff",
+                "--no-ext-diff",
+                "--numstat",
+                merge_base,
+                head_sha,
+                *paths,
+            )
+            reviewed = DiffSize.from_numstat(numstat)
+            self._gate(facts, reviewed, max_changed_files, max_changed_lines)
+            diff = await run_git(
+                "-C",
+                str(self.mirror),
+                "diff",
+                "--no-ext-diff",
+                merge_base,
+                head_sha,
+                *paths,
+            )
+            self.runs.mkdir(parents=True, exist_ok=True)
             await run_git(
                 "-C",
                 str(self.mirror),
-                "merge-base",
-                f"refs/heads/{facts.base_ref}",
+                "worktree",
+                "add",
+                "--detach",
+                str(run_path),
                 head_sha,
             )
-        ).strip()
-        diff = await run_git(
-            "-C", str(self.mirror), "diff", "--no-ext-diff", merge_base, head_sha
-        )
-        self.runs.mkdir(parents=True, exist_ok=True)
-        await run_git(
-            "-C",
-            str(self.mirror),
-            "worktree",
-            "add",
-            "--detach",
-            str(run_path),
-            head_sha,
-        )
+        except BaseException:
+            await self._drop_ref(ref)
+            raise
         try:
             yield Checkout(
-                path=run_path, head_sha=head_sha, merge_base=merge_base, diff=diff
+                path=run_path,
+                head_sha=head_sha,
+                merge_base=merge_base,
+                diff=diff,
+                reviewed=reviewed,
             )
         finally:
             await self._teardown(run_path, ref)
 
     @staticmethod
     def _gate(
-        facts: PullRequestFacts, max_changed_files: int, max_changed_lines: int
+        facts: PullRequestFacts,
+        reviewed: DiffSize,
+        max_changed_files: int,
+        max_changed_lines: int,
     ) -> None:
-        """Refuse an oversized pull request before the first git invocation.
+        """Refuse an oversized pull request, before a worktree exists.
 
-        Raising here rather than after the fetch is what makes "refused
-        before anything is written to disk" literally true. Note what it
-        does *not* do: it bounds what the engine reads, not the volume,
-        because a fetch pulls every object reachable from the head.
+        Measured on what survived ``excluded_paths``, never on the API's
+        totals: a vendored-dependency bump must not be refused on size for
+        lines the engine will never be shown. That is also why this runs
+        after the fetch rather than before it -- ``facts`` carries three
+        aggregate integers with no per-path breakdown, and a lockfile cannot
+        be subtracted from an integer.
+
+        What is given up is "refused before anything is written to disk". A
+        fetch costs bandwidth and disk; it costs no tokens, and these caps
+        are a *spending* control. They bound what the engine reads, which
+        was never the same thing as what the fetch downloads.
         """
-        if facts.changed_files > max_changed_files:
+        if reviewed.files > max_changed_files:
             raise PullRequestTooLarge(
-                "max_changed_files", facts.changed_files, max_changed_files
+                "max_changed_files", reviewed.files, max_changed_files, facts
             )
-        if facts.changed_lines > max_changed_lines:
+        if reviewed.lines > max_changed_lines:
             raise PullRequestTooLarge(
-                "max_changed_lines", facts.changed_lines, max_changed_lines
+                "max_changed_lines", reviewed.lines, max_changed_lines, facts
             )
+
+    async def _drop_ref(self, ref: str) -> None:
+        """Delete one run-scoped ref, under the mirror's ref-namespace lock.
+
+        ``update-ref -d`` and a concurrent fetch contend for
+        ``packed-refs.lock``, which is why every write to the namespace --
+        this one included -- is serialised.
+        """
+        async with self._lock:
+            await run_git("-C", str(self.mirror), "update-ref", "-d", ref)
 
     async def _fetch(self, facts: PullRequestFacts, ref: str) -> str:
         """Fetch the head and the base branch; return the sha actually fetched.
@@ -273,8 +378,7 @@ class Workspace:
                 "--force",
                 str(run_path),
             )
-            async with self._lock:
-                await run_git("-C", str(self.mirror), "update-ref", "-d", ref)
+            await self._drop_ref(ref)
         except WorkspaceError:
             logger.warning(
                 "could not tear down %s; it is leaking disk until the next sweep",

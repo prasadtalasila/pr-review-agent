@@ -90,8 +90,9 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 | `enabled` | boolean | no (default `true`) | `false` **stops reviewing**. It does not turn the budget checks off. |
 | `reviewer_share_pct` | integer 1–100 | no (default `40`) | The share of each plan window the agent may use, never the whole allowance. |
 | `per_contributor_pct` | integer 1–100 | no (default: **no cap**) | The share of the agent's weekly allowance any one contributor may spend, over the same rolling week. |
-| `max_changed_files` | integer | no (default `100`) | A pull request touching more files is refused before anything is fetched. |
+| `max_changed_files` | integer | no (default `100`) | A pull request touching more *reviewable* files is refused before a worktree exists. |
 | `max_changed_lines` | integer | no (default `5000`) | The same, for additions plus deletions. |
+| `excluded_paths` | list of glob patterns | no (defaults below) | Paths counted against neither cap and not shown to the reviewer. |
 
 **The three token counts have no defaults, deliberately.** A subscription
 publishes no quota, so every one of them is a guess the operator has to
@@ -131,6 +132,23 @@ Be clear about what they bound: **the reviewer's input, not the disk.** A
 fetch pulls every object reachable from the head, so a commit that adds a
 large blob and a later one that removes it still downloads it while
 reporting no changed lines.
+
+**`excluded_paths` is subtracted from both caps *and* from the diff the
+reviewer is shown** — one list, one mechanism, so the two cannot disagree.
+Without it a vendored-dependency bump is refused on a size cap for thousands
+of lines nobody would have read. The default covers lockfiles, `vendor/`,
+`node_modules/`, `third_party/`, generated code (`*.pb.go`, `*_pb2.py`,
+`*.generated.*`) and minified output (`*.min.js`, `*.min.css`, `*.map`); the
+full list is in `config.example.yaml`.
+
+Setting the key **replaces** that list rather than extending it, and `[]`
+excludes nothing. Patterns are globs matched at any depth via `**/`, and one
+may not begin with `:` — the pathspec magic is the agent's to supply.
+
+Because the caps are measured after exclusion, they are checked once the diff
+exists rather than before the fetch: three aggregate integers from the API
+have no per-path breakdown to subtract a lockfile from. See
+[BUDGET.md](BUDGET.md#the-size-gate-moved-to-make-this-possible).
 
 `max_turns` and `wall_clock_seconds` appear in `BUDGET.md` but are **not**
 accepted here: nothing reads them yet, and a setting that does nothing is
