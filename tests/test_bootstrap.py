@@ -1,12 +1,16 @@
 """Bootstrap checks: can this host actually reach what the daemon needs?"""
 
+import sys
+
 import httpx
+import pytest
 
 from pr_review_agent import bootstrap
 from pr_review_agent._startup import TOKEN_ENV
 from pr_review_agent.bootstrap import (
     CheckResult,
     check_anthropic,
+    check_git,
     check_github,
     main,
 )
@@ -207,3 +211,37 @@ def test_main_exits_non_zero_when_a_check_fails(monkeypatch, capsys, tmp_path):
     captured = capsys.readouterr()
     assert "FAIL  anthropic reachable" in captured.out
     assert "1 check(s) failed" in captured.err
+
+
+# -- the git route, which the poller's route says nothing about ----------
+
+git_checks = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the daemon is deployed on POSIX hosts; Git for Windows differs",
+)
+
+
+@git_checks
+async def test_the_git_version_is_checked_first():
+    """Below 2.32 GIT_CONFIG_GLOBAL is ignored without an error, so the
+    checkout's hardening would be absent while appearing to be in force."""
+    results = await check_git("owner/name", base_url="https://127.0.0.1:1")
+    assert results[0].name == "git version"
+    assert results[0].ok is True  # whatever git is installed here
+
+
+@git_checks
+async def test_an_unreachable_remote_is_reported_not_raised():
+    # A blocked route is the commonest deployment failure, and an operator
+    # needs to be told which check failed, not handed a traceback.
+    results = await check_git("owner/name", base_url="https://127.0.0.1:1")
+    route = next(result for result in results if result.name == "git fetch route")
+    assert route.ok is False
+    assert route.detail
+
+
+@git_checks
+async def test_a_reachable_remote_passes(git_remote, monkeypatch):
+    monkeypatch.setenv("GIT_SSL_CAINFO", str(git_remote.ca))
+    results = await check_git(git_remote.repo, base_url=git_remote.base_url)
+    assert [result.ok for result in results] == [True, True]
