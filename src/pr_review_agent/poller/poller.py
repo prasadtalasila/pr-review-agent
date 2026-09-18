@@ -55,7 +55,10 @@ class Poller:
         for endpoint, path in self.endpoints.all_paths().items():
             result = await self.client.get(path, etag=self.etags.get(path))
             self.etags.set(path, result.etag)
-            results[endpoint] = result.data if result.changed else None
+            # The three watched endpoints are collections, so anything else
+            # is a shape change at GitHub's end rather than a poll result.
+            items = result.data if isinstance(result.data, list) else None
+            results[endpoint] = items if result.changed else None
             any_changed = any_changed or result.changed
             if result.rate_limit is not None:
                 remaining = result.rate_limit.remaining

@@ -18,10 +18,12 @@ issues endpoint returns both, and reviewing issue #7 because someone said
 already in the payload, so the filter is free.
 
 **A comment payload carries no head SHA.** ``head_sha`` is therefore left
-unresolved and read when the trigger is claimed. Resolving it here would
-cost one request per comment on every poll to learn a value that can go
-stale before the worker starts -- and the worker already re-reads it
-immediately before posting, so the second read is the only one that counts.
+unresolved here and read when the trigger is claimed, by ``pulls.py`` --
+which needs the same request for the checkout's size gate, so resolving the
+sha costs nothing extra. Resolving it *here* would cost one request per
+comment on every poll to learn a value that can go stale before the worker
+starts -- and the worker already re-reads it immediately before posting, so
+the second read is the only one that counts.
 Review comments do carry a ``commit_id``, but it names the commit the
 comment was written against rather than the pull request's head, so it is
 not used either.

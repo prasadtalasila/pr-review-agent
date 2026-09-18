@@ -54,6 +54,17 @@ class RepoEndpoints:
             Endpoint.REVIEW_COMMENTS: f"{base}/pulls/comments?{updated}",
         }[endpoint]
 
+    def pull(self, number: int) -> str:
+        """The path for one pull request.
+
+        Not one of the watched endpoints, and deliberately so: this is read
+        once per *claimed* trigger, to resolve ``head_sha`` and the size
+        numbers the checkout gates on. Reading it on the polling cycle would
+        be one request per open pull request per cycle, which is the design
+        this module's docstring rejects.
+        """
+        return f"/repos/{self.owner}/{self.name}/pulls/{number}"
+
     def all_paths(self) -> dict[Endpoint, str]:
         """The request path for every watched endpoint."""
         return {endpoint: self.path(endpoint) for endpoint in Endpoint}
