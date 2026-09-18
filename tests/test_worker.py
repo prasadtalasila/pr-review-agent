@@ -12,8 +12,17 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+from conftest import REVIEWABLE_LINES
 
-from pr_review_agent.budget import Governor, Mode, StopReason, Usage, UsageConfidence
+from pr_review_agent.budget import (
+    DEFAULT_TOKENS_PER_LINE,
+    MIN_FIT_SAMPLES,
+    Governor,
+    Mode,
+    StopReason,
+    Usage,
+    UsageConfidence,
+)
 from pr_review_agent.config import BudgetConfig, PublishConfig
 from pr_review_agent.engine import (
     FULL,
@@ -222,6 +231,14 @@ def ledger_rows(store: SqliteStore) -> list[tuple]:
             "SELECT dedupe_key, mode, reserved_tokens, used_tokens, "
             "usage_confidence, engine, model FROM ledger ORDER BY id"
         ).fetchall()
+
+
+def reviewed_lines(store: SqliteStore) -> list[int | None]:
+    with store.transaction() as conn:
+        return [
+            row[0]
+            for row in conn.execute("SELECT reviewed_lines FROM ledger ORDER BY id")
+        ]
 
 
 def stop_reasons(store: SqliteStore) -> list[str]:
@@ -1136,3 +1153,79 @@ async def test_a_usage_limit_leaves_the_row_unattempted(wired):
     # And the breaker, not the queue, is what stops it being attempted again.
     assert await fixture.worker.run_once() is False
     assert fixture.engine.calls == 1
+
+
+# -- what the pre-flight fit is fitted against ---------------------------
+#
+# Issue #32: the worker settled without the line count, so every row the
+# running daemon wrote left `reviewed_lines` NULL -- and `_FIT_SAMPLE`
+# selects on it being non-null. The fit could never reach MIN_FIT_SAMPLES,
+# so the estimate stayed at its cold-start constant for ever. These tests
+# drive it through the worker, which is the gap that made it invisible:
+# test_budget.py's own fit tests call `settle` with the argument directly.
+
+
+async def test_a_completed_review_records_the_lines_it_reviewed(wired):
+    """The size the worker handed over, so the fit has something to fit."""
+    fixture = wired()
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert reviewed_lines(fixture.store) == [REVIEWABLE_LINES]
+
+
+async def test_a_failure_before_the_engine_records_no_lines(wired):
+    """Nothing was handed to an engine, so nothing was reviewed."""
+    fixture = wired(client=client_returning(None, status=500))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert reviewed_lines(fixture.store) == [None]
+
+
+@pytest.mark.parametrize("outcome", [Outcome.TRUNCATED, Outcome.FAILED])
+async def test_a_run_that_did_not_finish_records_no_lines(wired, outcome):
+    """A run cut off spent less than a full review of those lines costs.
+
+    Fitting it would pull the rate down, which is the direction that
+    under-refuses -- so only a finished review is a sample of what one costs.
+    """
+    fixture = wired(engine=OutcomeEngine(outcome=outcome))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert reviewed_lines(fixture.store) == [None]
+
+
+async def test_a_usage_limited_run_records_no_lines(wired):
+    """The worst of them: it settles at *exact* zero, which the fit admits.
+
+    Rows saying a pull request cost nothing would fit a rate of nothing, and
+    ledger rows are never deleted -- so the estimate would stop refusing
+    anything, permanently.
+    """
+    fixture = wired(engine=LimitedEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert reviewed_lines(fixture.store) == [None]
+
+
+async def test_the_fit_engages_once_the_worker_has_settled_enough_runs(wired):
+    """End to end: the agent uses the evidence it collected about itself."""
+    fixture = wired()
+    for index in range(MIN_FIT_SAMPLES):
+        fixture.queue.enqueue(opened(head_sha=f"sha{index}"), now=NOW)
+
+    for _ in range(MIN_FIT_SAMPLES):
+        assert await fixture.worker.run_once() is True
+
+    assert reviewed_lines(fixture.store) == [REVIEWABLE_LINES] * MIN_FIT_SAMPLES
+    # 1,000 tokens over REVIEWABLE_LINES lines, ten times over.
+    rate = FakeEngine().usage.tokens / REVIEWABLE_LINES
+    assert fixture.governor.estimate(100) == round(100 * rate)
+    assert fixture.governor.estimate(100) != 100 * DEFAULT_TOKENS_PER_LINE
