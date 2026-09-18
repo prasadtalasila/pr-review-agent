@@ -17,6 +17,7 @@ from pr_review_agent.budget import (
     WEEKLY,
     Governor,
     Mode,
+    StopReason,
     Usage,
     UsageConfidence,
 )
@@ -154,6 +155,7 @@ def test_settle_releases_the_unused_remainder(store):
         claim,
         Usage(250, UsageConfidence.EXACT, engine="claude_sdk", model="claude-opus-5"),
         now=NOON,
+        stop_reason=StopReason.COMPLETED,
     )
     assert governor.headroom(NOON).remaining == held + 750
 
@@ -171,6 +173,7 @@ def test_settle_records_what_a_posted_comment_is_traced_to(store):
             250, UsageConfidence.ESTIMATED, engine="claude_cli", model="claude-opus-5"
         ),
         now=NOON,
+        stop_reason=StopReason.COMPLETED,
     )
     with store.transaction() as conn:
         row = conn.execute(
@@ -187,6 +190,43 @@ def test_settle_records_what_a_posted_comment_is_traced_to(store):
     )
 
 
+def test_settle_records_why_the_run_stopped(store):
+    """The reason is a column, not something inferred from the confidence."""
+    governor = Governor(store, budget())
+    queue = ReviewQueue(store)
+    queue.enqueue(opened(pr=1), now=NOON)
+    claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
+    assert claim is not None
+
+    assert governor.settle(
+        claim,
+        Usage(1_000, UsageConfidence.UNAVAILABLE, engine="claude"),
+        now=NOON,
+        stop_reason=StopReason.TIMEOUT,
+    )
+
+    with store.transaction() as conn:
+        row = conn.execute(
+            "SELECT stop_reason, usage_confidence FROM ledger"
+        ).fetchone()
+    assert row == (str(StopReason.TIMEOUT), str(UsageConfidence.UNAVAILABLE))
+
+
+def test_a_refused_preflight_reads_as_refused_not_as_a_failure(store):
+    """A free refusal spent nothing, and the ledger should not imply it did."""
+    governor = Governor(store, budget())
+    queue = ReviewQueue(store)
+    queue.enqueue(opened(pr=1), now=NOON)
+    claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
+    assert claim is not None
+
+    assert governor.preflight(claim, 0, NOON) is False
+
+    with store.transaction() as conn:
+        row = conn.execute("SELECT stop_reason, used_tokens FROM ledger").fetchone()
+    assert row == (str(StopReason.REFUSED), 0)
+
+
 def test_settle_is_guarded_on_the_owner(store):
     """A worker whose lease lapsed cannot settle a newer worker's row."""
     governor = Governor(store, budget())
@@ -200,7 +240,12 @@ def test_settle_is_guarded_on_the_owner(store):
         owner="somebody-else",
         leased_until=claim.leased_until,
     )
-    assert not governor.settle(stale, Usage(1, UsageConfidence.EXACT), now=NOON)
+    assert not governor.settle(
+        stale,
+        Usage(1, UsageConfidence.EXACT),
+        now=NOON,
+        stop_reason=StopReason.COMPLETED,
+    )
 
 
 def test_a_crashed_run_stays_charged_past_its_lease(store):
@@ -304,7 +349,12 @@ def test_exhausted_refuses_a_mention_too(store):
     queue.enqueue(opened(pr=1), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
-    governor.settle(claim, Usage(budget().daily_limit, UsageConfidence.EXACT), now=NOON)
+    governor.settle(
+        claim,
+        Usage(budget().daily_limit, UsageConfidence.EXACT),
+        now=NOON,
+        stop_reason=StopReason.COMPLETED,
+    )
     assert governor.headroom(NOON).mode is Mode.EXHAUSTED
 
     queue.enqueue(mention(pr=901, comment_id=5), now=NOON)
@@ -464,7 +514,12 @@ def test_a_settled_claim_has_no_admitted_rung(store):
     queue.enqueue(opened(), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
-    governor.settle(claim, Usage(10, UsageConfidence.EXACT), now=NOON)
+    governor.settle(
+        claim,
+        Usage(10, UsageConfidence.EXACT),
+        now=NOON,
+        stop_reason=StopReason.COMPLETED,
+    )
     assert governor.admitted_mode(claim) is None
 
 
@@ -507,6 +562,7 @@ def fit_rows(store, governor, count, *, tokens, lines, confidence=None):
                 engine="fake",
             ),
             now=NOON,
+            stop_reason=StopReason.COMPLETED,
             reviewed_lines=lines,
         )
 

@@ -131,7 +131,7 @@ def test_a_failed_transaction_rolls_back(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 5
+        assert store.schema_version == SCHEMA_VERSION == 6
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -166,11 +166,11 @@ def test_an_existing_database_adopts_the_contributor_index(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as store, store.transaction() as conn:
         conn.execute("DROP INDEX ledger_by_actor")
-        # Migration 5's column goes too: rewinding the version without
-        # undoing what came after it would replay an ALTER against a table
-        # that already has the column, which is a state no real database
-        # reaches.
+        # Migrations 5 and 6 go too: rewinding the version without undoing
+        # what came after it would replay an ALTER against a table that
+        # already has the column, which is a state no real database reaches.
         conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_lines")
+        conn.execute("ALTER TABLE ledger DROP COLUMN stop_reason")
         conn.execute("PRAGMA user_version = 3")
 
     with SqliteStore(path) as reopened:
@@ -189,6 +189,8 @@ def test_an_existing_database_adopts_the_reviewed_lines_column(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as store, store.transaction() as conn:
         conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_lines")
+        # Migration 6's column goes too, for the reason above.
+        conn.execute("ALTER TABLE ledger DROP COLUMN stop_reason")
         conn.execute(
             "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
             "reserved_tokens, reserved_at) VALUES ('k', 'w', 1, 'full', 10, 'x')"
@@ -201,6 +203,28 @@ def test_an_existing_database_adopts_the_reviewed_lines_column(tmp_path):
             assert conn.execute("SELECT reviewed_lines FROM ledger").fetchone() == (
                 None,
             )
+
+
+def test_an_existing_database_adopts_the_stop_reason_column(tmp_path):
+    """A v5 store gains the column that says why a run ended.
+
+    Rows written before it existed keep a NULL, which is the honest answer:
+    nothing recorded why they stopped, and inventing a reason for them would
+    put fiction in the one table that is never pruned.
+    """
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store, store.transaction() as conn:
+        conn.execute("ALTER TABLE ledger DROP COLUMN stop_reason")
+        conn.execute(
+            "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
+            "reserved_tokens, reserved_at) VALUES ('k', 'w', 1, 'full', 10, 'x')"
+        )
+        conn.execute("PRAGMA user_version = 5")
+
+    with SqliteStore(path) as reopened:
+        assert reopened.schema_version == SCHEMA_VERSION
+        with reopened.transaction() as conn:
+            assert conn.execute("SELECT stop_reason FROM ledger").fetchone() == (None,)
 
 
 def test_a_failed_migration_leaves_the_version_behind(tmp_path):

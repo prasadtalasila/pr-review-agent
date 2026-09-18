@@ -123,6 +123,34 @@ class UsageConfidence(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class StopReason(StrEnum):
+    """Why a run stopped, as recorded on its ledger row.
+
+    ``UsageConfidence`` says how far the recorded cost can be trusted; this
+    says what happened. They are different questions, and collapsing them is
+    why a run killed on the wall clock and a run whose envelope would not
+    parse were previously the same row -- both ``unavailable``, both charged
+    the full reservation, and nothing to say which control had bound them.
+
+    A bounded set rather than free text, because the column is read by an
+    operator and, later, by the circuit breaker: ``GROUP BY stop_reason`` has
+    to mean something.
+    """
+
+    COMPLETED = "completed"
+    TRUNCATED = "truncated"
+    FAILED = "failed"
+    #: Killed by ``engine.timeout_seconds``. The only per-run ceiling the
+    #: agent enforces today, so it is the one worth being able to count.
+    TIMEOUT = "timeout"
+    ENGINE_ERROR = "engine_error"
+    #: The pre-flight estimate refused the run. Settles at zero: no engine
+    #: ran, so nothing was spent.
+    REFUSED = "refused"
+    #: GitHub or the workspace failed before the engine started.
+    INFRASTRUCTURE = "infrastructure"
+
+
 @dataclass(frozen=True)
 class Window:
     """One rolling limit: ``limit`` tokens within a trailing ``duration``.
@@ -192,7 +220,8 @@ WHERE dedupe_key = :key AND owner = :owner AND settled_at IS NULL
 _SETTLE = """
 UPDATE ledger
 SET used_tokens = :used, usage_confidence = :confidence,
-    engine = :engine, model = :model, reviewed_lines = :lines, settled_at = :now
+    engine = :engine, model = :model, reviewed_lines = :lines,
+    stop_reason = :reason, settled_at = :now
 WHERE dedupe_key = :key AND owner = :owner AND settled_at IS NULL
 """
 
@@ -261,6 +290,7 @@ class Governor:
         usage: Usage,
         *,
         now: datetime,
+        stop_reason: StopReason,
         reviewed_lines: int | None = None,
     ) -> bool:
         """Record what the run actually spent, releasing the remainder.
@@ -275,6 +305,11 @@ class Governor:
         was handed -- and an adapter that under-reported would bias the rate
         downward, which is a spending control taking its input from the
         thing it controls. The worker reads it off ``Checkout.reviewed``.
+
+        ``stop_reason`` is required and has no default. A default would be a
+        reason nobody gave, and the column exists precisely to remove that
+        ambiguity -- a ``NULL`` here would mean the thing it was added to
+        stop meaning, which is "something happened".
         """
         with self._store.transaction() as conn:
             return (
@@ -286,6 +321,7 @@ class Governor:
                         "engine": usage.engine,
                         "model": usage.model,
                         "lines": reviewed_lines,
+                        "reason": str(stop_reason),
                         "now": _stamp(now),
                         "key": claim.trigger.dedupe_key,
                         "owner": claim.owner,
@@ -345,6 +381,7 @@ class Governor:
             claim,
             Usage(tokens=0, confidence=UsageConfidence.EXACT),
             now=now,
+            stop_reason=StopReason.REFUSED,
         )
         return False
 

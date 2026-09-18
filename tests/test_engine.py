@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pr_review_agent.budget import Governor, Mode, Usage, UsageConfidence
+from pr_review_agent.budget import Governor, Mode, StopReason, Usage, UsageConfidence
 from pr_review_agent.config import BudgetConfig
 from pr_review_agent.engine import (
     FULL,
@@ -243,7 +243,15 @@ async def test_fake_result_settles_against_the_governor(tmp_path):
         assert claim is not None
 
         result = await FakeEngine().review(request(tmp_path))
-        assert governor.settle(claim, result.usage, now=now) is True
+        assert (
+            governor.settle(
+                claim,
+                result.usage,
+                now=now,
+                stop_reason=StopReason.COMPLETED,
+            )
+            is True
+        )
 
 
 # -- the request --

@@ -25,9 +25,10 @@ Only the sections backed by implemented components are accepted today. The
 `publish` section described in [BUDGET.md](BUDGET.md) will be added with the
 component that reads it — adding it earlier would mean accepting settings
 that do nothing, which is the failure this rule exists to
-prevent. The same rule is why `budget` carries `max_run_tokens` but not
-`max_turns`: the governor reserves against the first, and nothing yet reads
-the second.
+prevent. The same rule is why `budget` carries `max_run_tokens` but no turn
+cap: the governor reserves against the first, while the second is not a
+setting at all — `queue.DEFAULT_MAX_ATTEMPTS` bounds how often one trigger
+may reach an engine, and the CLI bounds the turns inside a single run.
 
 ## 🔐 What is *not* in this file
 
@@ -150,10 +151,10 @@ exists rather than before the fetch: three aggregate integers from the API
 have no per-path breakdown to subtract a lockfile from. See
 [BUDGET.md](BUDGET.md#the-size-gate-moved-to-make-this-possible).
 
-`max_turns` and `wall_clock_seconds` appear in `BUDGET.md` but are **not**
-accepted here: nothing reads them yet, and a setting that does nothing is
-the failure the loader's rule exists to prevent. They arrive with the engine
-adapter.
+`max_turns` and `wall_clock_seconds` were once promised here and are **not**
+coming. Layer 3's wall clock is `engine.timeout_seconds`, where the code that
+enforces it lives; its turn cap is not a setting at all. See
+[BUDGET.md](BUDGET.md#where-layer-3s-three-ceilings-ended-up).
 
 ### `store`
 
@@ -214,7 +215,7 @@ workers are built once at startup. See [WORKER.md](WORKER.md#-workercount).
 | :-- | :-- | :-- | :-- |
 | `model` | string | yes | Passed to the CLI's `--model`. |
 | `expected_version` | string | yes | What the adapter was written against. A mismatch warns; it does not refuse. |
-| `timeout_seconds` | number | yes | Wall clock for one review. The process is killed past it. |
+| `timeout_seconds` | number | yes | Wall clock for one review. The process is killed past it. Must be **below the 30-minute queue lease**, or the daemon refuses to start. |
 | `binary` | string | no (default `claude`) | The executable to run, found on `PATH`. |
 | `standards_paths` | list of strings | no (default none) | Files in the *reviewed* repository holding its review standards. |
 
@@ -230,6 +231,16 @@ model is a cost nobody chose, and a default version pin is a claim about
 output nobody checked. `timeout_seconds` is a spending setting and not merely
 a liveness one: a killed run leaves tokens spent with no envelope to measure
 them.
+
+**`timeout_seconds` is bounded above by the queue lease**, and a value at or
+above it is a startup error rather than a warning. The lease carries an
+expiry rather than a heartbeat *because* a run cannot outlive its clock; an
+hour-long timeout breaks that, and the failure is silent — the lease lapses
+under a live worker, a second worker claims the same pull request and
+reserves against the same windows, and the first worker's settlement is
+rejected, discarding a review that was already paid for. Strictly below, not
+equal: at exactly the lease the two expire together and which one wins is a
+scheduling race. See [QUEUE.md](QUEUE.md#-one-pull-request-one-worker).
 
 **`standards_paths` are read at the merge base, never at the pull request
 head.** The engine is generic and the standards are per-repository, so they

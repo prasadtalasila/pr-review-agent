@@ -112,7 +112,8 @@ CREATE TABLE ledger (
     model            TEXT,
     reserved_at      TEXT NOT NULL,   -- aware UTC, ISO-8601
     settled_at       TEXT,
-    reviewed_lines   INTEGER          -- what the estimate is fitted against
+    reviewed_lines   INTEGER,         -- what the estimate is fitted against
+    stop_reason      TEXT             -- why the run ended; NULL until settled
 );
 ```
 
@@ -138,17 +139,31 @@ tokens-per-line rate against. It stays NULL on a row that reviewed nothing —
 a refusal, or a run recorded before the column existed — so those rows never
 enter the fit.
 
+`stop_reason` is why the run ended, which is a different question from
+`usage_confidence`'s how far its recorded cost can be trusted. Without it a
+run killed on the wall clock and one whose envelope would not parse are the
+same row: both `unavailable`, both charged the full reservation, and nothing
+to say which control bound the run. One of seven values — `completed`,
+`truncated`, `failed`, `timeout`, `engine_error`, `refused`,
+`infrastructure` — rather than free text, because it is read by an operator
+and, later, by the circuit breaker, and `GROUP BY stop_reason` has to mean
+something. Rows written before the column existed keep a NULL: nothing
+recorded why they stopped, and inventing a reason would put fiction in the
+one table that is never pruned.
+
 ## 🔢 Migrations
 
 Schema changes are an ordered list applied on connect, with the file's
 `PRAGMA user_version` recording how many have run. Version 1 is the ETag and
 watermark tables; version 2 adds the queue; version 3 adds the ledger; version
 4 indexes the ledger by `(actor_id, reserved_at)` for the per-contributor
-budget window; version 5 adds `ledger.reviewed_lines`.
+budget window; version 5 adds `ledger.reviewed_lines`; version 6 adds
+`ledger.stop_reason`.
 
 **Each migration and its version bump commit together**, in one transaction.
-That is what lets version 5 be an `ALTER TABLE ADD COLUMN`, which SQLite has
-no `IF NOT EXISTS` form for and which fails outright on a second application.
+That is what lets versions 5 and 6 be an `ALTER TABLE ADD COLUMN`, which
+SQLite has no `IF NOT EXISTS` form for and which fails outright on a second
+application.
 A crash mid-migration rolls the pair back and the migration is simply
 re-applied.
 

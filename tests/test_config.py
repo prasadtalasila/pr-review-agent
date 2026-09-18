@@ -12,6 +12,7 @@ from pr_review_agent.config import (
     Config,
     ConfigError,
 )
+from pr_review_agent.queue import DEFAULT_LEASE
 from pr_review_agent.triggers.models import Actor
 
 # Required, so every fixture below carries it. A config that names no
@@ -437,6 +438,29 @@ def test_the_wall_clock_must_be_a_positive_number(value):
     data = {**VALID, "engine": {**ENGINE, "timeout_seconds": value}}
     with pytest.raises(ConfigError, match="engine.timeout_seconds"):
         Config.from_mapping(data)
+
+
+@pytest.mark.parametrize("over", [0, 1])
+def test_a_wall_clock_at_or_above_the_lease_is_refused(over):
+    """A run that can outlive its lease loses it to a second worker.
+
+    ``queue.py`` calls ``DEFAULT_LEASE`` "comfortably above the per-run
+    wall-clock ceiling", and leases carry an expiry rather than a heartbeat
+    because of it. This is that assumption, enforced rather than asserted.
+    """
+    data = {
+        **VALID,
+        "engine": {**ENGINE, "timeout_seconds": DEFAULT_LEASE.total_seconds() + over},
+    }
+    with pytest.raises(ConfigError, match="below the queue lease"):
+        Config.from_mapping(data)
+
+
+def test_a_wall_clock_below_the_lease_loads():
+    """Pinned against the lease itself, so changing it cannot orphan the check."""
+    seconds = DEFAULT_LEASE.total_seconds() - 1
+    data = {**VALID, "engine": {**ENGINE, "timeout_seconds": seconds}}
+    assert Config.from_mapping(data).engine.timeout_seconds == seconds
 
 
 @pytest.mark.parametrize("value", ["AGENTS.md", [""], [3], {}])
