@@ -262,3 +262,33 @@ def test_refusing_everything_claims_nothing_and_costs_no_attempt(queue):
     claim = queue.claim(now=NOON, owner="w")
     assert claim is not None
     assert claim.attempts == 1  # the refusal did not count against the bound
+
+
+def test_abandoning_gives_up_permanently(queue):
+    # A deterministic failure -- an oversized pull request -- must not be
+    # retried, and must not be recorded as reviewed either.
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert claim is not None
+    assert queue.abandon(claim) is True
+    assert queue.status(claim.trigger.dedupe_key) is QueueStatus.ABANDONED
+    assert queue.claim(now=NOON + 2 * DEFAULT_LEASE, owner="w2") is None
+
+
+def test_abandoning_frees_the_pull_request(queue):
+    queue.enqueue(opened(pr=7), now=NOON)
+    queue.enqueue(mention(pr=7), now=NOON)
+    claim = queue.claim(now=NOON, owner="w1")
+    assert claim is not None
+    queue.abandon(claim)
+    assert queue.claim(now=NOON, owner="w2") is not None
+
+
+def test_a_lapsed_worker_cannot_abandon_the_new_workers_row(queue):
+    queue.enqueue(opened(), now=NOON)
+    stale = queue.claim(now=NOON, owner="w1")
+    assert stale is not None
+    later = NOON + DEFAULT_LEASE + timedelta(seconds=1)
+    assert queue.claim(now=later, owner="w2") is not None
+    assert queue.abandon(stale) is False
+    assert queue.status(stale.trigger.dedupe_key) is QueueStatus.CLAIMED

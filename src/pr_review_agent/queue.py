@@ -224,6 +224,18 @@ class ReviewQueue:
         lease; ``False`` if the lease is no longer held."""
         return self._finish(claim, QueueStatus.PENDING)
 
+    def abandon(self, claim: Claim) -> bool:
+        """Give ``claim`` up permanently; ``False`` if its lease is gone.
+
+        For a failure that will fail again: an oversized pull request, an
+        unusable payload. ``complete`` is not reused for it because ``done``
+        means *reviewed*, and an operator reading the table should not have
+        to guess which kind of ``done`` they are looking at. Retrying instead
+        would reach the same refusal twice more, reserving allowance each
+        time.
+        """
+        return self._finish(claim, QueueStatus.ABANDONED)
+
     def status(self, dedupe_key: str) -> QueueStatus | None:
         """The status of ``dedupe_key``, or ``None`` if it was never queued."""
         with self._store.transaction() as conn:

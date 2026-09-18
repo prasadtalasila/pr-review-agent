@@ -179,6 +179,14 @@ FROM ledger WHERE reserved_at > :start
 # The contributor window, served by the `ledger_by_actor` index.
 _USED_SINCE_BY_ACTOR = _USED_SINCE + " AND actor_id = :actor"
 
+# The rung ``admit`` recorded, read back for the run it admitted. Same guard
+# as ``_SETTLE``, because it answers the same question: is this reservation
+# still ours?
+_ADMITTED_MODE = """
+SELECT mode FROM ledger
+WHERE dedupe_key = :key AND owner = :owner AND settled_at IS NULL
+"""
+
 # Guarded on the owner, exactly as ``queue._FINISH`` is: a worker whose lease
 # lapsed and was re-claimed must not settle the row the newer worker holds.
 _SETTLE = """
@@ -361,6 +369,25 @@ class Governor:
         if rows < MIN_FIT_SAMPLES or not lines:
             return float(DEFAULT_TOKENS_PER_LINE)
         return tokens / lines
+
+    def admitted_mode(self, claim: Claim) -> Mode | None:
+        """The ladder rung ``claim``'s unsettled reservation was admitted under.
+
+        The worker needs it to fill ``ReviewRequest.mode``, and ``Claim``
+        cannot carry it: :mod:`pr_review_agent.queue` imports nothing from
+        here, which is what keeps the budget out of the claim signature. So
+        it is read back from the row ``admit`` already wrote.
+
+        ``None`` when no unsettled reservation is held for this claim --
+        guarded on the owner exactly as :meth:`settle` is, so a worker whose
+        lease lapsed learns to discard the run before starting it.
+        """
+        with self._store.transaction() as conn:
+            row = conn.execute(
+                _ADMITTED_MODE,
+                {"key": claim.trigger.dedupe_key, "owner": claim.owner},
+            ).fetchone()
+        return None if row is None else Mode(row[0])
 
     def headroom(self, now: datetime) -> Headroom:
         """What the shared windows allow, for an operator or a status readout.

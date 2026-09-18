@@ -105,7 +105,15 @@ trigger cannot drain the weekly allowance one retry at a time.
 | `pending` | Waiting for a worker. |
 | `claimed` | Leased until `leased_until`, by `owner`. |
 | `done` | Reviewed. Never offered again. |
-| `abandoned` | Used up `max_attempts`. Never offered again. |
+| `abandoned` | Given up on. Never offered again. |
+
+`abandoned` is reached two ways: by using up `max_attempts`, which `claim`
+does for itself, and by a worker calling `abandon` on a failure that will
+fail again — an oversized pull request, an unusable payload. See
+[WORKER.md](WORKER.md#-what-happens-to-the-row).
+
+`complete`, `release` and `abandon` are the three verbs a worker closes a row
+with, and all three are guarded on the owner.
 
 ## 🔭 What the queue does *not* do
 

@@ -1,20 +1,33 @@
 """Daemon loop: what one cycle enqueues, and what it must never enqueue."""
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 import httpx
 import pytest
 
 from pr_review_agent.budget import Governor
-from pr_review_agent.config import Config
-from pr_review_agent.daemon import COMMENTS, EMPTY, PULL_REQUESTS, Daemon, main
+from pr_review_agent.config import Config, WorkerConfig
+from pr_review_agent.daemon import (
+    COMMENTS,
+    EMPTY,
+    PULL_REQUESTS,
+    Daemon,
+    build_workers,
+    main,
+    supervise,
+)
+from pr_review_agent.engine import FakeEngine
 from pr_review_agent.poller.client import GitHubClient
 from pr_review_agent.poller.endpoints import RepoEndpoints
 from pr_review_agent.poller.interval import AdaptiveInterval
 from pr_review_agent.poller.poller import Poller
 from pr_review_agent.queue import ReviewQueue
 from pr_review_agent.store import SqliteStore
+from pr_review_agent.worker import ReviewWorker
+from pr_review_agent.workspace import Workspace
 
 NOW = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 OLD = NOW - timedelta(days=30)
@@ -354,3 +367,149 @@ def test_sighup_does_not_swap_a_changed_repository(tmp_path, caplog):
 
     assert daemon.config.github.repo == "o/r"
     assert "need a restart" in caplog.text
+
+
+# -- the worker supervisor -----------------------------------------------
+#
+# A crash must not stop all reviews (the poll loop would keep filling a queue
+# nobody drains) and must not spin silently either.
+
+
+class CrashingWorker:
+    """A worker that fails its loop a fixed number of times, then idles."""
+
+    def __init__(self, crashes: int, *, progress_after: int | None = None) -> None:
+        self.crashes = crashes
+        self.progress_after = progress_after
+        self.spawns = 0
+        self.completed = 0
+        self.owner = "worker-1"
+
+    async def run_forever(self, stop: asyncio.Event) -> None:
+        """Crash while there are crashes left, then wait to be stopped."""
+        self.spawns += 1
+        if self.progress_after is not None and self.spawns > self.progress_after:
+            self.completed += 1
+        if self.spawns <= self.crashes:
+            raise RuntimeError("the worker fell over")
+        stop.set()
+
+
+async def test_a_crashed_worker_is_respawned(tmp_path, monkeypatch):
+    monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 0.01)
+    worker = CrashingWorker(crashes=2)
+    stop = asyncio.Event()
+
+    await asyncio.wait_for(supervise(cast(ReviewWorker, worker), stop), timeout=5)
+
+    assert worker.spawns == 3
+
+
+async def test_a_crash_does_not_propagate_to_the_daemon(tmp_path, monkeypatch):
+    """Killing the process would take the poller down with the worker."""
+    monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 0.01)
+    worker = CrashingWorker(crashes=1)
+
+    await asyncio.wait_for(
+        supervise(cast(ReviewWorker, worker), asyncio.Event()), timeout=5
+    )
+
+
+async def test_the_backoff_doubles_while_the_worker_makes_no_progress(monkeypatch):
+    waits = []
+
+    async def record(_stop, seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 1.0)
+    monkeypatch.setattr("pr_review_agent.daemon._wait", record)
+    worker = CrashingWorker(crashes=3)
+
+    await asyncio.wait_for(
+        supervise(cast(ReviewWorker, worker), asyncio.Event()), timeout=5
+    )
+
+    assert waits == [1.0, 2.0, 4.0]
+
+
+async def test_a_worker_that_reviewed_something_starts_over_at_the_floor(monkeypatch):
+    """Progress means the fault was not persistent; the delay is not earned."""
+    waits = []
+
+    async def record(_stop, seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 1.0)
+    monkeypatch.setattr("pr_review_agent.daemon._wait", record)
+    worker = CrashingWorker(crashes=3, progress_after=2)
+
+    await asyncio.wait_for(
+        supervise(cast(ReviewWorker, worker), asyncio.Event()), timeout=5
+    )
+
+    assert waits == [1.0, 2.0, 1.0]
+
+
+async def test_the_backoff_is_capped(monkeypatch):
+    waits = []
+
+    async def record(_stop, seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 1.0)
+    monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF_MAX", 2.0)
+    monkeypatch.setattr("pr_review_agent.daemon._wait", record)
+    worker = CrashingWorker(crashes=4)
+
+    await asyncio.wait_for(
+        supervise(cast(ReviewWorker, worker), asyncio.Event()), timeout=5
+    )
+
+    assert waits == [1.0, 2.0, 2.0, 2.0]
+
+
+async def test_a_stopped_supervisor_does_not_respawn(monkeypatch):
+    monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 0.01)
+    worker = CrashingWorker(crashes=100)
+    stop = asyncio.Event()
+    stop.set()
+
+    await asyncio.wait_for(supervise(cast(ReviewWorker, worker), stop), timeout=5)
+
+    assert worker.spawns == 0
+
+
+# -- wiring: how many workers, and who they are --------------------------
+
+
+def make_workers(tmp_path, count):
+    daemon = make_daemon(tmp_path, lambda _request: httpx.Response(304))
+    daemon.config = replace(CONFIG, worker=WorkerConfig(count=count))
+    return build_workers(
+        daemon,
+        workspace=Workspace("o/r", tmp_path / "cache"),
+        engine=FakeEngine(),
+        client=GitHubClient(token="t"),
+        endpoints=RepoEndpoints("o", "r"),
+    )
+
+
+def test_one_worker_is_built_by_default(tmp_path):
+    assert len(make_workers(tmp_path, 1)) == 1
+
+
+def test_the_configured_number_of_workers_is_built(tmp_path):
+    assert len(make_workers(tmp_path, 3)) == 3
+
+
+def test_every_worker_owns_its_claims_distinctly(tmp_path):
+    """The lease guard is on the owner, so two workers sharing one is a bug."""
+    owners = [worker.owner for worker in make_workers(tmp_path, 4)]
+    assert len(set(owners)) == 4
+
+
+def test_workers_share_the_queue_and_the_governor(tmp_path):
+    """One ledger, one queue: separate governors would each see their own."""
+    workers = make_workers(tmp_path, 3)
+    assert len({id(worker.governor) for worker in workers}) == 1
+    assert len({id(worker.queue) for worker in workers}) == 1

@@ -302,6 +302,15 @@ control the pessimistic direction is the safe one.
 The happy consequence: the ledger needs no `expires_at`, no `state` column and
 no sweeper.
 
+### A caught failure settles at what is knowable
+
+A *lost* worker's reservation stays charged, as above. A worker that caught
+an exception is not lost, and settles — but at what? The spend is unknowable
+for an engine killed mid-run, so the rule splits on whether the engine had
+started: a failure before it settles at zero, a failure in or after it
+settles at the full reservation. See
+[WORKER.md](WORKER.md#-what-a-failed-run-settles-at).
+
 ## 📉 The degradation ladder
 
 A hard stop at 100 % is the wrong shape — it makes the agent useless for the

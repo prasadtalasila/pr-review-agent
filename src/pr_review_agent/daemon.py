@@ -33,6 +33,7 @@ import contextlib
 import logging
 import signal
 import sys
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ from pathlib import Path
 from ._startup import StartupError, startup
 from .budget import Governor
 from .config import Config, ConfigError
+from .engine import FakeEngine, ReviewEngine
 from .poller import payloads
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import Endpoint, RepoEndpoints
@@ -48,6 +50,8 @@ from .poller.poller import PollCycle, Poller
 from .queue import ReviewQueue
 from .store import SqliteStore
 from .triggers.models import Decision
+from .worker import ReviewWorker
+from .workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,13 @@ PULL_REQUESTS = "pull_requests"
 COMMENTS = "comments"
 
 COMMENT_ENDPOINTS = (Endpoint.ISSUE_COMMENTS, Endpoint.REVIEW_COMMENTS)
+
+#: How long the supervisor waits before restarting a worker that fell
+#: over, and the ceiling that delay doubles towards. Constants rather
+#: than configuration: a backoff describes a failure mode, not an
+#: operator's preference, and nobody could set one from outside.
+RESPAWN_BACKOFF = 5.0
+RESPAWN_BACKOFF_MAX = 300.0
 
 
 @dataclass(frozen=True)
@@ -218,6 +229,73 @@ class Daemon:
         return self.store.advance_watermark(name, now)
 
 
+def build_workers(
+    daemon: Daemon,
+    *,
+    workspace: Workspace,
+    engine: ReviewEngine,
+    client: GitHubClient,
+    endpoints: RepoEndpoints,
+) -> list[ReviewWorker]:
+    """The workers ``daemon``'s configuration asks for.
+
+    They share the queue and the governor, because both are views of one
+    SQLite file: a second governor would measure the same windows and reach
+    the same answers, but a second *queue* would be an invitation to forget
+    that the lease is what serialises them.
+
+    Each owner is distinct, and that is load-bearing rather than cosmetic:
+    ``complete``, ``release``, ``abandon`` and ``settle`` are all guarded on
+    it, so two workers sharing an owner could finish each other's rows.
+    """
+    return [
+        ReviewWorker(
+            queue=daemon.queue,
+            governor=daemon.governor,
+            workspace=workspace,
+            engine=engine,
+            client=client,
+            endpoints=endpoints,
+            owner=f"worker-{index + 1}-{uuid.uuid4().hex[:8]}",
+        )
+        for index in range(daemon.config.worker.count)
+    ]
+
+
+async def supervise(worker: ReviewWorker, stop: asyncio.Event) -> None:
+    """Keep ``worker`` draining until ``stop``, across unexpected failures.
+
+    An unexpected exception must not stop every review -- the poll loop would
+    go on filling a queue nobody drains -- and must not spin silently either.
+    So a crash is logged with its traceback and the loop re-entered after a
+    delay that doubles up to a ceiling, returning to the floor whenever the
+    worker got a review finished in between: progress means the fault was not
+    persistent, so the accumulated delay is not earned.
+
+    Because a worker holds no state between runs, re-entering the loop *is* a
+    fresh worker; nothing is rebuilt.
+
+    A poison pull request cannot drive this. An uncaught crash never releases
+    the row, so it stays claimed under a live lease: the worker takes other
+    work, and when the lease lapses the row is retried with its attempt
+    counted, reaching ``abandoned`` after ``max_attempts``. The backoff is
+    for the crash that is not about any row at all -- a full disk, a bug in
+    the claim path -- where the worker dies holding nothing.
+    """
+    backoff = RESPAWN_BACKOFF
+    while not stop.is_set():
+        before = worker.completed
+        try:
+            await worker.run_forever(stop)
+            return
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("review worker %s crashed; restarting it", worker.owner)
+            if worker.completed > before:
+                backoff = RESPAWN_BACKOFF
+            await _wait(stop, backoff)
+            backoff = min(backoff * 2, RESPAWN_BACKOFF_MAX)
+
+
 async def _wait(stop: asyncio.Event, seconds: float) -> None:
     """Wait ``seconds``, or until ``stop`` is set -- whichever comes first.
 
@@ -259,26 +337,49 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
     # at the wrong file costs the queue's memory of what has been reviewed.
     logger.info("state database: %s", path)
     client = GitHubClient(token)
+    endpoints = RepoEndpoints(config.github.owner, config.github.name)
+    workspace = Workspace(config.github.repo, config.workspace.cache_dir)
     try:
         with SqliteStore(path) as store:
             daemon = Daemon(
                 config=config,
-                poller=Poller(
-                    client=client,
-                    endpoints=RepoEndpoints(config.github.owner, config.github.name),
-                    etags=store,
-                ),
+                poller=Poller(client=client, endpoints=endpoints, etags=store),
                 store=store,
                 queue=ReviewQueue(store),
-                # Built here even though nothing claims yet: the daemon owns
-                # the process, so it owns the governor a worker will claim
-                # through, and SIGHUP has something live to reload.
+                # The daemon owns the process, so it owns the governor its
+                # workers claim through, and SIGHUP has something live to
+                # reload.
                 governor=Governor(store, config.budget),
                 config_path=config_path,
             )
             _install_signal_handlers(stop, daemon.reload_config)
             daemon.seed_watermarks(now=datetime.now(timezone.utc))
-            await daemon.run_forever(stop)
+            # Startup is the only safe moment to clear what a crashed run
+            # left behind: no git of ours is running yet.
+            await workspace.sweep()
+            engine = FakeEngine()
+            # Loud, because a daemon that looks like it reviews and does not
+            # is worse than one that says so.
+            logger.warning(
+                "no review engine adapter is configured: running %r, which "
+                "spends nothing and publishes nothing",
+                engine.name,
+            )
+            workers = build_workers(
+                daemon,
+                workspace=workspace,
+                engine=engine,
+                client=client,
+                endpoints=endpoints,
+            )
+            logger.info("draining the queue with %d worker(s)", len(workers))
+            # The poll cycle and a review have different cadences -- 10-600 s
+            # against minutes -- so they are separate tasks. A review must
+            # never hold up a poll.
+            await asyncio.gather(
+                daemon.run_forever(stop),
+                *[supervise(worker, stop) for worker in workers],
+            )
     finally:
         await client.aclose()
 

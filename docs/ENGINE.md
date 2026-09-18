@@ -5,8 +5,9 @@ allowlisting, dedupe, leasing, the budget windows, publishing — is
 agent-agnostic, so only "run a review" is swappable.
 
 This page documents the seam and the one adapter that implements it. The
-adapter **can spend money**; nothing calls it yet, because nothing drains the
-queue. For why the design has a seam at all, see
+adapter **can spend money**, and since the [review worker](WORKER.md) landed
+it has a caller: the worker claims a row, checks the code out and runs the
+engine the configuration names. For why the design has a seam at all, see
 [DESIGN.md](DESIGN.md#-generalisation-to-other-agents).
 
 ## 🔌 The protocol
@@ -252,6 +253,18 @@ anyone who can merge to the base branch. Configured in
 `engine.expected_version` **warns and proceeds**: the parse is what actually
 protects the run and it already fails loudly, while refusing would take the
 reviewer offline on a routine upgrade that changed nothing we read.
+
+## 🧵 Who calls it
+
+The [review worker](WORKER.md), and nothing else. It builds the
+`ReviewRequest` from a claim, hands it over, and treats **any** exception the
+engine raises as one retryable fact: the run produced no review. An adapter
+therefore does not need to classify its own failures for the caller's
+benefit — it needs to fail rather than return an empty review.
+
+What the worker does need is an honest `usage`: it settles the ledger with
+exactly what `ReviewResult.usage` reports, and a run that fails after the
+engine started is charged its full reservation.
 
 ## 🚧 What lands next
 

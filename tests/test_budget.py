@@ -434,6 +434,52 @@ def test_no_admit_hook_leaves_the_queue_unguarded(store):
     assert queue.claim(now=NOON, owner="w") is not None
 
 
+# -- the rung a claim was admitted under ---------------------------------
+
+
+def test_the_admitted_rung_is_readable_from_the_claim(store):
+    """The worker needs the rung to build a ReviewRequest, and Claim has none."""
+    governor = Governor(store, budget())
+    queue = ReviewQueue(store)
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
+    assert claim is not None
+    assert governor.admitted_mode(claim) is Mode.FULL
+
+
+def test_a_mention_admitted_under_the_rung_reports_it(store):
+    governor = Governor(store, budget(max_run_tokens=100))
+    queue = ReviewQueue(store)
+    _burn_to(governor, queue, Mode.MENTION_ONLY)
+    queue.enqueue(mention(pr=901, comment_id=5), now=NOON)
+    claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
+    assert claim is not None
+    assert governor.admitted_mode(claim) is Mode.MENTION_ONLY
+
+
+def test_a_settled_claim_has_no_admitted_rung(store):
+    """Settled is not unsettled: the reservation this asks about is gone."""
+    governor = Governor(store, budget())
+    queue = ReviewQueue(store)
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
+    assert claim is not None
+    governor.settle(claim, Usage(10, UsageConfidence.EXACT), now=NOON)
+    assert governor.admitted_mode(claim) is None
+
+
+def test_a_lapsed_workers_claim_has_no_admitted_rung(store):
+    """Owner-guarded, exactly as settle is: the row belongs to somebody else."""
+    from dataclasses import replace
+
+    governor = Governor(store, budget())
+    queue = ReviewQueue(store)
+    queue.enqueue(opened(), now=NOON)
+    claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
+    assert claim is not None
+    assert governor.admitted_mode(replace(claim, owner="somebody-else")) is None
+
+
 def _burn_to(governor, queue, mode):
     """Admit runs until the ladder reaches ``mode``."""
     index = 0

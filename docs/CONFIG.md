@@ -189,6 +189,25 @@ spending cap. Unknown keys inside `workspace` are still rejected.
 A relative path is resolved against the working directory the daemon starts
 in, and logged absolute at `INFO`, exactly as `store.path` is.
 
+### `worker`
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `count` | integer 1–4 | no (default `1`) | How many reviews may run at once. |
+
+The **third** optional section, and the only one whose value is a spending
+control. Every concurrent run reserves `budget.max_run_tokens` up front, so
+`count` multiplies the floor below which the governor refuses everything —
+which is why it is capped, and why `tests/test_config.py` pins both the
+default and the cap by value.
+
+Raising it parallelises *across* pull requests only. One pull request is
+never reviewed by two workers whatever this is: the
+[per-pull-request lease](QUEUE.md#-one-pull-request-one-worker) holds that.
+
+It needs a restart to take effect — `SIGHUP` swaps only `budget`, and the
+workers are built once at startup. See [WORKER.md](WORKER.md#-workercount).
+
 ### `engine`
 
 | Key | Type | Required | Meaning |
@@ -199,10 +218,11 @@ in, and logged absolute at `INFO`, exactly as `store.path` is.
 | `binary` | string | no (default `claude`) | The executable to run, found on `PATH`. |
 | `standards_paths` | list of strings | no (default none) | Files in the *reviewed* repository holding its review standards. |
 
-The **third** optional section, and unlike `store` and `workspace` its
-argument is temporal rather than structural: nothing drains the queue yet, so
-an absent `engine` section cannot spend anything. The change that wires a
-worker to the seam is the change that makes it required.
+**Required.** It was optional only while nothing drained the queue, because
+an engine nothing calls cannot spend; the [worker](WORKER.md) calls it now, so
+a daemon configured without this section would claim work, reserve allowance
+and then have nothing to run. This is the section that makes the agent able
+to spend real money.
 
 Inside the section nothing is softened. `model` and `expected_version` have
 no defaults for the same reason the plan token counts have none — a default
@@ -261,8 +281,8 @@ three token counts have no defaults on purpose.
 `SIGHUP` re-reads `config.yaml` and adopts its `budget` section, so stopping
 the agent never requires a restart.
 
-**Only `budget` is hot-swapped.** A changed `github`, `triggers`, `store` or
-`workspace` section is logged as needing a restart rather than half-applied:
+**Only `budget` is hot-swapped.** A changed `github`, `triggers`, `store`,
+`workspace` or `worker` section is logged as needing a restart rather than half-applied:
 the daemon's watermarks describe the repository it started against, and
 swapping that mid-flight would make them meaningless. `workspace.cache_dir`
 is in that list for a neighbouring reason — moving the cache under a running

@@ -20,7 +20,8 @@ they are reproduced here so they survive the issue being closed.
 | Workspace (fetch, checkout, merge-base diff, teardown) | implemented, unit tested |
 | Budget layer 2 (path exclusions, pre-flight estimate) | implemented, unit tested |
 | Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented, unit tested |
-| Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, unit tested; no caller |
+| Review worker (claim → run → settle), and its supervisor | implemented, unit tested |
+| Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, unit tested, wired |
 | Publisher | not started |
 | Retention sweep | not started |
 
@@ -29,33 +30,29 @@ worker**, so the spending rails exist before anything can spend.
 
 ## 🧭 Next
 
-1. **The worker, and the budget pieces that need a running engine.** Drain the
-   queue through the governor into the adapter, then the circuit breaker,
-   layer 3's per-run enforcement and the ladder's 60 % rung. The worker
-   inherits one question the adapter names and cannot answer: a review killed
-   on its wall clock leaves tokens spent and no envelope to measure them, so
-   the reservation has to settle at its full reserved amount with
-   `unavailable` confidence. See [ENGINE.md](ENGINE.md).
+1. **The budget pieces that still need a running engine:** the circuit
+   breaker, layer 3's per-run enforcement and the ladder's 60 % rung. The
+   worker has landed and settled the question the adapter named and could not
+   answer — a review killed on its wall clock leaves tokens spent and no
+   envelope to measure them, so it settles at its full reservation with
+   `unavailable` confidence. See [WORKER.md](WORKER.md#-what-a-failed-run-settles-at).
 2. **Publisher.** One line-anchored review, event `COMMENT`, with the
    `head_sha` re-check immediately before posting. It is also the consumer
    `ReviewResult.outcome` is waiting for: findings are publishable only from a
    run that completed.
 3. **Retention sweep.** Purge content on merge; keep the ledger.
 
-The [daemon loop](DAEMON.md) fills the queue and nothing drains it, which is
-still the intended state: the backlog is visible and none of it has cost
-anything. Every piece the worker will need now exists — the
-[governor](BUDGET.md) can reserve and settle, the [workspace](WORKSPACE.md)
-can put a pull request on disk, and the [engine seam](ENGINE.md) now has an
-adapter behind it that can actually review one. What is missing is the worker
-that joins them.
+The queue now drains, and **the agent can spend.** The
+[review worker](WORKER.md) claims through the [governor](BUDGET.md), checks
+the pull request out, runs the configured adapter and settles the ledger.
+"Nothing can spend" has stopped being structural and is now what the rails
+enforce: the windows, the ladder, the pre-flight estimate, `max_run_tokens`
+and `worker.count`. `CLAUDE.md` §5's rule — nothing reaches an engine outside
+the governor — is doing work rather than describing a property the code had
+for free, and a test pins it.
 
-That is the first time "nothing can spend" stops being structural and becomes
-a matter of what is wired to what. The adapter is a real caller of a real
-coding agent; the only reason no allowance moves is that nothing calls the
-adapter. The worker is therefore the change where `CLAUDE.md` §5's rule —
-nothing reaches an engine outside the governor — starts doing work rather
-than describing a property the code has for free.
+What is missing is anywhere to put the result: findings are logged and
+dropped until the publisher lands.
 
 A second engine plus a shared conformance suite is deliberately last: the
 seam is worth defining early and filling late. It will be another CLI —
@@ -127,8 +124,10 @@ bugs:
   `Retry-After`, so the client raises rather than sleeping to the reset. See
   [POLLER.md](POLLER.md#-rate-limits-and-retries).
 - A claimed trigger's `head_sha` is the head seen at classification time, and
-  is `None` for a mention. Resolving it, and re-checking it against the live
-  head before posting, belongs to the publisher — see
+  is `None` for a mention. The worker resolves it from `GET /pulls/{n}` when
+  it claims, and reviews the head that read reported. **Re-checking it against
+  the live head immediately before posting is still the publisher's**, and
+  until that exists a review of a superseded commit would be published — see
   [QUEUE.md](QUEUE.md#-what-the-queue-does-not-do).
 - **Nothing validates the configured token limits.** They are the operator's
   guess at a quota the plan does not publish, and until the circuit breaker
@@ -136,5 +135,9 @@ bugs:
   being hit. Set them conservatively low. See
   [BUDGET.md](BUDGET.md#-not-built-yet).
 - `claim()`'s `admit` hook is optional, so "nothing spends outside the
-  governor" is held by review rather than by the type system. The only caller
-  that will ever claim is the worker the engine phase adds.
+  governor" is held by a test rather than by the type system:
+  `tests/test_worker.py::test_a_claim_is_taken_only_through_the_governor`
+  asserts the hook the worker passes. The worker is the only caller that
+  claims.
+- `worker.count` needs a restart to take effect. `SIGHUP` swaps only the
+  budget section, and the workers are built once at startup.

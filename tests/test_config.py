@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pr_review_agent.config import DEFAULT_EXCLUDED_PATHS, Config, ConfigError
+from pr_review_agent.config import (
+    DEFAULT_EXCLUDED_PATHS,
+    MAX_WORKERS,
+    Config,
+    ConfigError,
+)
 from pr_review_agent.triggers.models import Actor
 
 # Required, so every fixture below carries it. A config that names no
@@ -453,6 +458,41 @@ def test_an_unusable_cache_dir_is_rejected(value):
         Config.from_mapping(data)
 
 
+# -- worker: how many reviews may run at once ----------------------------
+#
+# CLAUDE.md section 5: worker.count multiplies the reservation floor, so the
+# default and the cap are spending bounds and are pinned here.
+
+
+def test_worker_section_is_optional_and_defaults_to_one():
+    assert Config.from_mapping(VALID).worker.count == 1
+
+
+def test_worker_count_is_read():
+    data = {**VALID, "worker": {"count": 3}}
+    assert Config.from_mapping(data).worker.count == 3
+
+
+def test_worker_count_is_capped():
+    """Every concurrent run reserves max_run_tokens up front."""
+    data = {**VALID, "worker": {"count": MAX_WORKERS + 1}}
+    with pytest.raises(ConfigError, match="worker.count"):
+        Config.from_mapping(data)
+
+
+@pytest.mark.parametrize("value", [0, -1, "2", 1.5, None, True])
+def test_an_unusable_worker_count_is_rejected(value):
+    data = {**VALID, "worker": {"count": value}}
+    with pytest.raises(ConfigError, match="worker.count"):
+        Config.from_mapping(data)
+
+
+def test_unknown_key_in_worker_is_rejected():
+    data = {**VALID, "worker": {"workers": 2}}
+    with pytest.raises(ConfigError, match="unknown keys in 'worker'"):
+        Config.from_mapping(data)
+
+
 # -- the shipped examples, which documentation has already got wrong once --
 
 EXAMPLES = Path(__file__).resolve().parent.parent
@@ -509,6 +549,7 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
         "store",
         "workspace",
         "engine",
+        "worker",
     }
     assert set(data["github"]) == {"repo", "agent_user_id"}
     assert set(data["triggers"]) == {"allowlist", "handle"}
