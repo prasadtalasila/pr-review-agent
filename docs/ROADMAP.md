@@ -39,13 +39,17 @@ worker**, so the spending rails exist before anything can spend.
 
 The [daemon loop](DAEMON.md) fills the queue and nothing drains it, which is
 still the intended state: the backlog is visible and none of it has cost
-anything. The [budget governor](BUDGET.md) is now in place ahead of the
-worker, so the spending rails exist before anything can spend, and the
-[workspace](WORKSPACE.md) can put a pull request on disk without anything
-yet reading it.
+anything. Every piece the worker will need now exists — the
+[governor](BUDGET.md) can reserve and settle, the [workspace](WORKSPACE.md)
+can put a pull request on disk, and the [engine seam](ENGINE.md) says what a
+review engine is handed and must return. What is missing is the worker that
+joins them, and any engine that could spend.
 
-A second engine (PR-Agent via `pr_agent_litellm`) plus a shared conformance
-suite is deliberately last: the seam is worth defining early and filling late.
+A second engine plus a shared conformance suite is deliberately last: the
+seam is worth defining early and filling late. It will be another CLI —
+`codex` or `opencode` — because [every adapter is a
+subprocess](DESIGN.md#-generalisation-to-other-agents) and no vendor SDK is
+linked.
 
 ## ✅ Acceptance criteria
 
@@ -85,7 +89,9 @@ suite is deliberately last: the seam is worth defining early and filling late.
       per trigger kind, rolling-window arithmetic, and the reserve-then-settle
       governor under concurrency; integration tests against recorded GitHub API
       fixtures; an engine conformance suite run against every adapter using a
-      fixture pull request with seeded defects.
+      fixture pull request with seeded defects (the suite exists in
+      `tests/test_engine.py`; it runs against `FakeEngine` alone until there
+      is an adapter to add).
 - [ ] **Documentation:** configuration reference, deployment and firewall
       prerequisites, billing-mode guidance, and an operator runbook covering the
       kill switch and the retention policy.

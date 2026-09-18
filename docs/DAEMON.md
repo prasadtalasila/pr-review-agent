@@ -33,7 +33,9 @@ becomes expensive, and that point belongs to the [budget
 governor](BUDGET.md) — which is why this could be built before the governor
 existed without crossing the one rule in [DESIGN.md](DESIGN.md#-the-one-rule).
 
-Until the governor and the worker land, the queue fills and nothing drains.
+The [governor](BUDGET.md) has since landed, and so has the [seam a review
+engine plugs into](ENGINE.md); the worker that would join them has not, so
+the queue fills and nothing drains.
 That is the intended state: the backlog is visible in the `queue` table, and
 none of it has cost anything.
 
