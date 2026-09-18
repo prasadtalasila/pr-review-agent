@@ -99,11 +99,12 @@ rests on, the retry rules, and why the notifications API was not used.
 ## 📊 Status
 
 Early. The trigger pipeline, the poller, the persistence layer, the queue,
-the budget governor, the checkout and the daemon loop that drives them are
-implemented and unit tested, as is the seam a review engine plugs into and
-the first adapter behind it. The daemon fills the queue; nothing drains it,
-so nothing posts to GitHub or spends anything yet -- the adapter *can* spend,
-but the worker that would call it does not exist.
+the budget governor, the checkout, the daemon loop, the worker that drains the
+queue and the `claude` CLI adapter it runs are implemented and unit tested.
+**The pipeline now runs end to end and can spend real allowance** — every run
+behind the governor, the ladder, the pre-flight estimate and `worker.count`.
+Nothing is posted to GitHub yet: findings are logged and dropped until the
+publisher lands.
 
 | Component | State |
 | :-- | :-- |
@@ -118,7 +119,8 @@ but the worker that would call it does not exist.
 | Budget governor (windows, ladder, reserve-then-settle) | implemented |
 | Workspace (fetch, checkout, merge-base diff, teardown) | implemented |
 | Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented |
-| Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented; nothing calls it yet |
+| Review worker (claim → run → settle) | implemented |
+| Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, wired to the worker |
 | Publisher | not started |
 | Retention sweep | not started |
 
@@ -164,12 +166,14 @@ Then run the daemon:
 GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
 ```
 
-It polls, classifies and enqueues. It does **not** review anything yet: the
-queue fills and nothing drains it until the worker lands, so nothing it does
-can spend allowance. The engine adapter exists and can spend; what is missing
-is anything that calls it. The [budget governor](docs/BUDGET.md) is already
-in place ahead of it, which is the point of the build order — the spending
-rails exist before anything can spend. See [docs/DAEMON.md](docs/DAEMON.md).
+It polls, classifies and enqueues, and a [worker](docs/WORKER.md) drains the
+queue beside it — claiming through the [budget governor](docs/BUDGET.md),
+checking the pull request out and running the `claude` CLI over it. **This
+spends real allowance.** Every run passes the governor's windows, the
+degradation ladder and the pre-flight estimate first, and `worker.count`
+bounds how many can be in flight; nothing is posted to GitHub, because the
+publisher does not exist yet. See [docs/DAEMON.md](docs/DAEMON.md) and
+[docs/WORKER.md](docs/WORKER.md).
 
 `budget.enabled: false` in `config.yaml`, followed by a `SIGHUP`, is the
 emergency brake: it stops the agent reviewing without a restart.
@@ -192,6 +196,7 @@ the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key.
 | [docs/QUEUE.md](docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
 | [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
 | [docs/BUDGET.md](docs/BUDGET.md) | The rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, and what is deferred to the engine phase |
+| [docs/WORKER.md](docs/WORKER.md) | What drains the queue? The claim-run-settle loop, what a failed run settles at and why, which failures retry and which are permanent, what a run leaves behind, the supervisor, and why not a process per review |
 | [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
 | [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |

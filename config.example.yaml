@@ -198,12 +198,28 @@ workspace:
   cache_dir: .cache/repos
 
 # ---------------------------------------------------------------------------
-# engine -- optional for now. Which coding agent reviews, and how it is run.
+# worker -- optional. How many reviews run at once.
+# ---------------------------------------------------------------------------
+worker:
+  # Optional (default 1), capped at 4. This is a SPENDING control, not a
+  # throughput knob: every concurrent run reserves budget.max_run_tokens up
+  # front, so raising it multiplies the floor below which the governor
+  # refuses everything.
+  #
+  # One pull request is never reviewed by two workers whatever this is --
+  # the per-pull-request lease holds that. Raising it parallelises across
+  # pull requests only.
+  #
+  # Not reloaded on SIGHUP: the workers are built once, at startup.
+  count: 1
+
+# ---------------------------------------------------------------------------
+# engine -- REQUIRED. Which coding agent reviews, and how it is run.
 # ---------------------------------------------------------------------------
 #
-# Optional only because nothing drains the queue yet, so an absent section
-# cannot spend anything. The change that wires a worker to the seam is the
-# one that makes it required.
+# Required now that the worker calls it: a daemon that claims work with no
+# engine to run would fail every review after reserving allowance for it.
+# This section is what makes the agent able to spend.
 #
 # Every adapter is a command-line tool invoked as a subprocess; no vendor SDK
 # is linked. See docs/ENGINE.md for the argv this produces and why each flag

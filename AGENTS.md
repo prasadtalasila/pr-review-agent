@@ -58,6 +58,7 @@ src/pr_review_agent/          importable package (src layout)
   config.py                   config.yaml loader and validation
   daemon.py                   the poll-classify-enqueue loop and entry point
   queue.py                    claim protocol and per-pull-request leases
+  worker.py                   claim, review, settle, close the row
   store.py                    SQLite schema, watermarks, ETags, queue table
   triggers/                   allowlist, @mention parsing, classifier
   poller/                     GitHub REST polling, ETags, adaptive interval

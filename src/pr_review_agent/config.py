@@ -30,6 +30,16 @@ DEFAULT_STORE_PATH = "state.db"
 #: way, and logged absolute for the same reason.
 DEFAULT_CACHE_DIR = ".cache/repos"
 
+#: Review concurrency. One to start with: a second worker does not merely
+#: review faster, it doubles the allowance held in reservations at any
+#: moment, and that is a decision an operator should take deliberately.
+DEFAULT_WORKERS = 1
+
+#: The ceiling on that decision. Four concurrent runs against a personal
+#: plan's share is already generous; beyond it the reservation floor grows
+#: faster than any plausible allowance, and every claim would be refused.
+MAX_WORKERS = 4
+
 
 def _section(data: dict, name: str, allowed: set[str]) -> dict:
     """Return section ``name``, rejecting unknown keys inside it."""
@@ -427,6 +437,37 @@ def _standards_paths(data: dict) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
+class WorkerConfig:
+    """How many reviews may run at once.
+
+    A spending control, not a throughput knob: every concurrent run reserves
+    ``budget.max_run_tokens`` up front, so ``count`` multiplies the floor
+    below which the governor refuses everything. Hence the cap, and hence
+    both numbers being pinned by tests -- ``CLAUDE.md`` §5.
+
+    One pull request is never reviewed by two workers whatever this is; the
+    queue's per-pull-request lease holds that. Raising it parallelises
+    *across* pull requests only.
+    """
+
+    count: int = DEFAULT_WORKERS
+
+    @classmethod
+    def parse(cls, data: dict) -> WorkerConfig:
+        """Validate the ``worker`` section."""
+        count = data.get("count", DEFAULT_WORKERS)
+        # `bool` is an `int` in Python, and `count: true` is a typo rather
+        # than a request for one worker.
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ConfigError(f"worker.count must be an integer, got {count!r}")
+        if not 1 <= count <= MAX_WORKERS:
+            raise ConfigError(
+                f"worker.count must be between 1 and {MAX_WORKERS}, got {count}"
+            )
+        return cls(count=count)
+
+
+@dataclass(frozen=True)
 class Config:
     """The whole configuration file."""
 
@@ -435,10 +476,12 @@ class Config:
     budget: BudgetConfig
     store: StoreConfig
     workspace: WorkspaceConfig
-    #: Optional only until something drains the queue: nothing calls an
-    #: engine yet, so an absent section cannot spend. The change that wires
-    #: a worker to the seam is the one that makes it required.
-    engine: EngineConfig | None = None
+    worker: WorkerConfig
+    #: Required, because the worker now wires it. While nothing drained the
+    #: queue an absent section could not spend and so could be absent; a
+    #: daemon that claims work and has no engine to run would instead fail
+    #: every review after reserving allowance for it.
+    engine: EngineConfig
 
     @classmethod
     def from_mapping(cls, data: Any) -> Config:
@@ -446,7 +489,16 @@ class Config:
         if not isinstance(data, dict):
             raise ConfigError("configuration root must be a mapping")
         unknown = sorted(
-            set(data) - {"github", "triggers", "budget", "store", "workspace", "engine"}
+            set(data)
+            - {
+                "github",
+                "triggers",
+                "budget",
+                "store",
+                "workspace",
+                "worker",
+                "engine",
+            }
         )
         if unknown:
             raise ConfigError(f"unknown top-level sections: {unknown}")
@@ -495,25 +547,25 @@ class Config:
                 if "workspace" in data
                 else {}
             ),
-            # Absent is a real answer here, not a default: there is no model
-            # an operator could be assumed to have chosen. Present means
-            # every key that decides a cost has been supplied.
-            engine=(
-                EngineConfig.parse(
-                    _section(
-                        data,
-                        "engine",
-                        {
-                            "binary",
-                            "model",
-                            "timeout_seconds",
-                            "standards_paths",
-                            "expected_version",
-                        },
-                    )
+            # Optional, and its default is the safe one: a single worker
+            # holds a single reservation.
+            worker=WorkerConfig.parse(
+                _section(data, "worker", {"count"}) if "worker" in data else {}
+            ),
+            # Required: there is no model an operator could be assumed to
+            # have chosen, and every key here decides a cost.
+            engine=EngineConfig.parse(
+                _section(
+                    data,
+                    "engine",
+                    {
+                        "binary",
+                        "model",
+                        "timeout_seconds",
+                        "standards_paths",
+                        "expected_version",
+                    },
                 )
-                if "engine" in data
-                else None
             ),
         )
 

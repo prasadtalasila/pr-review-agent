@@ -115,6 +115,12 @@ cost and refuses it when the prediction exceeds `max_run_tokens` — or when
 nothing is left to review after exclusions, which a lockfile-only pull
 request now is.
 
+The [worker](WORKER.md#the-pre-flight-estimate) calls it once, after the
+checkout and immediately before the engine: the tree has to be on disk for
+the reviewable line count to exist, and nothing may be spent after it says
+no. A refused row is abandoned rather than retried, since the same head
+predicts the same cost.
+
 ```text
 estimate = rate × reviewable lines
 ```
@@ -301,6 +307,15 @@ control the pessimistic direction is the safe one.
 
 The happy consequence: the ledger needs no `expires_at`, no `state` column and
 no sweeper.
+
+### A caught failure settles at what is knowable
+
+A *lost* worker's reservation stays charged, as above. A worker that caught
+an exception is not lost, and settles — but at what? The spend is unknowable
+for an engine killed mid-run, so the rule splits on whether the engine had
+started: a failure before it settles at zero, a failure in or after it
+settles at the full reservation. See
+[WORKER.md](WORKER.md#-what-a-failed-run-settles-at).
 
 ## 📉 The degradation ladder
 

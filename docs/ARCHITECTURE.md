@@ -17,15 +17,16 @@ host.
 | 4 | **Queue and lease** | Atomic conditional claim (SQLite has no `SKIP LOCKED`) and a per-PR lease so reviews of one pull request never overlap. The `head_sha` re-check before posting belongs to the publisher, which is where the live head can be read. | implemented — [QUEUE.md](QUEUE.md) |
 | 5 | **Budget governor** | Layers 4 and 5 of spending control over one ledger; layers 2 and 3 land with the engine. | implemented — [BUDGET.md](BUDGET.md) |
 | 6 | **Workspace** | Fetch a pull request head into a bare mirror, check it out into an isolated worktree, diff it against the merge base, tear it down. Executes nothing from the tree. | implemented — [WORKSPACE.md](WORKSPACE.md) |
-| 7 | **Engine adapter** | A `ReviewEngine` protocol and `Capabilities` record, with CLI-subprocess implementations (`claude`, then one other). No vendor SDK is linked. | seam implemented — [ENGINE.md](ENGINE.md); no adapter yet |
-| 8 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
-| 9 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |
+| 7 | **Review worker** | Claim through the governor, resolve the pull request, check it out, run an engine, settle the ledger, close the row. Its own task, so a review never blocks a poll. | implemented — [WORKER.md](WORKER.md) |
+| 8 | **Engine adapter** | A `ReviewEngine` protocol and `Capabilities` record, with CLI-subprocess implementations (`claude`, then one other). No vendor SDK is linked. | seam implemented — [ENGINE.md](ENGINE.md); no adapter yet |
+| 9 | **Publisher** | One line-anchored review, event `COMMENT`, preceded by an immediate 👀 reaction. | not started |
+| 10 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |
 
 The ordering is deliberate rather than convenient: **the budget governor lands
 before the review worker**, so the spending rails exist before anything can
 spend.
 
-Component 7 is the only one that is agent-specific, and it is a **process
+Component 8 is the only one that is agent-specific, and it is a **process
 boundary, not a library call**: every adapter is a command-line tool
 (`claude`, `codex`, `opencode`) run as a subprocess, and no vendor SDK is
 linked. That is what makes the boundary a containment boundary — its own
@@ -51,21 +52,17 @@ GitHub REST ──► Poller ──► payload mapping ──► Classifier ─�
                                                              Publisher
 ```
 
-Every box in that diagram exists except the publisher — and yet **nothing
-drains the queue**, which is still the intended state.
+Every box in that diagram exists except the publisher, and the queue now
+drains: the [review worker](WORKER.md) joins the governor, the workspace and
+the engine seam into one claim-run-settle loop, running as its own task
+beside the poll loop.
 
-The pieces are there and the wiring between them is not. The [daemon
-loop](DAEMON.md) drives everything down to `enqueue`. The governor can
-`reserve` and `settle`, the [workspace](WORKSPACE.md) can put a pull request
-on disk, and the [engine seam](ENGINE.md) defines what a review engine is
-handed and must return. What does not exist is the **worker**: the thing that
-claims a row, checks the code out, calls an engine and settles the ledger.
-Nor does any engine that could spend, which is why a queue that fills and
-never drains costs nothing.
-
-That ordering is the point. The spending rails were built before anything
-could spend, so the first adapter arrives into a system that can already
-refuse it.
+What it drives is the configured `claude` CLI adapter, so the path **costs
+real allowance** from the claim onwards. The spending rails were finished
+first, which is the point of the build order: the adapter arrived into a
+system that could already refuse it, and every refusal it meets — the
+windows, the ladder, the size gate, the exclusions, the pre-flight estimate —
+was in place before anything could spend.
 
 The reservation is taken inside the *same* transaction as the queue claim —
 that is the invariant the whole storage choice rests on, and it is spelled out
@@ -84,6 +81,7 @@ src/pr_review_agent/
 ├── config.py          # config.yaml → frozen dataclasses
 ├── daemon.py          # the poll-classify-enqueue loop, and its entry point
 ├── queue.py           # claim protocol and per-pull-request leases
+├── worker.py          # claim → review → settle → close the row
 ├── store.py           # SQLite: schema, watermarks, ETags, queue table
 ├── triggers/
 │   ├── models.py      # payload-shaped dataclasses; PayloadError
@@ -115,9 +113,11 @@ Dependencies point one way only:
 - Nothing in `triggers/` imports `poller/`.
 - `poller/pulls.py` imports `workspace`, never the reverse. `workspace/` is
   pure git and filesystem, so its suite runs with no HTTP at all.
-- `engine/` imports `workspace`, `triggers` and `budget`, and nothing imports
-  `engine/` yet — the worker that will is not written. It is the leaf the
-  whole design is arranged around: see [ENGINE.md](ENGINE.md).
+- `engine/` imports `workspace`, `triggers` and `budget`. Only `worker.py`
+  imports `engine/`: it is the leaf the whole design is arranged around, and
+  the worker is its single caller. See [ENGINE.md](ENGINE.md).
+- `worker.py` is where `queue`, `budget`, `workspace`, `engine` and
+  `poller/pulls.py` meet, and nothing imports it but `daemon.py`.
 
 That is what keeps the trigger suite free of HTTP: it is pure functions over
 fixtures, needs no network and spends no tokens. The same rule is why

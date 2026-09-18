@@ -25,19 +25,43 @@ advance_watermark("comments",      newest updated_at seen)
 Then wait — for the [adaptive interval](POLLER.md), or until a signal arrives,
 whichever is first.
 
-## 🛑 Where it stops
+## 🛑 Where the poll cycle stops
 
-**At `enqueue`.** The loop claims nothing, calls no review engine and posts
+**At `enqueue`.** The cycle claims nothing, calls no review engine and posts
 nothing, so it spends no tokens. A claim is the single point at which work
 becomes expensive, and that point belongs to the [budget
 governor](BUDGET.md) — which is why this could be built before the governor
 existed without crossing the one rule in [DESIGN.md](DESIGN.md#-the-one-rule).
 
-The [governor](BUDGET.md) has since landed, and so has the [seam a review
-engine plugs into](ENGINE.md); the worker that would join them has not, so
-the queue fills and nothing drains.
-That is the intended state: the backlog is visible in the `queue` table, and
-none of it has cost anything.
+What drains the queue is the [review worker](WORKER.md), which runs as its
+own task in the same process and claims through the governor. Nothing about
+the cycle above changed when it landed: polling still stops at `enqueue`.
+
+## 🔁 Two loops, one process
+
+The poll cycle and a review have different cadences — an adaptive 10–600 s
+against minutes — and different failure modes, so they are separate tasks
+gathered by `run()`:
+
+```text
+asyncio.gather(
+    daemon.run_forever(stop),                 # poll → classify → enqueue
+    *[supervise(worker, stop) for worker in workers],   # claim → review → settle
+)
+```
+
+Both wait on the same stop event. A review therefore never holds up a poll,
+and a `SIGTERM` reaches both.
+
+`build_workers` makes `worker.count` of them (default 1, capped at 4), each
+with a distinct owner id, all sharing the one queue and the one governor.
+`supervise` restarts a worker that falls over, with a capped exponential
+backoff; see [WORKER.md](WORKER.md#-the-supervisor).
+
+**The engine is the one `config.engine` names**, built by `build_engine` and
+shared by every worker. Startup logs a warning naming it, its model and the
+budget state, because that line is where the agent starts costing money.
+`FakeEngine` is a test double and never reaches a running daemon.
 
 ## 🥶 Cold start is the spend bound
 
@@ -101,6 +125,11 @@ A `GitHubClientError` is logged at `ERROR` and the cycle skipped: a transient
 network failure must not kill a daemon. Anything else propagates. A daemon
 that keeps polling while failing to enqueue looks healthy and reviews
 nothing, so an unexpected bug should crash loudly rather than spin silently.
+
+A worker is treated differently: an unexpected exception there is logged and
+the loop restarted, because killing the process for a fault confined to one
+worker would stop the poller too. See
+[WORKER.md](WORKER.md#-the-supervisor).
 
 `SIGINT` and `SIGTERM` set an `asyncio.Event`, and the wait between cycles is
 on that event rather than a plain sleep — otherwise a `SIGTERM` arriving early
