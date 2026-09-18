@@ -114,6 +114,13 @@ _MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE ledger ADD COLUMN stop_reason TEXT;
     """,
+    # What the publisher acknowledges on. Both are NULL for a `pr_opened`
+    # row, and for any row enqueued before this migration -- the publisher
+    # falls back to reacting on the pull request rather than guessing an id.
+    """
+    ALTER TABLE queue ADD COLUMN comment_id INTEGER;
+    ALTER TABLE queue ADD COLUMN comment_source TEXT;
+    """,
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

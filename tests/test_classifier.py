@@ -1,5 +1,6 @@
 """Classifier: exactly two events may start a review."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +10,7 @@ from pr_review_agent.triggers import (
     Allowlist,
     Classifier,
     Comment,
+    CommentSource,
     PullRequest,
     TriggerKind,
 )
@@ -225,3 +227,30 @@ def test_a_mention_on_a_draft_is_still_honoured(classifier):
     # draft exists to stop unasked-for auto-review; an allowlisted human
     # typing @claude on a draft is the ask.
     assert classifier.classify_comment(make_comment()).accepted
+
+
+# -- what the publisher needs to react to --------------------------------
+#
+# The 👀 goes on the comment somebody actually typed @claude into, so the
+# trigger has to carry which comment that was and which endpoint it came
+# from. A pr_opened trigger has no comment, and reacts on the pull request.
+
+
+def test_a_mention_carries_the_comment_it_came_from(classifier):
+    decision = classifier.classify_comment(make_comment(comment_id=4321))
+    assert decision.trigger.comment_id == 4321
+    assert decision.trigger.comment_source is CommentSource.ISSUE
+
+
+def test_a_mention_carries_a_review_comment_source(classifier):
+    comment = make_comment(comment_id=4321)
+    decision = classifier.classify_comment(
+        replace(comment, source=CommentSource.REVIEW)
+    )
+    assert decision.trigger.comment_source is CommentSource.REVIEW
+
+
+def test_a_pull_request_trigger_names_no_comment(classifier):
+    decision = classifier.classify_pull_request(make_pr())
+    assert decision.trigger.comment_id is None
+    assert decision.trigger.comment_source is None

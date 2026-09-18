@@ -120,6 +120,8 @@ class Classifier:
                 head_sha=comment.head_sha,
                 actor_id=comment.author.user_id,
                 dedupe_key=f"mention:{comment.repo}:{comment.pr_number}:{comment.comment_id}",
+                comment_id=comment.comment_id,
+                comment_source=comment.source,
             ),
             "accepted",
         )

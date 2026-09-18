@@ -50,7 +50,7 @@ from datetime import datetime, timedelta
 
 from ._compat import StrEnum
 from .store import SqliteStore, to_utc
-from .triggers.models import Trigger, TriggerKind
+from .triggers.models import CommentSource, Trigger, TriggerKind
 
 #: The budget governor's hook into :meth:`ReviewQueue.claim`. It is handed
 #: the claim's own transaction, so whatever it writes commits with the lease
@@ -91,8 +91,10 @@ class Claim:
 
 _ENQUEUE = """
 INSERT OR IGNORE INTO queue
-    (dedupe_key, kind, repo, pr_number, head_sha, actor_id, status, enqueued_at)
-VALUES (:key, :kind, :repo, :pr, :sha, :actor, :pending, :now)
+    (dedupe_key, kind, repo, pr_number, head_sha, actor_id, status, enqueued_at,
+     comment_id, comment_source)
+VALUES (:key, :kind, :repo, :pr, :sha, :actor, :pending, :now,
+        :comment_id, :comment_source)
 """
 
 # The complement of _CLAIMABLE's attempts test: a row that would otherwise be
@@ -115,7 +117,8 @@ WHERE attempts >= :max_attempts
 # so it happens in Python, by which point a single row would have discarded
 # every alternative. See ``claim``.
 _CLAIMABLE = """
-SELECT dedupe_key, kind, repo, pr_number, head_sha, actor_id, attempts
+SELECT dedupe_key, kind, repo, pr_number, head_sha, actor_id, attempts,
+       comment_id, comment_source
 FROM queue AS q
 WHERE q.attempts < :max_attempts
   AND (q.status = :pending OR (q.status = :claimed AND q.leased_until <= :now))
@@ -166,6 +169,8 @@ class ReviewQueue:
             "pr": trigger.pr_number,
             "sha": trigger.head_sha,
             "actor": trigger.actor_id,
+            "comment_id": trigger.comment_id,
+            "comment_source": _text(trigger.comment_source),
             "pending": str(QueueStatus.PENDING),
             "now": _stamp(now, "enqueued_at"),
         }
@@ -279,11 +284,18 @@ def _claim(row: tuple, *, owner: str, leased_until: datetime) -> Claim:
             head_sha=row[4],
             actor_id=row[5],
             dedupe_key=row[0],
+            comment_id=row[7],
+            comment_source=None if row[8] is None else CommentSource(row[8]),
         ),
         attempts=row[6] + 1,
         owner=owner,
         leased_until=leased_until,
     )
+
+
+def _text(source: CommentSource | None) -> str | None:
+    """A comment source as it is stored, or ``None`` when there is none."""
+    return None if source is None else str(source)
 
 
 def _stamp(value: datetime, what: str) -> str:
