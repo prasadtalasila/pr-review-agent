@@ -3,11 +3,16 @@
 Status: approved 2026-09-18. Implements [issue #11](https://github.com/prasadtalasila/pr-review-agent/issues/11),
 the prerequisite for the engine adapter.
 
+Revised the same day after an independent review that verified each claim
+against git 2.43. Three findings changed the design rather than polishing it:
+symlinks, the protocol whitelist, and two safety tests that could not fail.
+They are marked **[review]** where they land.
+
 ## 🎯 Goal
 
 Put a pull request's code **on disk at an exact commit**, with a merge-base
-diff, without executing any of it, and take it away again — so the engine
-adapter has something to review.
+diff, without executing any of it and without letting it read anything else,
+and take it away again — so the engine adapter has something to review.
 
 Nothing in the agent can fetch anything today. `GitHubClient` has one method, a
 conditional `get()`, and `RepoEndpoints` builds only the three repo-wide
@@ -26,7 +31,8 @@ In:
   path and its mapping, which is where `head_sha` gets resolved for a mention.
 - `config.py` — two cap keys in `budget`, and a new optional `workspace`
   section holding only `cache_dir`.
-- One added check in `bootstrap.py`: the fetch route works.
+- Two added checks in `bootstrap.py`: the git version, and that the fetch
+  route works.
 - `docs/WORKSPACE.md`; the layer-2 row in `BUDGET.md`; status rows in
   `ARCHITECTURE.md`, `ROADMAP.md`, `CONFIG.md`, `README.md` and
   `config.example.yaml`.
@@ -38,11 +44,13 @@ Out:
 - Writing the resolved `head_sha` back to the queue row. The worker that
   claims the row is what knows the row; this returns the value.
 - Sandboxing the *engine* (containers, seccomp, a read-only tool set). This
-  issue guarantees nothing in the tree is executed **by the checkout**;
-  `DESIGN.md` already specifies the read-only tool set for the review step.
+  issue guarantees the checkout executes nothing and that the tree cannot
+  reach outside itself; `DESIGN.md` already specifies the read-only tool set
+  for the review step.
 - Layer 2's other two parts, path exclusions and the pre-flight token
   estimate. Both need a diff in hand to be worth anything, and the estimate
   needs the engine's tokeniser.
+- A byte-denominated disk bound. See "what the caps do not bound" below.
 
 ## 🚫 Why not the API diff
 
@@ -58,20 +66,27 @@ checkout and never wrote it up.
 
 ```text
 cache_dir/
-└── <owner>__<name>.git/        one bare mirror, incrementally fetched
-    └── worktrees/…             per-run, detached, removed on teardown
+├── <owner>__<name>.git/        one bare mirror, incrementally fetched
+└── runs/<run-id>/              per-run worktree, detached, removed on teardown
 ```
+
+**[review]** The run directories are siblings of the mirror, not children of
+it. `$GIT_DIR/worktrees/` is where git keeps each worktree's own `HEAD`,
+`index` and `commondir`; putting a working tree at that path produces one
+directory serving both roles, and `git status` inside it reports git's
+administrative files as untracked.
 
 The mirror carries the full commit graph, so `git merge-base` is always
 answerable. The second review of the day fetches almost nothing. Two
 concurrent runs are two worktrees over one object store, which is git's
 designed use.
 
-The one piece of shared mutable state is the mirror's ref namespace, and the
-only operation that writes it is the fetch. An in-process `asyncio.Lock`
-serialises fetches; that is sufficient, not merely convenient, because the
-daemon is a single process — the same assumption the queue's per-PR lease
-already rests on.
+The one piece of shared mutable state is the mirror's ref namespace. An
+in-process `asyncio.Lock` serialises **every write to it** — the fetch and the
+teardown's ref deletion alike, since `update-ref -d` and a concurrent fetch
+contend for `packed-refs.lock`. That one lock is sufficient, not merely
+convenient, because the daemon is a single process: the same assumption the
+queue's per-PR lease already rests on.
 
 ### Rejected: per-run shallow clone
 
@@ -128,7 +143,7 @@ async with workspace.checkout(                           # workspace side, no HT
     co.path        # worktree root, detached at co.head_sha
     co.head_sha    # the sha actually checked out
     co.merge_base
-    co.diff        # git diff <merge_base>..<head>
+    co.diff        # computed in the mirror, not in the worktree
 ```
 
 1. **Size gate, before the first git invocation.** `additions + deletions`
@@ -136,23 +151,50 @@ async with workspace.checkout(                           # workspace side, no HT
    `PullRequestTooLarge` otherwise. Raising here is what makes "refused before
    anything is written to disk" literally true rather than approximately true.
 2. Ensure the mirror exists (`git init --bare` on first use), under the lock.
-3. Fetch `refs/pull/{n}/head` into a run-scoped ref, and `refs/heads/{base_ref}`
-   — `--no-tags --no-recurse-submodules`, under the lock.
+3. Fetch `+refs/pull/{n}/head:refs/run/{run-id}` and
+   `+refs/heads/{base_ref}:refs/heads/{base_ref}`, `--no-tags
+   --no-recurse-submodules`, under the lock. **[review]** Both refspecs are
+   forced: without the `+`, a force-push to the base branch makes the fetch
+   fail non-fast-forward, and *every* review of *every* pull request on that
+   base then fails until an operator intervenes.
 4. Read the fetched sha. **A fork is not a special case**: `refs/pull/{n}/head`
    lives in the base repository for forks and branches alike, so one code path
    satisfies both halves of that acceptance item.
-5. `git merge-base <base_tip> <head_sha>`.
-6. `git worktree add --detach <run_dir> <head_sha>`, outside the lock.
-7. Teardown in `finally`: `worktree remove --force`, `worktree prune`, delete
-   the run-scoped ref.
+5. `git merge-base <base_tip> <head_sha>`. With no common ancestor it exits 1
+   with empty stdout, surfacing as `GitCommandError`. GitHub will not open
+   such a pull request, so this is a corruption path rather than a
+   legitimate one — it is named here so it is not mistaken for a bug later.
+6. `git worktree add --detach <cache_dir>/runs/<run-id> <head_sha>`, outside
+   the lock.
+7. Teardown in `finally`: `worktree remove --force`, then `update-ref -d` on
+   the run-scoped ref **under the lock**.
 
 **The fetched sha, not the API's, is what gets checked out and reported.** The
 head can move between the two reads, and a review has to name the commit it
 actually read. The publisher re-checks the live head before posting regardless
 — that check belongs to publish time, as `QUEUE.md` sets out.
 
-Unreferenced objects are reclaimed by git's own auto-gc once the run-scoped
-ref is gone, so repeated runs settle rather than grow.
+### The diff is computed in the mirror
+
+**[review]** `git diff` honours the `.gitattributes` of the tree it runs in. A
+pull request that adds `*.py -diff` makes its own Python changes render as
+`Binary files … differ`, with `--numstat` reporting `-  -`: the reviewer sees
+nothing, while the API's `additions` count looks perfectly normal. That is a
+content-hiding attack on the review itself, and it needs no execution at all.
+
+So the diff runs in the **bare mirror** — `git -C <mirror> diff --no-ext-diff
+<merge_base> <head_sha>` — which does not read in-tree attributes. The
+worktree still exists for the engine to read surrounding files; it is simply
+not where the diff is produced.
+
+### Startup sweep
+
+**[review]** A crash between steps 6 and 7 leaves a worktree and a
+`refs/run/*` ref behind forever. At startup, before the first checkout, the
+workspace prunes stale worktrees, deletes any leftover `refs/run/*`, and
+clears stale `*.lock` files in the mirror. Startup is the one moment when no
+git of ours is running, so clearing a lock there is safe in a way that
+clearing it mid-flight would not be.
 
 ## 🛡 The hardened runner
 
@@ -160,31 +202,40 @@ Every `git` invocation goes through one function in `gitcmd.py`. Nothing else
 in the package shells out, so the hardening cannot be forgotten at a call
 site.
 
-**An explicit environment, not the inherited one.** `GIT_CONFIG_GLOBAL` and
-`GIT_CONFIG_SYSTEM` both at `/dev/null` is the important pair: the host's own
-gitconfig is where `core.hooksPath`, credential helpers, aliases and the LFS
-smudge filter are all defined, so neutralising it disables every one of them
-at once rather than one flag per mechanism. With it, `GIT_TERMINAL_PROMPT=0`
-and `GIT_ASKPASS=/bin/false`, so an anonymous fetch of something unreadable
-fails in a second instead of blocking the daemon on a password prompt, and
-`GIT_LFS_SKIP_SMUDGE=1`.
+**The environment is the control.** It is built explicitly rather than
+inherited:
 
-**Per-invocation `-c` flags**, as belt and braces:
+| Variable | Why |
+| :-- | :-- |
+| `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null` | The host's gitconfig is where `core.hooksPath`, `core.fsmonitor`, `diff.external`, credential helpers and smudge filters all live. Neutralising it disables every one of them at once. Requires **git ≥ 2.32**; on older git the variables are ignored silently, which is why the version is checked at startup. |
+| `GIT_ALLOW_PROTOCOL` | **[review]** A whitelist that overrides all `protocol.*` config. The `-c protocol.allow=never` approach does *not* survive a specific `protocol.ext.allow=always`, and an `ext::` submodule URL is the shortest path from "checked out untrusted code" to "ran it". Set to `https` in production. |
+| `GIT_TERMINAL_PROMPT=0` | An unreadable repository fails in a second instead of blocking the daemon on a password prompt. |
+| `PATH`, `HOME`, `https_proxy`, `no_proxy`, `SSL_CERT_FILE` | Passed through. `PATH` is needed to find `git-remote-https`; the proxy and CA variables are exactly what the allowlist-firewall hosts `DESIGN.md` worries about depend on. `HOME` is safe to pass because `GIT_CONFIG_GLOBAL` overrides `$HOME/.gitconfig` — and passing it is what lets the safety tests plant a hostile config where git would really look. |
+
+**Per-invocation `-c` flags** are redundancy, not the primary control, except
+for the first two, which stop things config-nulling does not:
 
 | Flag | What it stops |
 | :-- | :-- |
-| `core.hooksPath=/dev/null` | A hook inherited from the mirror's config. |
-| `protocol.allow=never`, `protocol.https.allow=always` | A submodule URL of the form `ext::sh -c …` — the classic route from "checked out a repo" to "ran attacker code". |
-| `submodule.recurse=false` | Recursing into a submodule at all. |
-| `filter.lfs.smudge=`, `filter.lfs.process=`, `filter.lfs.required=false` | An LFS filter executing during checkout. |
+| `core.symlinks=false` | **[review]** A symlink in the tree resolving outside it. `AGENTS.md → ~/.claude/.credentials.json` checks out as a live symlink; the reviewer reads it and can quote it into a public comment. With this flag git writes a plain file containing the target path. Nothing downstream can undo a symlink, so this is the checkout's decision to make. |
+| `transfer.fsckObjects=true` | **[review]** A malicious pack — a tree containing `.GIT/`, a malformed `.gitmodules` — is rejected at `index-pack`, at the boundary, rather than at checkout. |
+| `core.hooksPath=/dev/null` | A hook planted in the mirror's own `hooks/`. Verified to work independently of config nulling. |
+| `submodule.recurse=false` | Recursing into a submodule. Belt only: `worktree add` never populates submodules. |
+| `filter.lfs.smudge=`, `filter.lfs.process=`, `filter.lfs.required=false` | A filter **named `lfs`** running during checkout. It is worth stating the narrowness: this trio does nothing about a filter named anything else, and config nulling is what actually covers those. |
 
-`stdin` is `DEVNULL`; each invocation has a wall-clock timeout and is killed
-on expiry. `git submodule`, `git lfs`, and anything resembling a build,
-install or test are never invoked.
+`--no-ext-diff` on the diff; `stdin` is `DEVNULL`. `git submodule`, `git lfs`,
+and anything resembling a build, install or test are never invoked.
 
-**The tree is data.** The checkout executes nothing from it, and the engine
-adapter inherits that contract rather than re-deciding it — the same rule
-`DESIGN.md` already applies to diffs and comment bodies.
+**Timeouts terminate before they kill.** **[review]** `Process.kill()` is
+SIGKILL, and git cleans up its `.lock` files on SIGTERM but cannot on SIGKILL
+— a killed fetch can leave `refs/run/y.lock` that makes every later fetch fail
+until an operator removes it by hand. So each invocation gets `terminate()`
+and a short grace period before `kill()`, and the startup sweep clears
+whatever still gets left behind.
+
+**Path traversal needs nothing added**: `.git`, `.GIT`, `git~1` and `.git.`
+are all refused by git itself, with nothing written. The deployment target is
+Linux with a case-sensitive filesystem, which this design assumes.
 
 ### The fetch is anonymous
 
@@ -193,6 +244,13 @@ No credential reaches git: not on the argv, not in the remote URL, not in
 buys nothing here, and not passing it is one fewer way to leak it to disk. A
 private repository therefore fails the fetch loudly, which is the correct
 outcome for a capability that has not been designed.
+
+### Dropped after review
+
+`GIT_ASKPASS=/bin/false` (redundant with `GIT_TERMINAL_PROMPT=0`, and that
+path is not portable) and `GIT_LFS_SKIP_SMUDGE=1` (config nulling already
+covers it). `worktree prune` moves out of teardown, where it is a no-op, into
+the startup sweep, where it does real work.
 
 ## 💰 The caps are layer 2, so they live in `budget`
 
@@ -204,14 +262,14 @@ budget:
 
 `BUDGET.md`'s layer 2 is "path exclusions, diff-size caps, pre-flight token
 estimate", scheduled "with the engine adapter". The diff-size cap arrives
-here instead, because refusing an oversized pull request is also how the disk
-is protected — the issue's own observation. That row becomes *partly done*.
+here instead, because the checkout is the first thing that needs it. That row
+becomes *partly done*.
 
 Putting the keys in `budget` rather than in `workspace` keeps every spending
-cap in one specification and one section, which is what `CLAUDE.md` §5 asks
-of code that bounds spend. It has a second consequence worth having:
-**`budget` is the only section `SIGHUP` hot-swaps**, so the caps can be
-tightened on a running daemon.
+cap in one specification and one section, which is what `CLAUDE.md` §5 asks of
+code that bounds spend. It has a second consequence worth having: **`budget`
+is the only section `SIGHUP` hot-swaps**, so the caps can be tightened on a
+running daemon.
 
 That reload is why the caps are **passed per checkout** rather than captured
 when the `Workspace` is constructed. A `Workspace` holding a snapshot would
@@ -230,6 +288,19 @@ ceiling, whereas a diff-size cap is an ordinary engineering choice with a
 defensible value. A test pins both defaults, so widening a cap is a
 deliberate, visible diff.
 
+### What the caps do not bound
+
+**[review]** They bound **what the engine reads**, not the disk. The fetch
+pulls every object reachable from the head, so a commit that adds a 100 MB
+blob and a later one that deletes it reports `additions: 0` and still
+downloads 100 MB. The earlier draft claimed the gate protected the volume;
+that was wrong, and the issue's framing of it as a disk control is optimistic.
+
+Disk is bounded in practice by GitHub's own push and repository limits, and by
+the operator watching `cache_dir`. `fetch --filter=blob:limit=N` is the
+git-native knob if a real byte bound is wanted later; it complicates checkout
+and is out of scope for #11.
+
 ## ⚙️ The `workspace` section
 
 ```yaml
@@ -243,9 +314,14 @@ can now lives in `budget`. `CONFIG.md`'s "the one exception" sentence becomes
 "the two exceptions". Unknown keys inside it are rejected as everywhere else.
 
 `cache_dir` is resolved and logged absolute at startup, as `store.path`
-already is. It is **not** hot-swapped: moving the cache under a running
-daemon would orphan the mirror, so a change is logged as needing a restart,
-like `github`, `triggers` and `store`.
+already is. It is **not** hot-swapped: moving the cache under a running daemon
+would orphan the mirror, so a change is logged as needing a restart, like
+`github`, `triggers` and `store`.
+
+The allowed-protocol whitelist is a `Workspace` constructor argument, not a
+config key — `https` in production, `https:file` in the tests, which is what
+lets the fixtures use `file://` remotes while the production path still
+refuses everything but https. It is deliberately not operator-tunable.
 
 ## 🛑 Errors
 
@@ -261,9 +337,13 @@ leak, so the operator is told rather than the failure being swallowed.
 
 ## 🩺 Bootstrap
 
-One added check: an anonymous `ls-remote` against the configured repository.
+Two added checks: `git --version` against the 2.32 floor, and an anonymous
+`ls-remote` against the configured repository. The version check comes first
+because it is the one that makes the rest of the hardening real — below 2.32,
+`GIT_CONFIG_GLOBAL` is ignored without error.
+
 `DESIGN.md` lists `github.com` egress as a prerequisite to confirm, and the
-poller's route answering says nothing about this one — they are different
+poller's route answering says nothing about this one: they are different
 hosts and, on an allowlist firewall, different rules.
 
 ## 🧪 What the tests must pin
@@ -280,6 +360,7 @@ Behaviour:
   fork-shaped case;
 - `head_sha` is resolved for a mention trigger, whose payload carries none;
 - the diff is computed against the merge base, not the base tip;
+- a force-pushed base branch still fetches;
 - two concurrent checkouts of different pull requests both succeed and neither
   sees the other's files.
 
@@ -290,23 +371,29 @@ Bounds (`CLAUDE.md` §5):
   mock;
 - the default caps are pinned by value;
 - after teardown the worktree is gone and the run-scoped ref is deleted, and a
-  second run over the same pull request returns the worktree and ref counts to
-  their baseline.
+  second run over the same pull request returns the **worktree and ref counts**
+  to their baseline. That is what the test measures, and the acceptance row is
+  worded to match: it is not a byte measurement, because gc runs on its own
+  schedule.
 
-Safety — each pins a real escape by making it available and asserting it does
-not fire, never by asserting a flag appears in an argv:
+Safety — **[review]** the earlier draft had three tests, two of which could
+not fail. Each of these was checked to fail when its mitigation is removed:
 
-- a hostile `GIT_CONFIG_GLOBAL` defining `core.hooksPath` at a hook that
-  writes a marker file → no marker;
-- a custom smudge filter defined the same way, with a matching
-  `.gitattributes` → no marker. This exercises the LFS mechanism without
-  git-lfs being installed;
-- a gitlink entry whose submodule URL is `ext::`-shaped → the directory stays
-  empty and nothing is executed.
+| Test | Would have been vacuous because |
+| :-- | :-- |
+| A hostile `.gitconfig` planted at `HOME`/`XDG_CONFIG_HOME` defining `core.hooksPath`, a smudge filter, `core.fsmonitor` and `diff.external` → none fire | The original planted `GIT_CONFIG_GLOBAL` in `os.environ`, which an explicitly-built child environment never passes on. Deleting the mitigation just removed the variable, and git read `$HOME/.gitconfig` anyway. |
+| A symlink pointing outside the worktree checks out as a **regular file** containing the target path | New; the hazard was missed entirely. |
+| A pull request adding `*.py -diff` still produces a textual diff containing the added line | New; the hazard was missed entirely. |
+| A `Workspace` built with `https` only refuses a `file://` remote | The `ext::`-submodule test it replaces passes with *every* mitigation removed: `worktree add` never populates submodules, so nothing was ever pinned. |
 
-`git` becomes a documented prerequisite in `DEVELOPER.md` and `DESIGN.md`, and
-these tests **fail** rather than skip when it is absent: a safety test that
-silently skips is a safety test that never runs.
+The gitlink case stays only as a plain behavioural assertion — a submodule
+directory is left empty — with no claim that it pins a mitigation.
+
+`git ≥ 2.32` becomes a documented prerequisite in `DEVELOPER.md` and
+`DESIGN.md`, and these tests **fail** rather than skip when git is missing or
+too old: a safety test that silently skips is a safety test that never runs,
+and on a pre-2.32 host the hostile-config test failing loudly is exactly the
+signal wanted.
 
 ## 🔀 Branch boundary
 
@@ -329,8 +416,8 @@ append-style conflicts; no shared function is modified by both.
 | Fetch and check out at an exact sha, fork or branch | Steps 3–6; one path, both cases |
 | `head_sha` resolved for a mention | `pull_request_facts` |
 | Diff against the merge base | Step 5, full commit graph in the mirror |
-| Two concurrent runs do not interfere | Per-run worktrees; lock on the fetch |
-| Hooks, submodules, LFS disabled, pinned by tests | The hardened runner; three safety tests |
+| Two concurrent runs do not interfere | Per-run worktrees; one lock over every ref write |
+| Hooks, submodules, LFS disabled, pinned by tests | The hardened runner; the safety table above |
 | Oversized pull request refused before disk | Step 1, asserted on `cache_dir` |
-| Torn down; repeated runs do not grow disk | Step 7; baseline-count test |
-| No test requires network | `file://` fixtures throughout |
+| Torn down; repeated runs do not grow disk | Step 7 and the startup sweep; baseline worktree- and ref-count test |
+| No test requires network | `file://` fixtures, reachable because the protocol whitelist is a constructor argument |
