@@ -242,6 +242,7 @@ async def test_a_successful_run_yields_findings(tmp_path, run):
         "path": "src/x.py",
         "line": 12,
         "severity": "major",
+        "title": "The retry loop never terminates on a persistent failure.",
         "body": "unbounded loop",
     }
     run(Recorder(envelope(structured_output={"findings": [finding]})))
@@ -399,3 +400,10 @@ async def test_an_unrelated_failure_is_still_a_protocol_error(tmp_path, run):
     run(Recorder("", stderr="segmentation fault", returncode=139))
     with pytest.raises(EngineProtocolError):
         await engine().review(request(tmp_path))
+
+
+def test_the_schema_requires_a_title_and_leaves_the_number_optional():
+    item = FINDINGS_SCHEMA["properties"]["findings"]["items"]
+    assert "title" in item["required"]
+    assert "number" not in item["required"]
+    assert item["properties"]["number"]["type"] == "integer"

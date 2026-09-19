@@ -170,7 +170,13 @@ def test_a_run_that_did_not_complete_cannot_carry_findings(outcome):
     with pytest.raises(ValueError, match="publishable findings"):
         ReviewResult(
             findings=(
-                Finding(path="x", line=1, severity=Severity.NIT, body="stopped early"),
+                Finding(
+                    path="x",
+                    line=1,
+                    severity=Severity.NIT,
+                    title="The run stopped early.",
+                    body="stopped early",
+                ),
             ),
             usage=Usage(tokens=10, confidence=UsageConfidence.EXACT, engine="fake"),
             outcome=outcome,
@@ -205,7 +211,11 @@ def test_result_without_an_engine_name_is_rejected(engine_name):
 
 async def test_fake_returns_its_canned_findings(tmp_path):
     finding = Finding(
-        path="src/x.py", line=12, severity=Severity.MAJOR, body="unbounded loop"
+        path="src/x.py",
+        line=12,
+        severity=Severity.MAJOR,
+        title="The retry loop never terminates on a persistent failure.",
+        body="unbounded loop",
     )
     engine = FakeEngine(findings=(finding,))
     result = await engine.review(request(tmp_path))

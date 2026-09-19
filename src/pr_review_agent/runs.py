@@ -228,7 +228,9 @@ def _dump(findings: tuple[Finding, ...]) -> str:
                 "path": f.path,
                 "line": f.line,
                 "severity": str(f.severity),
+                "title": f.title,
                 "body": f.body,
+                "number": f.number,
             }
             for f in findings
         ]
@@ -236,13 +238,21 @@ def _dump(findings: tuple[Finding, ...]) -> str:
 
 
 def _load(raw: str) -> tuple[Finding, ...]:
-    """Findings as read back."""
+    """Findings as read back.
+
+    ``title`` and ``number`` are read defensively because rows written before
+    they existed are still in live databases, and this column carries no
+    schema version of its own. An absent title reads as empty rather than
+    raising: a review that was published once should not become unreadable.
+    """
     return tuple(
         Finding(
             path=item["path"],
             line=item["line"],
             severity=Severity(item["severity"]),
+            title=item.get("title", ""),
             body=item["body"],
+            number=item.get("number"),
         )
         for item in json.loads(raw)
     )

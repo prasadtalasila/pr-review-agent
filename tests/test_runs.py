@@ -16,8 +16,20 @@ REPO = "o/r"
 HEAD = "deadbeef"
 
 FINDINGS = (
-    Finding(path="src/a.py", line=12, severity=Severity.MAJOR, body="leaks a handle"),
-    Finding(path="src/b.py", line=3, severity=Severity.NIT, body="stray space"),
+    Finding(
+        path="src/a.py",
+        line=12,
+        severity=Severity.MAJOR,
+        title="The file handle leaks when parsing raises.",
+        body="leaks a handle",
+    ),
+    Finding(
+        path="src/b.py",
+        line=3,
+        severity=Severity.NIT,
+        title="A stray space trails the assignment.",
+        body="stray space",
+    ),
 )
 
 
@@ -166,3 +178,39 @@ def test_has_unpublished_ignores_a_purged_run(runs):
     runs.purge_content(REPO, 7, now=LATER)
     with runs._store.transaction() as conn:  # noqa: SLF001
         assert runs.has_unpublished(conn, REPO, 7) is False
+
+
+def test_a_findings_title_and_number_survive_the_round_trip(runs):
+    numbered = (
+        Finding(
+            path="src/a.py",
+            line=12,
+            severity=Severity.MAJOR,
+            title="The handle leaks on the error path.",
+            body="`open()` at line 12 is not closed when `parse` raises.",
+            number=3,
+        ),
+    )
+    runs.record(trigger(), head_sha=HEAD, result=result(numbered), now=NOON)
+    assert runs.unpublished_for(REPO, 7).findings == numbered
+
+
+def test_a_finding_stored_before_titles_existed_still_loads(runs):
+    """A row written by an older build has no title and no number."""
+    runs.record(trigger(), head_sha=HEAD, result=result(()), now=NOON)
+    legacy = '[{"path": "src/a.py", "line": 12, "severity": "major", "body": "old"}]'
+    with runs._store.transaction() as conn:  # noqa: SLF001
+        conn.execute(
+            "UPDATE runs SET findings = :f WHERE repo = :r AND pr_number = :p",
+            {"f": legacy, "r": REPO, "p": 7},
+        )
+    assert runs.unpublished_for(REPO, 7).findings == (
+        Finding(
+            path="src/a.py",
+            line=12,
+            severity=Severity.MAJOR,
+            title="",
+            body="old",
+            number=None,
+        ),
+    )

@@ -240,14 +240,22 @@ class ClaudeCliEngine(CliEngine):
         return self.model
 
     def _findings(self, structured: dict) -> tuple[Finding, ...]:
-        """Turn validated output into findings, refusing anything malformed."""
+        """Turn validated output into findings, refusing anything malformed.
+
+        ``number`` is optional and absent means "new this round". A
+        non-integer is a protocol error like any other; a *wrong* integer is
+        not this layer's problem, because ``numbering.assign`` refuses a
+        number that was never issued on this pull request.
+        """
         try:
             return tuple(
                 Finding(
                     path=str(item["path"]),
                     line=int(item["line"]),
                     severity=Severity(item["severity"]),
+                    title=str(item["title"]),
                     body=str(item["body"]),
+                    number=None if item.get("number") is None else int(item["number"]),
                 )
                 for item in structured["findings"]
             )

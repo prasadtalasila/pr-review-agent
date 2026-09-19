@@ -26,7 +26,9 @@ Report what you find and stop.\
 
 #: The shape a finding has to arrive in. Kept flat and small: the more a
 #: schema demands, the more runs end in a validation failure that spent
-#: tokens and produced nothing.
+#: tokens and produced nothing. ``title`` earns its place because the report
+#: cannot be rendered without it; the remedy does not, and is required by the
+#: prompt as the last paragraph of ``body`` instead.
 FINDINGS_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -41,9 +43,11 @@ FINDINGS_SCHEMA: dict = {
                         "type": "string",
                         "enum": ["blocker", "major", "minor", "nit"],
                     },
+                    "title": {"type": "string", "maxLength": 200},
                     "body": {"type": "string"},
+                    "number": {"type": "integer", "minimum": 1},
                 },
-                "required": ["path", "line", "severity", "body"],
+                "required": ["path", "line", "severity", "title", "body"],
             },
         }
     },
