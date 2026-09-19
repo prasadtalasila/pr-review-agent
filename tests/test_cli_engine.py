@@ -404,6 +404,43 @@ async def test_an_unrelated_failure_is_still_a_protocol_error(tmp_path, run):
         await engine().review(request(tmp_path))
 
 
+# -- how wide the review is told to look ----------------------------------
+
+
+def test_the_prompt_permits_off_diff_findings(tmp_path):
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "any** path in the head revision" in prompt
+    assert "Report findings on lines the diff touches" not in prompt
+
+
+def test_the_prompt_requires_an_off_diff_finding_to_name_its_cause(tmp_path):
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "causation, not curiosity" in prompt
+
+
+def test_the_prompt_names_what_to_sweep(tmp_path):
+    prompt = build_prompt(request(tmp_path), standards="")
+    for topic in (".gitattributes", "Sibling call sites", "Dependency manifests"):
+        assert topic in prompt
+
+
+def test_the_prompt_requires_a_remedy_as_the_last_paragraph(tmp_path):
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "last paragraph of `body`" in prompt
+
+
+def test_the_prompt_asks_for_a_consequence_not_a_description(tmp_path):
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "consequence -- what breaks, where" in prompt
+    assert "Not a description of the change." in prompt
+
+
+def test_the_diff_is_still_the_last_thing_in_the_prompt(tmp_path):
+    """Instructions before data, so nothing in the diff trails the rules."""
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert prompt.index("## Diff") > prompt.index("## Scope")
+
+
 # -- what an earlier round contributes to a later prompt ------------------
 
 PRIOR = (
