@@ -25,7 +25,9 @@ failure settles at depends on the one thing that is knowable: whether the
 engine had started. Before it, nothing reached an engine and the run settles
 at zero; at or after it, a killed CLI adapter may have spent anything, so the
 run settles at its full reservation. Pessimism is the safe direction for a
-spending control.
+spending control. The one failure *at* the engine that provably ran nothing
+-- ``EngineUnavailable``, a subprocess that never started -- settles at zero
+too, because there was no process to spend.
 
 **A paid review is published, or kept until it can be.** The engine is the
 only irreversible step, so the order after it is fixed: settle, record,
@@ -58,6 +60,7 @@ from datetime import datetime, timezone
 from .budget import Governor, StopReason, Usage, UsageConfidence
 from .engine import (
     EngineTimeout,
+    EngineUnavailable,
     Outcome,
     ReviewEngine,
     ReviewRequest,
@@ -288,6 +291,25 @@ class ReviewWorker:
             # bound caps what one poison trigger may drain, and this trigger
             # drained nothing -- the account was already out when it arrived.
             finish = self.queue.release_unattempted
+        except EngineUnavailable:
+            logger.warning(
+                "%s could not start %s and will be retried",
+                claim.trigger.dedupe_key,
+                self.engine.name,
+                exc_info=True,
+            )
+            # The reservation was raised to the ceiling on the line before
+            # `_review`, because a run that reached the engine may have spent
+            # anything. This one did not reach it: no process was created, so
+            # the zero is provable and the ceiling would write tokens that
+            # were never spent into all three rolling windows.
+            usage = replace(usage, tokens=0)
+            reason = StopReason.ENGINE_UNAVAILABLE
+            # Still `release`, still counted. Unlike a usage limit, this does
+            # not clear when a window rolls -- it clears when an operator
+            # acts -- so the attempt bound is what eventually stops a
+            # misconfigured host retrying every trigger forever.
+            finish = self.queue.release
         except EngineError as exc:
             logger.warning(
                 "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
@@ -327,6 +349,11 @@ class ReviewWorker:
         except UsageLimited:
             # Not an engine failure to retry: it is the account's limit, and
             # `run_one` has an arm of its own for it.
+            raise
+        except EngineUnavailable:
+            # The other failure the flattening must not swallow: the
+            # subprocess never started, so `run_one` can settle it at a
+            # provable zero rather than at the ceiling.
             raise
         except EngineTimeout as exc:
             raise EngineError(

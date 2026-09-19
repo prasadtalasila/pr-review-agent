@@ -42,6 +42,14 @@ answerable and the second review of the day fetches almost nothing.
 and `commondir`; a working tree placed there serves both roles at once and
 reports git's administrative files as untracked.
 
+**`cache_dir` is made absolute before anything uses it.** Every git command
+here is `git -C <mirror>`, which is a `chdir`: a relative path on that argv
+is resolved against the mirror, not against the daemon's working directory.
+A relative `cache_dir` therefore put each run directory inside `$GIT_DIR`
+while `Checkout.path` still named a location the engine could not find, and
+every review failed at the subprocess launch. Resolving at the boundary is
+what keeps the two readings the same one.
+
 The only shared mutable state is the mirror's ref namespace, and one
 `asyncio.Lock` serialises every write to it — the fetch *and* the teardown's
 ref deletion, because `update-ref -d` and a concurrent fetch contend for

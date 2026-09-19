@@ -373,7 +373,9 @@ A *lost* worker's reservation stays charged, as above. A worker that caught
 an exception is not lost, and settles — but at what? The spend is unknowable
 for an engine killed mid-run, so the rule splits on whether the engine had
 started: a failure before it settles at zero, a failure in or after it
-settles at the full reservation. See
+settles at the full reservation, and the one failure *at* it that provably
+ran nothing — `EngineUnavailable`, a subprocess that never started — settles
+at zero too. See
 [WORKER.md](WORKER.md#-what-a-failed-run-settles-at).
 
 ## 📉 The degradation ladder
@@ -591,6 +593,9 @@ And in `tests/test_config.py`, `tests/test_store.py` and
 - a run killed on the wall clock is distinguishable in the ledger from one
   whose engine merely fell over, and both still settle at the full
   reservation with `unavailable` confidence;
+- an adapter whose subprocess never started settles at **zero** and reads as
+  `engine_unavailable`, because the reservation exists to cover a spend that
+  might have happened and this one could not have;
 - a pre-flight refusal reads as `refused` rather than as a failure.
 
 Terminating a review that is *over budget*, as opposed to over time, is the

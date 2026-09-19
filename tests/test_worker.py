@@ -28,6 +28,7 @@ from pr_review_agent.engine import (
     FULL,
     Capabilities,
     EngineTimeout,
+    EngineUnavailable,
     FakeEngine,
     ReviewRequest,
     UsageLimited,
@@ -181,6 +182,24 @@ class ExplodingEngine:
         """Fail, having plausibly already spent tokens."""
         self.calls += 1
         raise TimeoutError("the engine did not finish in time")
+
+
+@dataclass
+class UnstartableEngine:
+    """An adapter whose subprocess never came into being.
+
+    What ``CliEngine._start`` raises when ``create_subprocess_exec`` fails --
+    a missing binary, or a cwd that is not there. No process existed, so the
+    spend is zero and that is provable rather than assumed.
+    """
+
+    name: str = "unstartable"
+    capabilities: Capabilities = FULL
+
+    async def review(self, request: ReviewRequest) -> ReviewResult:
+        """Fail before any process exists."""
+        del request
+        raise EngineUnavailable("cannot run 'claude' in /nowhere: [Errno 2]")
 
 
 @dataclass
@@ -514,6 +533,42 @@ async def test_an_engine_failure_settles_the_full_reservation(wired):
     assert used == reserved == MAX_RUN_TOKENS
     assert confidence == str(UsageConfidence.UNAVAILABLE)
     assert engine == "exploding"
+
+
+async def test_an_engine_that_never_started_settles_at_zero(wired):
+    """No process existed, so no tokens were spent. Provable, not assumed."""
+    fixture = wired(engine=UnstartableEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    (row,) = ledger_rows(fixture.store)
+    _, _, reserved, used, confidence, engine, _ = row
+    assert reserved == MAX_RUN_TOKENS
+    assert (used, confidence) == (0, str(UsageConfidence.UNAVAILABLE))
+    assert engine == "unstartable"
+
+
+async def test_an_engine_that_never_started_is_its_own_stop_reason(wired):
+    """A misconfigured host and a tool that fell over are different rows."""
+    fixture = wired(engine=UnstartableEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert stop_reasons(fixture.store) == [str(StopReason.ENGINE_UNAVAILABLE)]
+
+
+async def test_an_engine_that_never_started_is_retried_with_its_attempt_spent(
+    wired,
+):
+    """Bounded: a binary that is missing now is missing on the next claim."""
+    fixture = wired(engine=UnstartableEngine())
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.PENDING
 
 
 async def test_an_engine_failure_is_retried(wired):

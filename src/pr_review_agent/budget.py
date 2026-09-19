@@ -176,6 +176,12 @@ class StopReason(StrEnum):
     #: agent enforces today, so it is the one worth being able to count.
     TIMEOUT = "timeout"
     ENGINE_ERROR = "engine_error"
+    #: The adapter's subprocess never started -- a missing binary, or a cwd
+    #: that is not there. Settles at zero: no process existed, so nothing was
+    #: spent, and that is provable in the way a killed run's spend is not.
+    #: Kept apart from ``ENGINE_ERROR`` because the operator action differs:
+    #: this one is the host's configuration, that one is the tool.
+    ENGINE_UNAVAILABLE = "engine_unavailable"
     #: The pre-flight estimate refused the run. Settles at zero: no engine
     #: ran, so nothing was spent.
     REFUSED = "refused"

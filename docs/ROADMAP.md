@@ -158,6 +158,12 @@ bugs:
   only learns by hitting the wall — every trip is a lockout the operator
   could have avoided by guessing lower to begin with. Set them conservatively
   low. See [BUDGET.md](BUDGET.md#-not-built-yet).
+- **Worktrees stranded by the relative-`cache_dir` bug are not cleaned up by
+  code.** Before the fix, git wrote each run directory inside the mirror, and
+  `git worktree prune` will not remove a directory that still exists. An
+  operator who ran an affected version deletes `.cache/repos/*.git/.cache/`
+  by hand, once. It cannot recur now that the path is absolute, which is why
+  there is no code for it.
 - `claim()`'s `admit` hook is optional, so "nothing spends outside the
   governor" is held by a test rather than by the type system:
   `tests/test_worker.py::test_a_claim_is_taken_only_through_the_governor`

@@ -95,6 +95,7 @@ engine had started.
 | Where it failed | Settles at | Why |
 | :-- | :-- | :-- |
 | before `engine.review` | `0`, `unavailable` | Nothing reached an engine. Provable, not assumed. |
+| `EngineUnavailable` | `0`, `unavailable` | The subprocess never started, so no process existed to spend. Provable, like the row above it. |
 | in or after `engine.review` | the full reservation | Anything may have been spent, and the governor cannot find out. |
 | `UsageLimited` | `0` or the envelope's figure, `exact` | The one failure where the spend **is** knowable. |
 | nowhere — it succeeded | `result.usage` | What the engine reported. |
@@ -103,6 +104,17 @@ In the code this is one variable taking three values, and the assignment
 that raises it to the full reservation sits on the line *before* the engine
 call. "Did the engine start" is expressed by control flow rather than by a
 flag that could disagree with reality.
+
+**`EngineUnavailable` is on the wrong side of that line, and is put back.**
+It is raised where the engine call *starts* — `create_subprocess_exec`
+refusing a missing binary or an absent cwd — so control flow places it after
+the ceiling assignment while the fact it reports is the same one the rows
+above it report: nothing ran. It settles at zero and reads as
+`engine_unavailable`, apart from `engine_error` because the operator action
+differs. It is still handed back with `release` and still counts its
+attempt: a usage limit clears when a window rolls, but a missing binary
+clears only when somebody fixes the host, and an uncounted retry would hold
+every trigger in the queue forever.
 
 Pessimism is the safe direction for a spending control. It is the same
 argument [BUDGET.md](BUDGET.md#a-crashed-workers-reservation-stays-charged)
