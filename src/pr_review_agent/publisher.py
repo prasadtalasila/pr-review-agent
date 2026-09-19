@@ -54,17 +54,28 @@ logger = logging.getLogger(__name__)
 #: GitHub's name for 👀. The only reaction this agent ever posts.
 EYES = "eyes"
 
-#: Rendering order. ``Severity`` declares the levels but not their gravity,
-#: and iteration order over an enum is a definition detail rather than a
-#: promise -- so the order a reader sees is pinned here, where a test can
-#: read it. Stable ordering is also what makes an edit-in-place a no-op diff
-#: when a re-review finds the same things.
-SEVERITY_ORDER: tuple[Severity, ...] = (
-    Severity.BLOCKER,
-    Severity.MAJOR,
-    Severity.MINOR,
-    Severity.NIT,
+#: Which heading each severity renders under, in the order a reader sees
+#: them. Pinned here, where a test can read it, because iteration order over
+#: an enum is a definition detail rather than a promise -- and because stable
+#: ordering is what makes an edit-in-place a no-op diff when a re-review
+#: finds the same things.
+#:
+#: ``major`` and ``minor`` share a heading on purpose. ``Severity`` is
+#: persisted and asserted across the suite, so it is not collapsed to three
+#: values; but a ``major`` finding that is not a blocker must not be printed
+#: under a heading claiming it blocks.
+SECTIONS: tuple[tuple[str, tuple[Severity, ...]], ...] = (
+    ("Blocking", (Severity.BLOCKER,)),
+    ("Should fix", (Severity.MAJOR, Severity.MINOR)),
+    ("Nits", (Severity.NIT,)),
 )
+
+#: Severity to its rank, derived from ``SECTIONS`` so the two cannot drift.
+_RANK: dict[Severity, int] = {
+    severity: index
+    for index, (_, severities) in enumerate(SECTIONS)
+    for severity in severities
+}
 
 #: Said once, on every comment. An automated remark that reads like a
 #: verdict invites being treated as one, and this agent's opinion is
@@ -146,7 +157,7 @@ class Publisher:
         run: an operator watching a dry run needs to see the same decision
         the real path would take, not a shortcut past it.
         """
-        live = await self._live_head(run.pr_number)
+        live, commits = await self._live_pull(run.pr_number)
         if live != run.head_sha:
             logger.info(
                 "%s reviewed %s but the head is now %s: discarding",
@@ -156,7 +167,13 @@ class Publisher:
             )
             return Published(PublishOutcome.SUPERSEDED)
 
-        body = render(run.head_sha, run.findings)
+        body = render(
+            run.head_sha,
+            run.findings,
+            pr_number=run.pr_number,
+            round_number=self.runs.round_of(run.repo, run.pr_number, run.dedupe_key),
+            commits=commits,
+        )
         if self.config.dry_run:
             logger.info(
                 "publish.dry_run: not posting on %s#%d:\n%s",
@@ -185,15 +202,24 @@ class Publisher:
         )
         return self._stamp(run, comment_id=comment_id)
 
-    async def _live_head(self, pr_number: int) -> str:
-        """The head this pull request has *now*, read fresh every time."""
+    async def _live_pull(self, pr_number: int) -> tuple[str, int]:
+        """The head and commit count this pull request has *now*.
+
+        Both come off the read the publisher already makes, so the header's
+        commit count costs no second round trip and needs no column. A
+        missing or non-integer ``commits`` reads as ``0`` rather than
+        raising: a header is not worth failing a publish over, and the head
+        sha -- which decides whether to publish at all -- is still required.
+        """
         result = await self.client.get(self.endpoints.pull(pr_number))
         try:
-            return str(result.data["head"]["sha"])  # type: ignore[index]
+            head = str(result.data["head"]["sha"])  # type: ignore[index]
         except (KeyError, TypeError) as exc:
             raise PayloadError(
                 f"pull request {pr_number} reported no head sha"
             ) from exc
+        commits = result.data.get("commits")  # type: ignore[union-attr]
+        return head, commits if isinstance(commits, int) else 0
 
     def _stamp(
         self,
@@ -214,30 +240,84 @@ class Publisher:
         return Published(outcome, comment_id)
 
 
-def render(head_sha: str, findings: tuple[Finding, ...]) -> str:
+def render(
+    head_sha: str,
+    findings: tuple[Finding, ...],
+    *,
+    pr_number: int,
+    round_number: int,
+    commits: int,
+) -> str:
     """The comment body for a review of ``head_sha``.
 
     The commit is named because the comment is edited in place: without it a
     reader cannot tell which revision the text describes, and an edit that
-    silently replaces a review of an older commit is the one way this
-    design can mislead.
+    silently replaces a review of an older commit is the one way this design
+    can mislead. The round and the commit count are there for the same
+    reason -- "round 3" and "round 1" are different statements, including
+    when both found nothing.
 
-    Finding bodies are engine output over an untrusted tree, and are written
-    through verbatim. They are rendered as Markdown by GitHub inside the
-    agent's own comment, which is the same trust boundary any human comment
-    has -- what keeps them harmless is that this module can take no action
-    they could ask for.
+    A finding renders no ``path:line`` anchor. The paths that matter are the
+    ones the reviewer names in its own prose, which is what the reference
+    report this template was drawn from does; an anchor beside every headline
+    reads as machine output and crowds the sentence meant to be read first.
+    The location is still on the stored ``Finding``, where a future
+    line-anchored comment would need it.
+
+    Finding titles and bodies are engine output over an untrusted tree, and
+    are written through verbatim. They are rendered as Markdown by GitHub
+    inside the agent's own comment, which is the same trust boundary any
+    human comment has -- what keeps them harmless is that this module can
+    take no action they could ask for. See
+    ``docs/templates/review-report.md`` for the contract this implements.
     """
-    header = f"### Review of `{head_sha[:7]}`"
+    header = (
+        f"## Review: PR #{pr_number} — round {round_number} "
+        f"(`{head_sha[:7]}`, {commits} commits)"
+    )
     if not findings:
         return f"{header}\n\nNo issues found.\n\n{TRAILER}"
-    lines = "\n".join(
-        f"- **{finding.severity}** `{finding.path}:{finding.line}` — {finding.body}"
-        for finding in sorted(findings, key=_order)
+    ordered = sorted(findings, key=_order)
+    parts = [header]
+    for heading, severities in SECTIONS:
+        section = [f for f in ordered if f.severity in severities]
+        if not section:
+            continue
+        parts.append(f"## {heading}")
+        parts.append(_prose(section) if heading == "Nits" else _items(section))
+    parts.append(TRAILER)
+    return "\n\n".join(parts)
+
+
+def _items(findings: list[Finding]) -> str:
+    """Numbered entries: bold headline, then the body indented beneath it."""
+    return "\n\n".join(
+        f"{finding.number}. **{finding.title}**\n\n{_indent(finding.body)}"
+        for finding in findings
     )
-    return f"{header}\n\n{lines}\n\n{TRAILER}"
 
 
-def _order(finding: Finding) -> tuple[int, str, int]:
-    """Severity first, then location -- so the same findings render the same."""
-    return (SEVERITY_ORDER.index(finding.severity), finding.path, finding.line)
+def _prose(findings: list[Finding]) -> str:
+    """Nits, run together as sentences. One that needs an entry is not a nit."""
+    return " ".join(f"{finding.title} {finding.body}".strip() for finding in findings)
+
+
+def _indent(body: str) -> str:
+    """Indent a body under its numbered entry, leaving blank lines blank."""
+    return "\n".join(f"   {line}" if line.strip() else "" for line in body.splitlines())
+
+
+def _order(finding: Finding) -> tuple[int, int, str, int]:
+    """Section, then number, then location -- so the same findings render the same.
+
+    ``number`` sorts before location so a report's entries ascend, and a
+    finding is numbered before it is recorded, so ``None`` never reaches here
+    on a published run. It is tolerated rather than asserted because a header
+    is not worth failing a publish over.
+    """
+    return (
+        _RANK[finding.severity],
+        finding.number if finding.number is not None else 0,
+        finding.path,
+        finding.line,
+    )

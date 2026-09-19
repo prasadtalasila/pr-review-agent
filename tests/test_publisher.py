@@ -17,7 +17,7 @@ from pr_review_agent.config import PublishConfig
 from pr_review_agent.engine import Finding, Outcome, ReviewResult, Severity
 from pr_review_agent.poller.client import GitHubClient, GitHubClientError
 from pr_review_agent.poller.endpoints import RepoEndpoints
-from pr_review_agent.publisher import Publisher, PublishOutcome
+from pr_review_agent.publisher import TRAILER, Publisher, PublishOutcome, render
 from pr_review_agent.runs import RecordedRun, RunStore
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import CommentSource, Trigger, TriggerKind
@@ -34,6 +34,7 @@ FINDINGS = (
         severity=Severity.NIT,
         title="A stray space trails the assignment.",
         body="stray space",
+        number=2,
     ),
     Finding(
         path="src/a.py",
@@ -41,6 +42,46 @@ FINDINGS = (
         severity=Severity.MAJOR,
         title="The file handle leaks when parsing raises.",
         body="leaks a handle",
+        number=1,
+    ),
+)
+
+#: A report with all three sections filled, numbered the way a third round
+#: would be: 2, 9 and 11, with the gaps left by findings fixed in rounds 1
+#: and 2. Modelled on the reference report the template was drawn from.
+NUMBERED = (
+    Finding(
+        path="script/docs.sh",
+        line=46,
+        severity=Severity.BLOCKER,
+        title=(
+            "`script/docs.sh` copies an asset this PR deletes, "
+            "so the docs build breaks."
+        ),
+        body=(
+            "Line 46 still copies the logo.\n\n"
+            "Update the publish path in the same commit."
+        ),
+        number=2,
+    ),
+    Finding(
+        path="script/build_brand.py",
+        line=14,
+        severity=Severity.MINOR,
+        title="The generators assume they are run from the repo root.",
+        body=(
+            "`build_brand.py` writes to a relative path.\n\n"
+            "Resolve it against `__file__`."
+        ),
+        number=9,
+    ),
+    Finding(
+        path="client/src/BrandMark.tsx",
+        line=3,
+        severity=Severity.NIT,
+        title="Fixed clipPath ids collide when two marks share a document.",
+        body="`useId()` would remove the trap.",
+        number=11,
     ),
 )
 
@@ -48,15 +89,19 @@ FINDINGS = (
 class Transport:
     """Records every request, and answers from a routing table."""
 
-    def __init__(self, head=HEAD, comment_id=555):
+    def __init__(self, head=HEAD, comment_id=555, commits=3):
         self.requests: list[httpx.Request] = []
         self._head = head
         self._comment_id = comment_id
+        self._commits = commits
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if request.method == "GET":
-            return httpx.Response(200, json={"head": {"sha": self._head}})
+            payload: dict = {"head": {"sha": self._head}}
+            if self._commits is not None:
+                payload["commits"] = self._commits
+            return httpx.Response(200, json=payload)
         return httpx.Response(201, json={"id": self._comment_id})
 
     @property
@@ -251,29 +296,43 @@ async def test_a_clean_review_says_so(runs):
     assert "No issues found" in _body(transport)
 
 
-async def test_findings_are_rendered_with_their_location(runs):
+async def test_a_findings_headline_and_body_are_both_rendered(runs):
     transport = Transport()
     await make_publisher(runs, transport).publish(recorded(runs))
     body = _body(transport)
-    assert "src/a.py:12" in body
+    assert "The file handle leaks when parsing raises." in body
     assert "leaks a handle" in body
 
 
-async def test_findings_are_ordered_by_severity_then_location(runs):
+async def test_a_finding_carries_no_path_line_anchor(runs):
+    """Deliberate: the reference report names paths in prose, not in an anchor."""
+    transport = Transport()
+    await make_publisher(runs, transport).publish(recorded(runs))
+    assert "src/a.py:12" not in _body(transport)
+
+
+async def test_findings_are_ordered_by_section_then_number(runs):
     """A re-review of the same findings must render identically."""
     transport = Transport()
     await make_publisher(runs, transport).publish(recorded(runs))
     body = _body(transport)
-    assert body.index("src/a.py:12") < body.index("src/b.py:3")
+    assert body.index("## Should fix") < body.index("## Nits")
 
 
 async def test_the_same_findings_render_identically_twice(runs):
+    """Only the round differs: the findings below the header must not move.
+
+    The header legitimately changes -- a second review is round 2 -- so the
+    no-op-diff property is asserted on everything under it, which is what
+    stable ordering actually protects.
+    """
     transport = Transport()
     publisher = make_publisher(runs, transport)
     await publisher.publish(recorded(runs, key="first"))
     await publisher.publish(recorded(runs, findings=FINDINGS[::-1], key="second"))
     bodies = [json.loads(w.content)["body"] for w in transport.writes]
-    assert bodies[0] == bodies[1]
+    assert bodies[0].split("\n", 1)[1] == bodies[1].split("\n", 1)[1]
+    assert "round 1" in bodies[0] and "round 2" in bodies[1]
 
 
 async def test_the_comment_names_the_commit_it_reviewed(runs):
@@ -281,6 +340,111 @@ async def test_the_comment_names_the_commit_it_reviewed(runs):
     transport = Transport()
     await make_publisher(runs, transport).publish(recorded(runs))
     assert HEAD[:7] in _body(transport)
+
+
+# -- the rendered report -------------------------------------------------
+
+
+def rendered(findings=NUMBERED, round_number=3, commits=3):
+    return render(
+        HEAD, findings, pr_number=1765, round_number=round_number, commits=commits
+    )
+
+
+def test_the_header_names_the_pull_request_round_commit_and_count():
+    assert rendered().startswith("## Review: PR #1765 — round 3 (`deadbee`, 3 commits)")
+
+
+def test_findings_are_grouped_under_their_section_headings():
+    body = rendered()
+    assert body.index("## Blocking") < body.index("## Should fix")
+    assert body.index("## Should fix") < body.index("## Nits")
+
+
+def test_a_major_finding_is_not_printed_as_blocking():
+    major = (replace(NUMBERED[0], severity=Severity.MAJOR),)
+    body = render(HEAD, major, pr_number=1, round_number=1, commits=1)
+    assert "## Blocking" not in body
+    assert "## Should fix" in body
+
+
+def test_an_empty_section_is_omitted():
+    body = render(HEAD, NUMBERED[:1], pr_number=1, round_number=1, commits=1)
+    assert "## Should fix" not in body
+    assert "## Nits" not in body
+
+
+def test_a_finding_renders_its_number_and_bold_title():
+    assert (
+        "2. **`script/docs.sh` copies an asset this PR deletes, "
+        "so the docs build breaks.**" in rendered()
+    )
+
+
+def test_the_numbering_gap_left_by_a_fixed_finding_survives_rendering():
+    """Items 2 and 9 -- not 1 and 2. The gaps are the information."""
+    body = rendered()
+    assert "2. **" in body and "9. **" in body
+    assert "1. **" not in body and "3. **" not in body
+
+
+def test_nits_render_as_prose_without_numbering():
+    tail = rendered().split("## Nits", 1)[1]
+    assert "11." not in tail
+    assert "Fixed clipPath ids collide" in tail
+
+
+def test_an_empty_review_still_names_the_round():
+    body = render(HEAD, (), pr_number=1765, round_number=3, commits=3)
+    assert body.startswith("## Review: PR #1765 — round 3 (`deadbee`, 3 commits)")
+    assert "No issues found." in body
+    assert TRAILER in body
+
+
+def test_every_report_carries_the_trailer():
+    assert rendered().endswith(TRAILER)
+
+
+def test_the_same_findings_render_byte_identically():
+    """An edit-in-place must be a no-op diff when nothing changed."""
+    assert rendered() == rendered()
+
+
+def test_input_order_does_not_change_the_output():
+    reversed_ = render(
+        HEAD, tuple(reversed(NUMBERED)), pr_number=1765, round_number=3, commits=3
+    )
+    assert reversed_ == rendered()
+
+
+# -- the header's three numbers, at publish time -------------------------
+
+
+async def test_the_comment_reports_the_commit_count_from_the_live_payload(runs):
+    transport = Transport(commits=7)
+    await make_publisher(runs, transport).publish(recorded(runs))
+    assert "7 commits" in _body(transport)
+
+
+async def test_a_payload_without_a_commit_count_still_publishes(runs):
+    """GitHub's field is not worth failing a publish over."""
+    transport = Transport(commits=None)
+    await make_publisher(runs, transport).publish(recorded(runs))
+    assert "0 commits" in _body(transport)
+
+
+async def test_a_re_review_reports_the_next_round(runs):
+    first = recorded(runs, key="k1")
+    await make_publisher(runs, Transport()).publish(first)
+    transport = Transport()
+    await make_publisher(runs, transport).publish(recorded(runs, key="k2"))
+    assert "round 2" in _body(transport)
+
+
+async def test_the_header_names_the_pull_request_being_reviewed(runs):
+    transport = Transport()
+    await make_publisher(runs, transport).publish(recorded(runs))
+    assert "PR #7" in _body(transport)
 
 
 # -- the dry run ---------------------------------------------------------
