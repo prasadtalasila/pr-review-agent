@@ -223,7 +223,7 @@ with self._store.transaction() as conn:
 `claim(now=, owner=, admit=None)` keeps its transaction and its SQL; the
 governor contributes statements that run inside them. `queue.py` gains no
 import from `budget.py`, so the dependency points one way, as
-[ARCHITECTURE.md](../../ARCHITECTURE.md#-layering) requires.
+[ARCHITECTURE.md](../../ARCHITECTURE.md#-how-it-fits-together) requires.
 
 The hook is `Callable[[sqlite3.Connection, Claim, datetime], bool]` — a plain
 predicate, because a truthy answer is all `claim()` needs and anything richer

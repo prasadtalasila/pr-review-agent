@@ -15,6 +15,34 @@ what lets a maintainer summon a review of an outside contribution that would
 not be auto-reviewed. It is the whole answer to "restricted eligibility, but
 outside contributions still get reviewed when we want them to".
 
+## 🔀 The decision flow
+
+```text
+                     polled pull request or comment
+                                  │
+                                  ▼
+                  bot, or the agent's own account? ──yes──► bot_* / self_*
+                                  │no
+                                  ▼
+                actor's numeric id allowlisted? ──no──► *_not_allowlisted
+                                  │yes
+                  ┌───────────────┴────────────────┐
+             pull request                       comment
+                  │                                  │
+          fresh pull request         mentions @handle outside a
+          that is a draft?           fence, code span or blockquote?
+          ──yes──► draft             ──no──► no_mention
+                  │no                          │yes
+                  ▼                            ▼
+          at or below the watermark? ──yes──► not_fresh
+                  │no
+                  ▼
+               Trigger ──► enqueue
+```
+
+Every arrow in that diagram is one row of the table below, with the reason
+code and log level it is rejected at.
+
 ## 🚫 Every rejection, and its reason code
 
 | Event | Reason code | Log level |

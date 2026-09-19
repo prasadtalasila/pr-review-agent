@@ -1,0 +1,75 @@
+name: Docs
+
+# Builds the documentation site and publishes it to GitHub Pages, where
+# it is served at https://prasad.talasila.in/pr-review-agent/ -- not because
+# this repository claims that domain, but because GitHub propagates a
+# user site's custom domain to every project site under the same
+# account. Nothing here configures the domain, and this repository must
+# NOT contain a CNAME file: adding one would try to claim the domain for
+# this project alone and break the inheritance.
+#
+# Every push builds; only main publishes. A PR gets the build as a check
+# so a broken link or a nav entry pointing at a file that moved fails
+# review rather than the site.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Bootstrap Poetry into the project venv
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install poetry
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install the docs toolchain
+        run: poetry install --only docs --no-root
+
+      - name: Build the site
+        run: poetry run mkdocs build --strict
+
+      - name: Upload the built site
+        # v3.0.1
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
+        with:
+          path: site
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        # v4.0.5
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e

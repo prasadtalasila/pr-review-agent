@@ -100,6 +100,18 @@ trigger cannot drain the weekly allowance one retry at a time.
 
 ## 🧬 Statuses
 
+```text
+enqueue                     claim()                complete()
+(INSERT OR IGNORE)  ──►  pending  ──────────────►  claimed  ──────────────►  done
+                      (attempts+1)
+```
+
+`claimed` returns to `pending` on `release()` or when the lease simply
+lapses; either way `attempts` is already counted. `abandoned` is reached from
+either state: `claim()` reaches it directly when a row's `attempts` are
+already at `max_attempts`, and a worker holding `claimed` reaches it by
+calling `abandon()` on a failure that will only fail again.
+
 | Status | Meaning |
 | :-- | :-- |
 | `pending` | Waiting for a worker. |

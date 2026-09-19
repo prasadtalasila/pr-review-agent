@@ -1,0 +1,62 @@
+site_name: pr-review-agent
+site_url: https://prasad.talasila.in/pr-review-agent/
+site_description: >-
+  A locally-hosted LLM pull request reviewer that cannot overspend and cannot
+  be summoned by a stranger.
+site_author: Prasad Talasila
+
+repo_url: https://github.com/prasadtalasila/pr-review-agent
+repo_name: prasadtalasila/pr-review-agent
+edit_uri: edit/main/docs/
+
+copyright: Copyright &copy; Prasad Talasila
+
+theme:
+  name: material
+  locale: en
+  palette:
+    primary: teal
+    accent: orange
+  features:
+    - navigation.footer
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tabs.sticky
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+
+use_directory_urls: false
+
+markdown_extensions:
+  - attr_list
+  - tables
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      linenums: true
+      use_pygments: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: INDEX.md
+  - Why this exists: DESIGN.md
+  - Architecture: ARCHITECTURE.md
+  - How it works:
+      - Triggers: TRIGGERS.md
+      - Poller: POLLER.md
+      - Daemon loop: DAEMON.md
+      - Queue and lease: QUEUE.md
+      - Storage: STORAGE.md
+      - Budget governor: BUDGET.md
+      - Workspace and checkout: WORKSPACE.md
+      - Review worker: WORKER.md
+      - Engine seam: ENGINE.md
+      - Publisher: PUBLISHER.md
+  - Configuration reference: CONFIG.md
+  - Roadmap and acceptance criteria: ROADMAP.md

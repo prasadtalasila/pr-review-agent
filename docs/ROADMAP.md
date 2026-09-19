@@ -152,10 +152,12 @@ bugs:
   `RunStore.purge_content` exists and has no caller; the retention sweep is
   the next component.
 - **Nothing validates the configured token limits.** They are the operator's
-  guess at a quota the plan does not publish, and until the circuit breaker
-  lands the governor will report healthy utilisation while the real limit is
-  being hit. Set them conservatively low. See
-  [BUDGET.md](BUDGET.md#-not-built-yet).
+  guess at a quota the plan does not publish. The
+  [circuit breaker](BUDGET.md#-the-circuit-breaker) now catches an
+  over-estimate and decays the effective limits toward the real one, but it
+  only learns by hitting the wall — every trip is a lockout the operator
+  could have avoided by guessing lower to begin with. Set them conservatively
+  low. See [BUDGET.md](BUDGET.md#-not-built-yet).
 - `claim()`'s `admit` hook is optional, so "nothing spends outside the
   governor" is held by a test rather than by the type system:
   `tests/test_worker.py::test_a_claim_is_taken_only_through_the_governor`

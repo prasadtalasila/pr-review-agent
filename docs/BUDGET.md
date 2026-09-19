@@ -321,6 +321,15 @@ makes the reservation atomic with the dequeue for free, where PostgreSQL would
 need explicit row locking and a broker-plus-store split would need a
 distributed transaction. See [STORAGE.md](STORAGE.md#-why-sqlite).
 
+```text
+time ──►
+
+worker 1:  BEGIN IMMEDIATE ── measure window ── reserve + claim ── COMMIT ── run ── settle
+worker 2:                            BEGIN IMMEDIATE ── measure window ── refused: window full
+                                      (worker 1's reservation already counts as spent,
+                                       before worker 1 has finished running)
+```
+
 One query measures a window, and it is the whole guarantee:
 
 ```sql

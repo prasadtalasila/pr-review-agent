@@ -39,7 +39,7 @@ binary rejects an unknown option outright, so passing it proves it exists,
 and it being undocumented means it can be withdrawn without a deprecation.
 More to the point, the CLI already ends such a run with `subtype:
 error_max_turns`, which
-[`ClaudeCliEngine._outcome`](../../../src/pr_review_agent/engine/claude.py)
+[`ClaudeCliEngine._outcome`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/engine/claude.py)
 maps to `Outcome.TRUNCATED`. The behaviour #19 wanted is present; only the
 ability to *choose* the number is missing, and it is missing behind an
 undocumented flag.

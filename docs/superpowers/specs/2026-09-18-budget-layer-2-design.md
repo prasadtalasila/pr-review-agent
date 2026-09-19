@@ -83,7 +83,7 @@ reading their config file.
 
 Nothing else is validated. These patterns come from `config.yaml` and from
 nowhere else — no pull request body, comment or diff contributes one, so
-[CLAUDE.md](../../../CLAUDE.md)'s rule that untrusted input must never widen
+[CLAUDE.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/CLAUDE.md)'s rule that untrusted input must never widen
 what the agent may do is satisfied by the data's provenance, not by a filter.
 
 ### The defaults
