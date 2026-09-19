@@ -75,6 +75,29 @@ jobs:
       - name: Run tests
         run: poetry run pytest -q
 
+      # A tag push never triggers python-ci.yml (its push trigger is
+      # `branches: [main]`), so the tagged commit's only automated check
+      # is whatever this job runs -- there is no separate CI run to lean
+      # on the way a pull request has one. A release that cuts a version
+      # PyPI can never take back deserves the same gate CLAUDE.md asks a
+      # contributor to clear locally, not just a test run.
+      - name: Check formatting
+        run: poetry run ruff format --check .
+
+      - name: Run ruff
+        run: poetry run ruff check .
+
+      - name: Run pylint on src (min score 9.0)
+        run: poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
+
+      - name: Run pylint on tests (min score 9.0)
+        run: >-
+          poetry run pylint tests --rcfile=.pylintrc --fail-under=9.0
+          --disable=missing-function-docstring,missing-module-docstring
+
+      - name: Run pyright
+        run: poetry run pyright src tests
+
       - name: Verify the lock file matches pyproject.toml
         run: poetry check --lock
 
@@ -142,6 +165,10 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
           generate_release_notes: true
+          # Defaults to false, which would publish the release with no
+          # assets attached if the glob above ever matched nothing --
+          # silently, on a tag that cannot be re-cut.
+          fail_on_unmatched_files: true
 
       # Handed to publish-pypi rather than rebuilt there, so what reaches
       # PyPI is byte-identical to what is attached to the release. Two
