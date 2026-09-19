@@ -89,7 +89,7 @@ NUMBERED = (
 class Transport:
     """Records every request, and answers from a routing table."""
 
-    def __init__(self, head=HEAD, comment_id=555, commits=3):
+    def __init__(self, head=HEAD, comment_id=555, commits: int | None = 3):
         self.requests: list[httpx.Request] = []
         self._head = head
         self._comment_id = comment_id

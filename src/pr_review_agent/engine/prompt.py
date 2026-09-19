@@ -27,7 +27,7 @@ Report what you find and stop.\
 
 #: Everything the reviewer is told about *how* to review, as opposed to what
 #: it is reviewing. Kept as one constant because it is fixed text that a test
-#: reads and ``docs/templates/review-prompt.md`` is the approved source for:
+#: reads and ``docs/reporting/review-prompt.md`` is the approved source for:
 #: paraphrasing it here would let the two drift silently.
 #:
 #: The scope rule is the load-bearing paragraph. It replaces "report findings

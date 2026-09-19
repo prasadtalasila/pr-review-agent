@@ -24,12 +24,32 @@ daemon.
 ```text
 claim(admit=governor.admit)        the lease and the reservation, one commit
   → GET /pulls/{n}                 head_sha for a mention, and the size counts
+  → runs.history(repo, pr)         what the last round found, and its numbers
   → workspace.checkout(...)        the tree, the merge-base diff, exclusions
   → governor.preflight(...)        the last free refusal -- releases its own hold
   → engine.review(request)         the only agent-specific step, and the spend
+  → numbering.assign(...)          stable numbers, before anything is stored
+  → runs.record(...)               the findings, so a failed publish is retryable
   → governor.settle(claim, usage)  release whatever was not spent
   → complete / release / abandon   close the row
 ```
+
+### The history read and the numbering
+
+Two steps were added so a re-review reads as a continuation rather than a
+fresh opinion. Neither reaches an engine and neither spends anything.
+
+`runs.history` is one query on a table this worker already writes. It answers
+what the last completed round found — which becomes
+[`ReviewRequest.prior`](ENGINE.md), stripped of bodies — and the largest
+finding number this pull request has ever issued.
+
+`numbering.assign` runs **after** the engine and **before** `runs.record`,
+and the order is the point. The high-water mark is read back out of the
+stored findings, so a run recorded without numbers would let a retired number
+come back on something else in a later round. Numbering at render time would
+be too late. See [PUBLISHER.md](PUBLISHER.md) for what the numbers mean to a
+reader.
 
 ### The pre-flight estimate
 

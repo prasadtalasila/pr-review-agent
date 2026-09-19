@@ -21,8 +21,8 @@ Poetry. Ruff, Pylint (`--fail-under=9.0`), Pyright.
 
 **Spec:**
 - [Issue #45](https://github.com/prasadtalasila/pr-review-agent/issues/45) — the approved feature proposal.
-- `docs/templates/review-report.md` — the rendering contract (approved).
-- `docs/templates/review-prompt.md` — the prompt text (approved).
+- `docs/reporting/review-report.md` — the rendering contract (approved).
+- `docs/reporting/review-prompt.md` — the prompt text (approved).
 
 Read all three. The plan argues from them and quotes them; where this plan and a template
 disagree, the template is right and the plan has a bug.
@@ -63,8 +63,8 @@ include this section.
 
 | File | Responsibility | Task |
 |---|---|---|
-| `docs/templates/review-report.md` | Rendering contract (spec). Already written, uncommitted. | 1 |
-| `docs/templates/review-prompt.md` | Prompt text (spec). Already written, uncommitted. | 1 |
+| `docs/reporting/review-report.md` | Rendering contract (spec). Already written, uncommitted. | 1 |
+| `docs/reporting/review-prompt.md` | Prompt text (spec). Already written, uncommitted. | 1 |
 | `src/pr_review_agent/engine/models.py` | `Finding` gains `title`, `number`. `ReviewRequest` gains `prior`. | 2, 7 |
 | `src/pr_review_agent/engine/prompt.py` | Schema gains `title`/`number`; scope, sweep list, carried-forward block. | 2, 7, 9 |
 | `src/pr_review_agent/engine/claude.py` | `_findings` reads the two new fields. | 2 |
@@ -87,21 +87,21 @@ The two templates exist in the worktree and are approved but uncommitted. They a
 spec every later task reads, so they land first.
 
 **Files:**
-- Commit (already written): `docs/templates/review-report.md`
-- Commit (already written): `docs/templates/review-prompt.md`
+- Commit (already written): `docs/reporting/review-report.md`
+- Commit (already written): `docs/reporting/review-prompt.md`
 - Modify: `mkdocs.yml` (the `nav:` block, after the `Publisher: PUBLISHER.md` entry)
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `docs/templates/review-report.md` and `docs/templates/review-prompt.md` on
+- Produces: `docs/reporting/review-report.md` and `docs/reporting/review-prompt.md` on
   `HEAD`, quotable by every later task.
 
 - [ ] **Step 1: Confirm both files are present and unmodified**
 
 ```bash
-git status --short docs/templates/
-head -5 docs/templates/review-report.md
-head -5 docs/templates/review-prompt.md
+git status --short docs/reporting/
+head -5 docs/reporting/review-report.md
+head -5 docs/reporting/review-prompt.md
 ```
 
 Expected: two untracked files, each starting with its `# ...` title.
@@ -112,8 +112,8 @@ In `mkdocs.yml`, inside `nav:`, immediately after the `- Publisher: PUBLISHER.md
 at the same indentation, insert:
 
 ```yaml
-      - Review report template: templates/review-report.md
-      - Review prompt: templates/review-prompt.md
+      - Review report template: reporting/review-report.md
+      - Review prompt: reporting/review-prompt.md
 ```
 
 - [ ] **Step 3: Verify the site builds with the new pages**
@@ -124,7 +124,7 @@ Expected: exit 0, no warning about a page not in the nav and no broken-link warn
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/templates/review-report.md docs/templates/review-prompt.md mkdocs.yml
+git add docs/reporting/review-report.md docs/reporting/review-prompt.md mkdocs.yml
 git commit -m "docs: land the approved review report template and prompt
 
 The rendering contract and the prompt text for issue #45, drafted against
@@ -815,7 +815,7 @@ Refs #45"
 
 ### Task 5: Render the report as sections, not bullets
 
-The rendering contract in `docs/templates/review-report.md`, made executable. `render`
+The rendering contract in `docs/reporting/review-report.md`, made executable. `render`
 becomes a pure function of everything the header needs, so it can be golden-tested without
 a transport.
 
@@ -1000,7 +1000,7 @@ def render(
     are written through verbatim. They are rendered as Markdown by GitHub
     inside the agent's own comment, which is the same trust boundary any
     human comment has -- what keeps them harmless is that this module can
-    take no action they could ask for. See ``docs/templates/review-report.md``
+    take no action they could ask for. See ``docs/reporting/review-report.md``
     for the contract this implements.
     """
     header = (
@@ -1073,7 +1073,7 @@ git commit -m "feat(publisher): render the review as a sectioned, numbered repor
 Blocking / Should fix / Nits, numbered entries with a bold headline, nits as
 prose. major and minor share a heading rather than collapsing the Severity
 enum, which is persisted and asserted across the suite. Implements
-docs/templates/review-report.md.
+docs/reporting/review-report.md.
 
 Refs #45"
 ```
@@ -1381,7 +1381,7 @@ def _fence(text: str, info: str = "diff") -> str:
 
 and call it as `_fence(rows, "text")` in `_prior`. Import `Finding` from `.models`.
 
-Add the instruction text from `docs/templates/review-prompt.md` §"Previously reported"
+Add the instruction text from `docs/reporting/review-prompt.md` §"Previously reported"
 to the `parts` list immediately above the fenced block — copy it verbatim from the
 template; it is approved wording, not something to paraphrase.
 
@@ -1547,7 +1547,7 @@ It lands last because everything before it is cheap to verify and this is not.
 **Interfaces:**
 - Consumes: nothing new.
 - Produces: no signature change. The prompt's task, scope, sweep, finding-shape, severity
-  and out-of-scope sections now match `docs/templates/review-prompt.md`.
+  and out-of-scope sections now match `docs/reporting/review-prompt.md`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1590,7 +1590,7 @@ Expected: FAIL — `assert 'Report findings on lines the diff touches' not in pr
 - [ ] **Step 3: Rewrite the prompt body**
 
 In `src/pr_review_agent/engine/prompt.py`, replace the `parts` list in `build_prompt` with
-the sections from `docs/templates/review-prompt.md`, in this order: **Task**, **Scope**,
+the sections from `docs/reporting/review-prompt.md`, in this order: **Task**, **Scope**,
 **What to sweep**, **How to write a finding**, **Severity**, **Out of scope**, then the
 existing **Review standards**, then **Previously reported** (Task 7), then **Diff** last.
 
@@ -1610,7 +1610,7 @@ stay exactly as they are today:
         "",
         "## Scope",
         "",
-        # ... verbatim from docs/templates/review-prompt.md § Scope
+        # ... verbatim from docs/reporting/review-prompt.md § Scope
     ]
 ```
 
@@ -1661,7 +1661,7 @@ git commit -m "feat(engine): review the diff's blast radius, not only its lines
 A finding may anchor anywhere in the head revision provided the body names
 the hunk in this diff that causes it -- causation, not curiosity. Adds the
 sweep list, the finding shape and the severity definitions from
-docs/templates/review-prompt.md.
+docs/reporting/review-prompt.md.
 
 This raises mean tokens per admitted review. It widens no trigger and removes
 no cap: the governor admits, reserves and settles exactly as before, and the
@@ -1686,7 +1686,7 @@ Refs #45"
 - [ ] **Step 1: Update `docs/PUBLISHER.md`**
 
 Replace the description of the rendered body with the section list, the severity-to-heading
-map and the numbering rule, and link to `docs/templates/review-report.md` as the contract.
+map and the numbering rule, and link to `docs/reporting/review-report.md` as the contract.
 Say explicitly that `Severity` is unchanged and that `major` does not render as blocking.
 
 - [ ] **Step 2: Update `docs/ENGINE.md`**
@@ -1738,7 +1738,7 @@ version or adds a column. The issue's non-goals are all absent — no inline com
 `Severity` change, no new config key, no human process preamble.
 
 **Placeholder scan.** One deliberate deferral remains, and it is not a placeholder: Tasks 7
-and 9 say to copy wording **verbatim from `docs/templates/review-prompt.md`** rather than
+and 9 say to copy wording **verbatim from `docs/reporting/review-prompt.md`** rather than
 restating several hundred lines of approved prose inside the plan. The source is committed
 in Task 1, so the executor has it. Everything else — every test, every function body, every
 SQL statement — is written out.

@@ -269,7 +269,7 @@ def render(
     inside the agent's own comment, which is the same trust boundary any
     human comment has -- what keeps them harmless is that this module can
     take no action they could ask for. See
-    ``docs/templates/review-report.md`` for the contract this implements.
+    ``docs/reporting/review-report.md`` for the contract this implements.
     """
     header = (
         f"## Review: PR #{pr_number} — round {round_number} "

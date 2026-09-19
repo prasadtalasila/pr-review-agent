@@ -36,6 +36,18 @@ what produced it.
 | `facts` | `PullRequestFacts` | Number, base ref and the size counts the caps were measured against. |
 | `trigger` | `Trigger` | What asked for this review — an opened pull request or a mention. |
 | `mode` | `Mode` | The rung of the [degradation ladder](BUDGET.md) the run was admitted under. |
+| `prior` | `tuple[Finding, ...]` | What the last completed round on this pull request found. Empty on a first round. |
+
+`prior` is what lets a re-review say "still" truthfully instead of
+re-deriving everything from scratch. It arrives **stripped of finding
+bodies** — only `number`, `path`, `severity` and `title` travel.
+
+That stripping is a control, not an economy. A body is the longest and least
+constrained field a reviewer emits over an untrusted tree; carrying it
+forward would let text that reached one review reach every later review of
+the same pull request, which is a foothold that outlives its own run. A test
+pins the absence rather than a comment asserting it. The block is fenced by
+the same fencing the diff gets, because a title is untrusted text too.
 
 The diff is **not** passed separately. It is already on the `Checkout`, and
 two copies of one string are two things that can disagree.
@@ -52,11 +64,28 @@ that governs the allowlist; see [DESIGN.md](DESIGN.md#-prompt-injection-is-in-sc
 
 `ReviewResult` is findings plus usage.
 
-A `Finding` is `path`, `line`, `severity`, `body` — the four fields a
-line-anchored review comment needs. Nothing more, because the publisher does
-not exist yet and its data model is not this change's to design. `Severity`
-is advisory in the strongest sense: the publisher posts event `COMMENT`
-whatever a review concludes, so not even `blocker` can block a merge.
+A `Finding` is `path`, `line`, `severity`, `title`, `body` and an optional
+`number`.
+
+`title` is the one-sentence headline the report renders in bold, and it
+states the consequence rather than the mechanism — it is read first and often
+instead of the body. The remedy is the **last paragraph of `body`** rather
+than a field of its own: the schema is kept small on purpose, because every
+required field is another way for a run to end in a validation failure that
+spent tokens and produced nothing.
+
+`number` is the finding's identity across review rounds, and it is the one
+field an engine may leave unset. An engine that recognises a finding it was
+shown from an earlier round sets that finding's number; anything else is new,
+and [`numbering.assign`](PUBLISHER.md) gives it the next free one before the
+run is recorded. A number an engine invents is discarded: it is output over
+an untrusted tree, so it is honoured only if this pull request actually
+issued it.
+
+`Severity` is advisory in the strongest sense: the publisher posts event
+`COMMENT` whatever a review concludes, so not even `blocker` can block a
+merge. See [PUBLISHER.md](PUBLISHER.md) for which heading each level renders
+under.
 
 `outcome` is how the run ended: `completed`, `truncated` or `failed`. It
 exists because a run that was cut off and a run that cleanly found nothing
