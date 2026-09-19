@@ -8,8 +8,8 @@ so neither can drift out of step with the loader:
 
 | File | What it is |
 | :-- | :-- |
-| [`config.minimal.example.yaml`](../config.minimal.example.yaml) | The smallest file that loads — every required key and nothing else. Start here. |
-| [`config.example.yaml`](../config.example.yaml) | Every key the loader accepts, with the reasoning behind each. Values shown for optional keys are the defaults. |
+| [`config.minimal.example.yaml`](https://github.com/prasadtalasila/pr-review-agent/blob/main/config.minimal.example.yaml) | The smallest file that loads — every required key and nothing else. Start here. |
+| [`config.example.yaml`](https://github.com/prasadtalasila/pr-review-agent/blob/main/config.example.yaml) | Every key the loader accepts, with the reasoning behind each. Values shown for optional keys are the defaults. |
 
 ```bash
 cp config.minimal.example.yaml config.yaml
@@ -277,7 +277,7 @@ Reloadable on `SIGHUP` — see [Reload](#-reload) — and described in full in
 ## 📄 A minimal file
 
 Every key below is required; everything else has a default. This is
-[`config.minimal.example.yaml`](../config.minimal.example.yaml) verbatim, and
+[`config.minimal.example.yaml`](https://github.com/prasadtalasila/pr-review-agent/blob/main/config.minimal.example.yaml) verbatim, and
 `tests/test_config.py` loads it, so it cannot drift. The shipped file carries
 no comments: it is meant to be copied and edited, and the reasoning belongs
 on this page rather than in a file that becomes somebody's `config.yaml`.

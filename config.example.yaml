@@ -16,9 +16,9 @@
 #   section -- including plausible-looking near-misses like `reviewer_share`
 #   for `reviewer_share_pct`.
 #
-#   ONLY SETTINGS SOMETHING READS ARE ACCEPTED. There is no `publish`
-#   section yet because that component does not exist; it arrives with the
-#   code that reads it. A setting that quietly does nothing is the failure
+#   ONLY SETTINGS SOMETHING READS ARE ACCEPTED. A section is accepted only
+#   once the component that reads it exists -- `publish` arrived with the
+#   publisher, below. A setting that quietly does nothing is the failure
 #   this rule prevents.
 #
 # CREDENTIALS ARE NOT IN THIS FILE. The GitHub token is read from the
@@ -87,9 +87,10 @@ budget:
   # publishes no quota, so any default would be a spending ceiling nobody
   # chose.
   #
-  # Set them CONSERVATIVELY LOW. Until the circuit breaker lands with the
-  # engine adapter, nothing detects an over-estimate: the governor will
-  # report healthy utilisation while the real limit is already being hit.
+  # Set them CONSERVATIVELY LOW. The circuit breaker catches an over-estimate
+  # and decays the effective limits toward the real one, but it only learns
+  # by hitting the wall -- every trip is a lockout you could have avoided by
+  # guessing lower to begin with.
   session_tokens: 88000      # rolling 5-hour window
   weekly_tokens: 1500000     # rolling 7-day window
 

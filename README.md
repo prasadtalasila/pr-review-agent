@@ -6,133 +6,29 @@ be summoned by a stranger.</b>
 </p>
 
 - [What it is](#-what-it-is)
-- [What starts a review](#-what-starts-a-review)
-- [How it finds out](#-how-it-finds-out)
-- [Status](#-status)
 - [Quickstart](#-quickstart)
 - [Documentation](#-documentation)
 
 ## ✍ What it is
 
 A single Python asyncio daemon with a SQLite store, running on a private host.
-It polls GitHub for two events, decides whether either may start a review, and
-— once the remaining components land — runs the review locally and posts one
-line-anchored comment.
+It polls on pull requests of a GitHub repository for exactly two events:
 
-Four constraints shaped it, and each one removes a category of off-the-shelf
-solution:
-
-1. **No inbound network access.** The host cannot receive webhooks, so every
-   webhook-driven integration is out.
-2. **Restricted eligibility.** Only configured contributors are auto-reviewed;
-   others are reviewed when an allowlisted maintainer asks.
-3. **A hard usage ceiling with no overspend**, on a shared pool.
-4. **Opaque limits.** Subscription plans expose no quota API, so budget
-   enforcement is self-maintained rather than queried.
+1. a freshly opened pull request whose author is pre-approved;
+2. a comment containing `@claude` whose commenter is pre-approved.
 
 No pull request leaves our infrastructure, and the publisher takes no approval
 or merge action regardless of what a review concludes — a machine's judgement
-can never block a merge. [docs/DESIGN.md](docs/DESIGN.md) has the full
-reasoning and every alternative that was turned down.
-
-## ✅ What starts a review
-
-Exactly two events:
-
-1. a freshly opened pull request whose **author** is allowlisted;
-2. a comment containing `@claude` whose **commenter** is allowlisted.
-
-Gating the mention on the commenter is what lets a maintainer summon a review
-of an outside contribution that would not be auto-reviewed.
-
-Everything else is rejected with a reason code that says which rule fired:
-
-| Event | Reason code |
-| :-- | :-- |
-| Push to an existing pull request | *never classified* — the poller emits no push event |
-| Draft pull request | `draft` |
-| Pull request from an unlisted author | `author_not_allowlisted` |
-| Comment from an unlisted account | `commenter_not_allowlisted` |
-| Any bot | `bot_author` / `bot_commenter` |
-| The agent's own account | `self_author` / `self_commenter` |
-| `@claude` in a fence, code span or blockquote | `no_mention` |
-| Already-open pull request, or a comment last updated, below the watermark | `not_fresh` |
-
-Two decisions carry most of the weight:
-
-**Allowlisting is on the numeric user id, never the login.** A login can be
-renamed and the freed name registered by somebody else, which would silently
-transfer eligibility to a stranger. A login in the config fails at startup
-rather than never matching.
-
-**The cold-start watermark is load-bearing.** The poller sees *open* pull
-requests, not `opened` events, so without a watermark the first poll would
-treat the entire open backlog as fresh and review all of it at once — and
-replay every historical `@claude` alongside it — burning the weekly allowance
-in a single pass. It is persisted, only ever moves forward, and on a fresh
-database is seeded to the moment the daemon started, so nothing that pre-dates
-the first start is ever queued.
-
-[docs/TRIGGERS.md](docs/TRIGGERS.md) has the rest, including what counts as a
-mention and why the dedupe keys are shaped the way they are.
-
-## 📡 How it finds out
-
-Three **repo-wide** endpoints, polled with `If-None-Match`:
-
-```text
-GET /repos/{owner}/{repo}/pulls?state=open&…&per_page=100
-GET /repos/{owner}/{repo}/issues/comments?…&per_page=100
-GET /repos/{owner}/{repo}/pulls/comments?…&per_page=100
-```
-
-One request per endpoint per cycle regardless of how many pull requests are
-open — 1,080 requests/hour at a 10 s interval, against a budget of at least
-5,000. A `304` costs nothing against the rate limit and decays the interval
-towards a 600 s ceiling; any `200` snaps it straight back to the 10 s floor.
-If the remaining budget nears exhaustion, the interval is held at the ceiling
-whatever else happened.
-
-[docs/POLLER.md](docs/POLLER.md) covers the sort-order invariant the design
-rests on, the retry rules, and why the notifications API was not used.
-
-## 📊 Status
-
-Early. The trigger pipeline, the poller, the persistence layer, the queue,
-the budget governor, the checkout, the daemon loop, the worker that drains the
-queue and the `claude` CLI adapter it runs are implemented and unit tested.
-**The pipeline now runs end to end and can spend real allowance** — every run
-behind the governor, the ladder, the pre-flight estimate and `worker.count`.
-Nothing is posted to GitHub yet: findings are logged and dropped until the
-publisher lands.
-
-| Component | State |
-| :-- | :-- |
-| Classifier / allowlist / mention parsing | implemented |
-| Config loader (`config.yaml`) | implemented |
-| Poller (async, ETag conditional requests) | implemented |
-| Payload mapping (REST dicts → trigger models) | implemented |
-| SQLite store (watermarks, ETags, migrations) | implemented |
-| Queue and per-pull-request lease | implemented |
-| Bootstrap checks (`python -m pr_review_agent.bootstrap`) | implemented |
-| Daemon loop (`python -m pr_review_agent.daemon`) | implemented |
-| Budget governor (windows, ladder, reserve-then-settle) | implemented |
-| Workspace (fetch, checkout, merge-base diff, teardown) | implemented |
-| Engine seam (`ReviewEngine`, `Capabilities`, `FakeEngine`) | implemented |
-| Review worker (claim → run → settle) | implemented |
-| Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, wired to the worker |
-| Publisher (👀, head re-check, one comment per pull request) | implemented |
-| Retention sweep | not started |
-
-[docs/ROADMAP.md](docs/ROADMAP.md) has the build order and the acceptance
-checklist.
+can never block a merge. [docs/DESIGN.md](docs/DESIGN.md) has the constraints
+that shaped this design and every alternative that was turned down;
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the components that
+implement it.
 
 ## 🚀 Quickstart
 
-Python **3.10 – 3.14**. Dependencies are managed with
-[Poetry](https://python-poetry.org/docs/), installed **inside the project
-venv** — a system-wide Poetry is not supported
-([why](DEVELOPER.md#why-not-a-system-wide-poetry)).
+Python **3.10 – 3.14**, via [Poetry](https://python-poetry.org/docs/) —
+see [DEVELOPER.md](DEVELOPER.md) for the full setup, including why Poetry
+must live inside the project venv.
 
 ```bash
 git clone https://github.com/prasadtalasila/pr-review-agent
@@ -140,53 +36,19 @@ cd pr-review-agent
 
 python -m venv .venv
 .venv/bin/python -m pip install --upgrade pip poetry
-export PATH="$PWD/.venv/bin:$PATH"      # so `poetry` is the project's copy
-command -v poetry                       # must print <repo>/.venv/bin/poetry
-
+export PATH="$PWD/.venv/bin:$PATH"
 poetry install
-poetry run pytest
 
 cp config.minimal.example.yaml config.yaml   # then edit: repo, agent_user_id,
                                              # allowlist, budget
-```
 
-Before deploying on a new host, confirm it can reach what the daemon needs:
-
-```bash
-GITHUB_TOKEN=... poetry run python -m pr_review_agent.bootstrap
-```
-
-It fetches the three watched endpoints, proves a repeat request still comes
-back `304`, and checks the route to Anthropic. See
-[DEVELOPER.md](DEVELOPER.md#-bootstrap-checks).
-
-Then run the daemon:
-
-```bash
 GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
 ```
 
-It polls, classifies and enqueues, and a [worker](docs/WORKER.md) drains the
-queue beside it — claiming through the [budget governor](docs/BUDGET.md),
-checking the pull request out and running the `claude` CLI over it. **This
-spends real allowance.** Every run passes the governor's windows, the
-degradation ladder and the pre-flight estimate first, and `worker.count`
-bounds how many can be in flight. The [publisher](docs/PUBLISHER.md) then
-posts the result: a 👀 as soon as the trigger is claimed, and one comment per
-pull request, edited in place on re-review. **The token now needs write
-scope**; `python -m pr_review_agent.bootstrap` checks it. See
-[docs/DAEMON.md](docs/DAEMON.md) and [docs/WORKER.md](docs/WORKER.md).
-
-Two brakes, both live over `SIGHUP` and neither needing a restart.
-`budget.enabled: false` stops the agent *reviewing*. `publish.dry_run: true`
-lets it review exactly as before and post nothing, logging the comment it
-would have written — useful for watching what it would say, and no cheaper.
-
-The suite needs no network and spends no tokens: the trigger pipeline is pure
-functions over fixtures, and the poller tests drive `httpx.MockTransport`.
-
 `config.yaml` is gitignored — it names real accounts and will later sit beside
-the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key.
+the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key,
+and [DEVELOPER.md](DEVELOPER.md#-bootstrap-checks) covers the bootstrap check
+worth running before a first deploy on a new host.
 
 ## 🗂 Documentation
 
@@ -199,7 +61,8 @@ the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key.
 | [docs/DAEMON.md](docs/DAEMON.md) | What runs continuously, and what is it careful not to do? The cycle, the cold-start spend bound, the two watermark ordering rules, and how it shuts down |
 | [docs/QUEUE.md](docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
 | [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
-| [docs/BUDGET.md](docs/BUDGET.md) | The rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, and what is deferred to the engine phase |
+| [docs/WORKSPACE.md](docs/WORKSPACE.md) | How does a pull request's code get onto disk, and why is none of it ever run? The bare mirror, the per-run worktree, the untrusted-tree hardening, and the diff-size caps |
+| [docs/BUDGET.md](docs/BUDGET.md) | The rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, the circuit breaker, and what is still not built |
 | [docs/WORKER.md](docs/WORKER.md) | What drains the queue? The claim-run-settle loop, what a failed run settles at and why, which failures retry and which are permanent, what a run leaves behind, the supervisor, and why not a process per review |
 | [docs/PUBLISHER.md](docs/PUBLISHER.md) | How does a review become visible, and what stops the agent approving anything? The 👀 at claim time, the live `head_sha` re-check, one comment per pull request, `publish.dry_run`, and why a failed publish never costs a second review |
 | [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |

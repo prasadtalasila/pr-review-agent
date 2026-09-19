@@ -275,7 +275,7 @@ deletion guarantee.
 1. **Outbound HTTPS from the deployment host** to `api.github.com`,
    `github.com`, `codeload.github.com` and `api.anthropic.com`. Run
    `python -m pr_review_agent.bootstrap` on the host
-   ([DEVELOPER.md](../DEVELOPER.md#-bootstrap-checks)); it now probes the
+   ([DEVELOPER.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/DEVELOPER.md#-bootstrap-checks)); it now probes the
    git fetch route as well as the API, because `github.com` and
    `api.github.com` are different hosts and, on an allowlist-based firewall,
    different rules. This should be confirmed before implementation

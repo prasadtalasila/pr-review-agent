@@ -151,5 +151,5 @@ relative path is resolved against the working directory the daemon starts in,
 so the resolved absolute path is logged at `INFO` on startup — pointing at the
 wrong file costs the queue's memory of what has already been reviewed.
 
-Run the [bootstrap checks](../DEVELOPER.md#-bootstrap-checks) first on a host
+Run the [bootstrap checks](https://github.com/prasadtalasila/pr-review-agent/blob/main/DEVELOPER.md#-bootstrap-checks) first on a host
 that has never run the daemon.
