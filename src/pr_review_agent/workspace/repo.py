@@ -6,7 +6,9 @@ concurrent runs are two worktrees over one object store, which is git's
 designed use -- and the run directories are **siblings** of the mirror,
 because ``$GIT_DIR/worktrees`` is where git keeps each worktree's own
 administrative files and a working tree placed there serves two roles at
-once.
+once. The placement is held by the path being absolute: ``git -C`` resolves
+a relative argument against the mirror, which would put the run directory
+inside the very ``$GIT_DIR`` this rules out.
 
 The only shared mutable state is the mirror's ref namespace, and one
 ``asyncio.Lock`` serialises every write to it -- the fetch and the
@@ -144,7 +146,14 @@ class Workspace:
         self, repo: str, cache_dir: Path | str, base_url: str = GITHUB_BASE
     ) -> None:
         self.repo = repo
-        self.cache_dir = Path(cache_dir)
+        # Absolute, once, here. Every git command below is `git -C <mirror>`,
+        # which is a chdir -- so a relative path on that argv is resolved
+        # against the mirror and the worktree lands inside $GIT_DIR, while
+        # `Checkout.path` still reads as relative to the daemon's own working
+        # directory and the engine is handed a cwd that does not exist. The
+        # shipped default is relative, so this is the configured case rather
+        # than an exotic one.
+        self.cache_dir = Path(cache_dir).resolve()
         # Not a safety knob: the https-only whitelist applies whatever this
         # is, so pointing it elsewhere cannot widen a protection. A GitHub
         # Enterprise host is a real deployment, and this is the same shape

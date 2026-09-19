@@ -390,6 +390,9 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
     client = GitHubClient(token)
     endpoints = RepoEndpoints(config.github.owner, config.github.name)
     workspace = Workspace(config.github.repo, config.workspace.cache_dir)
+    # Same reason as the store path above: the configured default is
+    # relative, so what it means depends on where the daemon was started.
+    logger.info("workspace cache: %s", workspace.cache_dir)
     try:
         with SqliteStore(path) as store:
             daemon = Daemon(

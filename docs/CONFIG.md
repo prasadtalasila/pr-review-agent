@@ -182,7 +182,7 @@ already been reviewed.
 
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
-| `cache_dir` | string | no (default `.cache/repos`) | Where the bare mirror and the per-run checkouts live. Created `0700`. |
+| `cache_dir` | string | no (default `.cache/repos`) | Where the bare mirror and the per-run checkouts live. Created `0700`. A relative path is resolved against the daemon's working directory **once, at startup**, and the absolute result is logged; it is not re-read on `SIGHUP`. |
 
 The **second** optional section, and the argument differs from `store`'s. It
 is affordable because the section holds a path and nothing else: the setting

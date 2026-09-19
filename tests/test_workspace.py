@@ -10,6 +10,7 @@ from pr_review_agent.workspace import (
     DiffSize,
     PullRequestFacts,
     PullRequestTooLarge,
+    Workspace,
 )
 
 VENDORED = ("**/vendor/**",)
@@ -33,6 +34,63 @@ def facts(remote, **overrides) -> PullRequestFacts:
     }
     values.update(overrides)
     return PullRequestFacts(**values)
+
+
+@pytest.fixture
+def relative_workspace(git_remote, tmp_path, monkeypatch) -> Workspace:
+    """A workspace on a *relative* cache_dir, which is what ships.
+
+    The ``workspace`` fixture in conftest is built on ``tmp_path``, which is
+    absolute -- and ``git -C`` cannot reinterpret an absolute argument, which
+    is precisely why the suite could not see the bug these tests pin. The
+    literal below is ``config.DEFAULT_CACHE_DIR``'s value written out rather
+    than imported: if that default ever became absolute, this fixture must
+    keep testing a relative one.
+    """
+    monkeypatch.setenv("GIT_SSL_CAINFO", str(git_remote.ca))
+    monkeypatch.chdir(tmp_path)
+    return Workspace(
+        repo=git_remote.repo,
+        cache_dir=".cache/repos",
+        base_url=git_remote.base_url,
+    )
+
+
+async def test_a_relative_cache_dir_checks_out_where_it_says_it_did(
+    relative_workspace, git_remote
+):
+    # The engine resolves `Checkout.path` against the daemon's working
+    # directory; git resolved the same text against the mirror. The bug is
+    # the gap between those two readings.
+    async with relative_workspace.checkout(facts(git_remote), **CAPS) as checkout:
+        assert checkout.path.is_dir()
+        assert (checkout.path / "feature.py").read_text().startswith("def added")
+
+
+async def test_a_relative_cache_dir_keeps_the_run_directory_out_of_the_mirror(
+    relative_workspace, git_remote
+):
+    # `git -C <mirror>` is a chdir, so a relative `worktree add` argument
+    # lands under $GIT_DIR -- the one placement repo.py's docstring rules
+    # out, and the one an absolute path cannot reach.
+    async with relative_workspace.checkout(facts(git_remote), **CAPS) as checkout:
+        assert relative_workspace.mirror not in checkout.path.parents
+        assert not (relative_workspace.mirror / ".cache").exists()
+
+
+async def test_the_sweep_clears_a_relative_cache_dirs_run_directory(
+    relative_workspace, git_remote
+):
+    # `sweep` removes `self.runs` in Python and prunes worktrees in git. If
+    # the two disagree about where a run directory is, a crashed run leaks
+    # one forever.
+    async with relative_workspace.checkout(facts(git_remote), **CAPS) as checkout:
+        stranded = checkout.path
+        (stranded / ".leaked").write_text("x")
+    await relative_workspace.sweep()
+
+    assert not stranded.exists()
+    assert not list(relative_workspace.mirror.glob("worktrees/*"))
 
 
 async def test_a_fork_shaped_head_is_checked_out_at_its_exact_sha(
