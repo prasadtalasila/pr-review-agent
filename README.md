@@ -22,8 +22,8 @@ Download [latest release](https://github.com/prasadtalasila/pr-review-agent/rele
 python -m venv .venv
 source .venv/bin/activate
 
-pip install --upgrade pip poetry
-poetry install
+# download the latest release
+pip install pr_review_agent-<version>-py3-none-any.whl
 
 cp config.minimal.example.yaml config.yaml
 # update config
