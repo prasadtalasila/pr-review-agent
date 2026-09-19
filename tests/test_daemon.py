@@ -17,7 +17,6 @@ from pr_review_agent.daemon import (
     Daemon,
     build_engine,
     build_workers,
-    main,
     supervise,
 )
 from pr_review_agent.engine.claude import ClaudeCliEngine
@@ -383,16 +382,8 @@ async def test_an_already_set_stop_runs_no_cycle(tmp_path):
     assert polls == []
 
 
-def test_main_without_a_token_exits_two(tmp_path, monkeypatch, capsys):
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    assert main(["--config", str(tmp_path / "config.yaml")]) == 2
-    assert "GITHUB_TOKEN is not set" in capsys.readouterr().err
-
-
-def test_main_with_an_unreadable_config_exits_two(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("GITHUB_TOKEN", "t")
-    assert main(["--config", str(tmp_path / "missing.yaml")]) == 2
-    assert "cannot read config" in capsys.readouterr().err
+# The command-line entry points are exercised in tests/test_cli.py, which
+# owns the whole `pr-review-agent <noun> <verb>` tree.
 
 
 # -- SIGHUP: the kill switch must not need a restart ---------------------

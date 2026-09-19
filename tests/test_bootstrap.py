@@ -6,13 +6,11 @@ import httpx
 import pytest
 
 from pr_review_agent import bootstrap
-from pr_review_agent._startup import TOKEN_ENV
 from pr_review_agent.bootstrap import (
     CheckResult,
     check_anthropic,
     check_git,
     check_github,
-    main,
 )
 from pr_review_agent.config import Config
 from pr_review_agent.poller.client import GitHubClient
@@ -155,18 +153,6 @@ async def test_a_blocked_route_to_anthropic_fails():
     assert result.ok is False and "no route" in result.detail
 
 
-def test_a_missing_token_is_reported_before_any_request(monkeypatch, capsys):
-    monkeypatch.delenv(TOKEN_ENV, raising=False)
-    assert main([]) == 2
-    assert TOKEN_ENV in capsys.readouterr().err
-
-
-def test_an_unreadable_config_is_reported(monkeypatch, capsys, tmp_path):
-    monkeypatch.setenv(TOKEN_ENV, "fake-token")
-    assert main(["--config", str(tmp_path / "absent.yaml")]) == 2
-    assert "cannot read config" in capsys.readouterr().err
-
-
 async def test_a_rate_limited_revisit_fails_the_conditional_check():
     def handler(request: httpx.Request) -> httpx.Response:
         if "if-none-match" in request.headers:
@@ -239,25 +225,19 @@ async def test_a_failed_git_check_fails_the_run(monkeypatch, tmp_path):
     assert not all(result.ok for result in results)
 
 
-def test_main_reports_each_check_and_succeeds(monkeypatch, capsys, tmp_path):
-    monkeypatch.setenv(TOKEN_ENV, "fake-token")
-    monkeypatch.setattr(
-        bootstrap,
-        "run_checks",
-        _canned([CheckResult("github open_pulls", True, "4987/5000 remaining")]),
+def test_report_prints_each_result_and_succeeds(capsys):
+    status = bootstrap.report(
+        [CheckResult("github open_pulls", True, "4987/5000 remaining")]
     )
-    assert main(["--config", str(write_config(tmp_path))]) == 0
+    assert status == 0
     assert "PASS  github open_pulls" in capsys.readouterr().out
 
 
-def test_main_exits_non_zero_when_a_check_fails(monkeypatch, capsys, tmp_path):
-    monkeypatch.setenv(TOKEN_ENV, "fake-token")
-    monkeypatch.setattr(
-        bootstrap,
-        "run_checks",
-        _canned([CheckResult("anthropic reachable", False, "no route: blocked")]),
+def test_report_returns_one_when_a_check_fails(capsys):
+    status = bootstrap.report(
+        [CheckResult("anthropic reachable", False, "no route: blocked")]
     )
-    assert main(["--config", str(write_config(tmp_path))]) == 1
+    assert status == 1
     captured = capsys.readouterr()
     assert "FAIL  anthropic reachable" in captured.out
     assert "1 check(s) failed" in captured.err

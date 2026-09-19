@@ -192,9 +192,13 @@ jobs:
 
       # The wheel imported cleanly for twelve releases while shipping no
       # command at all, because `[project.scripts]` was absent and nothing
-      # the unit suite can reach knows whether a console script exists. This
-      # installs the artefact the way an operator does and runs it.
-      - name: Install the wheel and run the command it ships
+      # the unit suite can reach knows whether a console script exists. It
+      # then shipped a quickstart that copied a config template the wheel did
+      # not contain, for the same reason: every unit test reads the templates
+      # off the source tree, where they have always been. So this does not
+      # stop at `--help`. It walks the documented first-run path against the
+      # installed artefact, which is the only place either gap is visible.
+      - name: Install the wheel and walk the documented first run
         run: |
           set -o pipefail
 
@@ -202,7 +206,14 @@ jobs:
           /tmp/wheel-check/bin/pip install --quiet dist/*.whl
           /tmp/wheel-check/bin/pr-review-agent --help
 
-          echo "OK: the installed wheel provides a working pr-review-agent."
+          mkdir -p /tmp/wheel-run
+          cd /tmp/wheel-run
+          /tmp/wheel-check/bin/pr-review-agent config generate
+          /tmp/wheel-check/bin/pr-review-agent config validate
+          /tmp/wheel-check/bin/pr-review-agent config generate --full --force
+          /tmp/wheel-check/bin/pr-review-agent config validate
+
+          echo "OK: the installed wheel generates and validates a config."
 
       - name: Name the artefact after the version it contains
         id: dist

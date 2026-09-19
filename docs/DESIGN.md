@@ -274,7 +274,7 @@ deletion guarantee.
 
 1. **Outbound HTTPS from the deployment host** to `api.github.com`,
    `github.com`, `codeload.github.com` and `api.anthropic.com`. Run
-   `python -m pr_review_agent.bootstrap` on the host
+   `pr-review-agent host check` on the host
    ([DEVELOPER.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/DEVELOPER.md#-bootstrap-checks)); it now probes the
    git fetch route as well as the API, because `github.com` and
    `api.github.com` are different hosts and, on an allowlist-based firewall,
@@ -294,7 +294,7 @@ deletion guarantee.
 4. **The remaining allowlist members.**
 5. **A GitHub token.** Read-only access to the three endpoints is enough for
    polling, but the publisher exists now, so **write scope is required** --
-   `python -m pr_review_agent.bootstrap` refuses to pass without it, because
+   `pr-review-agent host check` refuses to pass without it, because
    the alternative is a review that is paid for and then 403s on the last
    call. The checkout deliberately does **not** use it: the fetch is
    anonymous, so no credential can reach the git command line or `.git/config`.

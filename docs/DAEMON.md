@@ -138,7 +138,7 @@ in a 600 s idle interval would hang a service restart for the remainder of it.
 ## ▶️ Running it
 
 ```bash
-GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
+GITHUB_TOKEN=... poetry run pr-review-agent daemon start
 ```
 
 An installed wheel puts the same entry point on the path, so a host that
@@ -156,7 +156,7 @@ service unit already written against it does not have to change.
 resolved against the working directory the daemon starts in — the same rule
 `store.path` follows below, so a service unit that sets `WorkingDirectory`
 needs neither flag. The token is read from the environment, never from
-`config.yaml`, and is never printed. Exit status is `2` when the token or the
+`config.yaml`, and is never printed. Exit status is `3` when the token or the
 config file is missing, and `0` on a clean shutdown.
 
 The SQLite file comes from [`store.path`](CONFIG.md), default `state.db`. A

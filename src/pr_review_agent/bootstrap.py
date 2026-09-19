@@ -36,15 +36,12 @@ never printed -- the checks report what happened, not what was sent.
 
 from __future__ import annotations
 
-import argparse
-import asyncio
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import httpx
 
-from ._startup import StartupError, startup
 from .config import Config
 from .poller.client import GitHubClient, GitHubClientError, PollResult
 from .poller.endpoints import RepoEndpoints
@@ -217,7 +214,8 @@ def _budget(result: PollResult) -> str:
     return f"{result.rate_limit.remaining}/{result.rate_limit.limit} remaining"
 
 
-def _report(results: Sequence[CheckResult]) -> int:
+def report(results: Sequence[CheckResult]) -> int:
+    """Print every result and return the exit status: 1 if any failed."""
     for result in results:
         print(f"{'PASS' if result.ok else 'FAIL'}  {result.name}: {result.detail}")
     failed = [result.name for result in results if not result.ok]
@@ -225,20 +223,3 @@ def _report(results: Sequence[CheckResult]) -> int:
         print(f"\n{len(failed)} check(s) failed: {', '.join(failed)}", file=sys.stderr)
         return 1
     return 0
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the checks from the command line; non-zero exit means unusable."""
-    parser = argparse.ArgumentParser(description="pr-review-agent pre-flight checks")
-    parser.add_argument("--config", default="config.yaml", help="path to config.yaml")
-    args = parser.parse_args(argv)
-    try:
-        config, token = startup(args.config)
-    except StartupError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    return _report(asyncio.run(run_checks(config, token)))
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
