@@ -107,6 +107,13 @@ class Daemon:
     publisher: Publisher
     config_path: Path | None = None
 
+    #: The pull requests the last ``/pulls?state=open`` payload named, used
+    #: to drop comments on closed ones. It lives across cycles because that
+    #: leg answers 304 whenever nothing about an open pull request changed,
+    #: and a 304 means unchanged rather than unknown. ``None`` until the
+    #: first 200, which leaves the filter off -- see ``Classifier``.
+    open_pull_requests: frozenset[int] | None = None
+
     def reload_config(self) -> None:
         """Re-read ``config.yaml`` and adopt its ``budget`` and ``publish``
         sections.
@@ -182,9 +189,11 @@ class Daemon:
 
     def _process(self, cycle: PollCycle, *, now: datetime) -> CycleSummary:
         changed = cycle.changed_items()
-        summary = self._pull_requests(
-            changed.get(Endpoint.OPEN_PULLS), now=now
-        ) + self._comments(changed, now=now)
+        # The pulls leg runs first because it refreshes the set of open pull
+        # requests the comments leg filters on, so a comment on a pull
+        # request opened in this very cycle is still matched.
+        pulls = self._pull_requests(changed.get(Endpoint.OPEN_PULLS), now=now)
+        summary = pulls + self._comments(changed, now=now)
         logger.info("cycle seen=%d enqueued=%d", summary.seen, summary.enqueued)
         return summary
 
@@ -196,24 +205,30 @@ class Daemon:
             return EMPTY
         since = self._since(PULL_REQUESTS, now=now)
         classifier = self.config.classifier(since)
-        newest, summary = since, EMPTY
+        newest, summary, open_numbers = since, EMPTY, set()
         for pull in payloads.pull_requests(self.config.github.repo, items):
             newest = max(newest, pull.created_at)
+            open_numbers.add(pull.number)
             summary += self._enqueue(classifier.classify_pull_request(pull), now=now)
+        self.open_pull_requests = frozenset(open_numbers)
         self.store.advance_watermark(PULL_REQUESTS, newest)
         return summary
 
     def _comments(
         self, changed: dict[Endpoint, list[dict]], *, now: datetime
     ) -> CycleSummary:
-        """Classify both changed comment payloads against one watermark."""
+        """Classify both changed comment payloads against one watermark.
+
+        Both endpoints are repo-wide, so what they return is filtered to the
+        open pull requests this sweep saw rather than by the endpoint.
+        """
         batches = [
             changed[endpoint] for endpoint in COMMENT_ENDPOINTS if endpoint in changed
         ]
         if not batches:
             return EMPTY
         since = self._since(COMMENTS, now=now)
-        classifier = self.config.classifier(since)
+        classifier = self.config.classifier(since, self.open_pull_requests)
         newest, summary = since, EMPTY
         for batch in batches:
             for comment in payloads.comments(self.config.github.repo, batch):

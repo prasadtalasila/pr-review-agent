@@ -18,9 +18,11 @@ from .models import Actor, Comment, Decision, PullRequest, Trigger, TriggerKind
 logger = logging.getLogger(__name__)
 
 #: Reasons that fire on essentially every poll: ``not_fresh`` once per
-#: already-open pull request, ``no_mention`` once per comment. They stay at
-#: ``DEBUG`` so the operator-relevant rejections are readable at ``INFO``.
-NOISY_REASONS = frozenset({"not_fresh", "no_mention"})
+#: already-seen item, ``no_mention`` once per comment, ``pr_not_open`` once
+#: per comment on every pull request the repository has ever closed. They
+#: stay at ``DEBUG`` so the operator-relevant rejections are readable at
+#: ``INFO``.
+NOISY_REASONS = frozenset({"not_fresh", "no_mention", "pr_not_open"})
 
 
 @dataclass(frozen=True)
@@ -31,12 +33,21 @@ class Classifier:
     requests rather than ``opened`` webhook events, so without it the first
     poll would treat every already-open pull request as fresh and review the
     whole backlog at once.
+
+    ``open_pull_requests`` is the set of numbers the ``/pulls?state=open``
+    leg of the same sweep reported. The two comment endpoints are repo-wide
+    and carry no state filter of their own, so without it every comment on
+    every pull request the repository has ever closed is classified on every
+    poll. ``None`` means no sweep has reported one yet and the filter is
+    off: failing open costs a few ``DEBUG`` lines, whereas failing closed
+    would silently drop every mention.
     """
 
     allowlist: Allowlist
     since: datetime
     agent_user_id: int | None = None
     handle: str = "claude"
+    open_pull_requests: frozenset[int] | None = None
 
     def __post_init__(self) -> None:
         """Reject a naive watermark.
@@ -58,14 +69,14 @@ class Classifier:
         return decision
 
     def _decide_pull_request(self, pr: PullRequest) -> Decision:
+        if pr.created_at <= self.since:
+            return Decision(None, "not_fresh")
         if self._is_self(pr.author):
             return Decision(None, "self_author")
         if pr.author.is_bot:
             return Decision(None, "bot_author")
         if pr.is_draft:
             return Decision(None, "draft")
-        if pr.created_at <= self.since:
-            return Decision(None, "not_fresh")
         if not self.allowlist.allows(pr.author):
             return Decision(None, "author_not_allowlisted")
         return Decision(
@@ -94,6 +105,11 @@ class Classifier:
         historical mention as a new request. An edit bumps ``updated_at``, so
         editing ``@claude`` into an old comment does summon a review -- which
         is the correct reading of an allowlisted maintainer's intent.
+
+        A mention on a pull request that closed between two cycles is
+        dropped as ``pr_not_open``. That is a behaviour change and not only
+        a quieter log, and it is the intended reading: the agent has nothing
+        useful to say about a closed pull request.
         """
         decision = self._decide_comment(comment)
         self._log(
@@ -102,12 +118,17 @@ class Classifier:
         return decision
 
     def _decide_comment(self, comment: Comment) -> Decision:
+        if comment.updated_at <= self.since:
+            return Decision(None, "not_fresh")
+        if (
+            self.open_pull_requests is not None
+            and comment.pr_number not in self.open_pull_requests
+        ):
+            return Decision(None, "pr_not_open")
         if self._is_self(comment.author):
             return Decision(None, "self_commenter")
         if comment.author.is_bot:
             return Decision(None, "bot_commenter")
-        if comment.updated_at <= self.since:
-            return Decision(None, "not_fresh")
         if not has_mention(comment.body, self.handle):
             return Decision(None, "no_mention")
         if not self.allowlist.allows(comment.author):

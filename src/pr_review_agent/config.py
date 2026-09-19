@@ -643,11 +643,14 @@ class Config:
             raise ConfigError(f"invalid YAML in {str(path)!r}: {exc}") from exc
         return cls.from_mapping(data)
 
-    def classifier(self, since: datetime) -> Classifier:
+    def classifier(
+        self, since: datetime, open_pull_requests: frozenset[int] | None = None
+    ) -> Classifier:
         """Build the classifier this configuration describes."""
         return Classifier(
             allowlist=self.triggers.allowlist,
             since=since,
             agent_user_id=self.github.agent_user_id,
             handle=self.triggers.handle,
+            open_pull_requests=open_pull_requests,
         )
