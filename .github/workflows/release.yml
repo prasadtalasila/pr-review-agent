@@ -3,10 +3,9 @@ name: Release
 # Pushing a version tag is the one action that should actually cut a
 # release: it builds the tagged commit, publishes the GitHub Release with
 # the wheel and sdist attached, and -- for a major or minor tag only --
-# publishes to PyPI. A published GitHub Release still also satisfies
-# python-ci.yml's own `release: published` trigger, which rebuilds and
-# re-attaches independently; that overlap is deliberate belt-and-braces,
-# not something this workflow tries to avoid.
+# publishes to PyPI. python-ci.yml no longer reacts to a published release
+# (it used to rebuild and re-attach independently); this workflow is now
+# the only place that build-and-attach happens.
 
 'on':
   push:
