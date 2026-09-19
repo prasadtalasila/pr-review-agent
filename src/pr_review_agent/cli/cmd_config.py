@@ -59,14 +59,20 @@ def config_group() -> None:
 )
 @click.option("--force", is_flag=True, help="overwrite an existing file")
 def generate(output_path: Path, full: bool, force: bool) -> None:
-    """Write a config template to ./config.yaml."""
+    """Write a config template, to ./config.yaml unless told otherwise."""
     # A config.yaml names real accounts, is gitignored, and will sit beside
     # the agent's credentials. There is no copy of it anywhere, so an
     # accidental second `config generate` must not be how an operator finds
     # that out.
     if output_path.exists() and not force:
         fail(f"{output_path} already exists; pass --force to overwrite it")
-    output_path.write_text(template_text(full=full), encoding="utf-8")
+    try:
+        output_path.write_text(template_text(full=full), encoding="utf-8")
+    except OSError as exc:
+        # The documented destination is /etc/pr-review-agent/config.yaml, so
+        # a missing directory or a root-owned one is the ordinary mistake
+        # here, not an impossible one. A traceback would bury which it was.
+        fail(f"cannot write {output_path}: {exc}")
     click.echo(f"wrote {output_path}")
     click.echo("edit it, then run: pr-review-agent config validate")
 

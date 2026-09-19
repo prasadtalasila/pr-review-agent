@@ -93,11 +93,15 @@ def test_the_command_tree_is_exactly_three_nouns_and_four_verbs():
     }
 
 
-def test_the_nouns_are_listed_in_workflow_order(run):
-    """``--help`` should read as the setup sequence, not alphabetically."""
-    output = run("--help").output
-    positions = [output.index(noun) for noun in ("config", "host", "daemon")]
-    assert positions == sorted(positions)
+def test_the_nouns_are_listed_in_workflow_order():
+    """``--help`` should read as the setup sequence, not alphabetically.
+
+    Asserted on ``list_commands`` rather than on where each noun first
+    appears in the help text: the docstring names all three in the same
+    order, so a text search would pass with the ordering removed.
+    """
+    ctx = cli.make_context("pr-review-agent", [], resilient_parsing=True)
+    assert cli.list_commands(ctx) == ["config", "host", "daemon"]
 
 
 def test_a_bare_invocation_fails_rather_than_printing_help(run):
@@ -145,6 +149,15 @@ def test_force_overwrites(run, tmp_path):
     write_config(tmp_path, "github:\n  repo: mine/own\n")
     assert run("config", "generate", "--force").exit_code == 0
     assert "agent_user_id" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_generate_reports_an_unwritable_destination(run, tmp_path):
+    """`--output /etc/pr-review-agent/config.yaml` before the directory
+    exists is the ordinary mistake, and must not be a traceback."""
+    target = tmp_path / "nonexistent" / "config.yaml"
+    result = run("config", "generate", "--output", str(target))
+    assert result.exit_code == EXIT_STARTUP
+    assert "cannot write" in result.output
 
 
 def test_the_generated_config_loads(run, tmp_path):
