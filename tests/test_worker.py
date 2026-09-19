@@ -30,7 +30,9 @@ from pr_review_agent.engine import (
     EngineTimeout,
     EngineUnavailable,
     FakeEngine,
+    Finding,
     ReviewRequest,
+    Severity,
     UsageLimited,
 )
 from pr_review_agent.engine.models import Outcome, ReviewResult
@@ -458,6 +460,79 @@ async def test_a_reviewed_row_is_done(wired):
     await fixture.worker.run_once()
 
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+
+
+# -- what one round hands the next ---------------------------------------
+
+
+def finding(title="The handle leaks on the error path.", line=1):
+    return Finding(
+        path="feature.py",
+        line=line,
+        severity=Severity.MAJOR,
+        title=title,
+        body="b",
+    )
+
+
+async def _two_rounds(fixture, second_findings):
+    """Drive one completed review, then a second with different findings."""
+    fixture.queue.enqueue(opened(), now=NOW)
+    await fixture.worker.run_once()
+    assert isinstance(fixture.engine, FakeEngine)
+    fixture.engine.findings = second_findings
+    fixture.queue.enqueue(mention(), now=NOW)
+    await fixture.worker.run_once()
+
+
+async def test_the_engine_is_shown_the_previous_rounds_findings(wired):
+    """Round 1 gets nothing; round 2 gets round 1's findings, numbered."""
+    fixture = wired(engine=FakeEngine(findings=(finding(),)))
+    await _two_rounds(fixture, (finding(),))
+
+    engine = fixture.engine
+    assert isinstance(engine, FakeEngine)
+    assert engine.requests[0].prior == ()
+    assert [f.number for f in engine.requests[1].prior] == [1]
+
+
+async def test_a_prior_finding_reaches_the_engine_without_its_body(wired):
+    """The stripping is the control, so it is asserted where it is read."""
+    fixture = wired(engine=FakeEngine(findings=(finding(),)))
+    await _two_rounds(fixture, (finding(),))
+
+    engine = fixture.engine
+    assert isinstance(engine, FakeEngine)
+    (prior,) = engine.requests[1].prior
+    assert prior.title == "The handle leaks on the error path."
+
+
+async def test_recorded_findings_always_carry_a_number(wired):
+    fixture = wired(engine=FakeEngine(findings=(finding(), finding(line=2))))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    recorded = fixture.runs.history(REPO, PR).prior
+    assert [f.number for f in recorded] == [1, 2]
+
+
+async def test_a_number_is_not_reused_after_its_finding_is_fixed(wired):
+    """Round 1's item 1 is gone; the new finding must be 2, never 1."""
+    fixture = wired(engine=FakeEngine(findings=(finding(),)))
+    await _two_rounds(fixture, (finding(title="A different problem entirely."),))
+
+    recorded = fixture.runs.history(REPO, PR).prior
+    assert [f.number for f in recorded] == [2]
+
+
+async def test_a_truncated_run_records_nothing_and_leaves_no_history(wired):
+    fixture = wired(engine=FakeEngine(findings=(), outcome=Outcome.TRUNCATED))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.runs.history(REPO, PR).prior == ()
 
 
 async def test_the_engine_is_handed_the_checkout_and_the_rung(wired, git_remote):

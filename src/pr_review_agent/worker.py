@@ -67,6 +67,7 @@ from .engine import (
     ReviewResult,
     UsageLimited,
 )
+from .numbering import assign
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
 from .poller.pulls import fetch_pull_request_facts
@@ -215,6 +216,10 @@ class ReviewWorker:
                 self.client, self.endpoints, claim.trigger.pr_number
             )
             config = self.governor.config
+            # Read before the engine runs, so the reviewer can be shown what
+            # the last round found. Costs one query on a table the worker
+            # already writes; spends nothing and reaches no engine.
+            history = self.runs.history(claim.trigger.repo, claim.trigger.pr_number)
             async with self.workspace.checkout(
                 facts,
                 max_changed_files=config.max_changed_files,
@@ -241,6 +246,7 @@ class ReviewWorker:
                         facts=facts,
                         trigger=claim.trigger,
                         mode=mode,
+                        prior=history.prior,
                     )
                 )
             usage, finish = result.usage, self._finish_for(result.outcome)
@@ -253,6 +259,13 @@ class ReviewWorker:
                 # settles at *exact* zero -- all three fit a rate lower than
                 # the truth, which is the direction that under-refuses.
                 reviewed_lines = handed_over
+                # Numbered here rather than at render time so the numbers are
+                # durable: the high-water mark is read back out of this
+                # column, and a finding recorded without one would let a
+                # retired number come back on something else.
+                result = replace(
+                    result, findings=assign(result.findings, history.high_water)
+                )
                 # Recorded before the settle so the content outlives any
                 # failure after it. Only a completed run has publishable
                 # findings -- the seam enforces that -- so only one is kept.
