@@ -1,0 +1,194 @@
+name: Release
+
+# Pushing a version tag is the one action that should actually cut a
+# release: it builds the tagged commit, publishes the GitHub Release with
+# the wheel and sdist attached, and -- for a major or minor tag only --
+# publishes to PyPI. A published GitHub Release still also satisfies
+# python-ci.yml's own `release: published` trigger, which rebuilds and
+# re-attaches independently; that overlap is deliberate belt-and-braces,
+# not something this workflow tries to avoid.
+
+'on':
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Only this job writes, and only to publish the GitHub Release.
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Bootstrap Poetry into the project venv
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install poetry
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm Poetry comes from the venv, not the system
+        run: |
+          resolved=$(command -v poetry)
+          case "$resolved" in
+            "$PWD/.venv"/*) ;;
+            *) echo "::error::poetry resolved to $resolved, not the project venv"; exit 1 ;;
+          esac
+          poetry --version
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      # Catches the plausible mistake of tagging a release before bumping
+      # pyproject.toml's version (or vice versa) before spending any time
+      # building -- a mismatch here would otherwise ship a release whose
+      # tag lies about the version inside it.
+      - name: Verify tag matches pyproject.toml version
+        run: |
+          version=$(poetry version --short)
+          case "$GITHUB_REF_NAME" in
+            "v$version") ;;
+            *)
+              echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $version"
+              exit 1
+              ;;
+          esac
+
+      - name: Run tests
+        run: poetry run pytest -q
+
+      - name: Verify the lock file matches pyproject.toml
+        run: poetry check --lock
+
+      - name: Build wheel and sdist
+        run: poetry build
+
+      - name: Reject direct-URL dependencies in built metadata
+        run: |
+          set -o pipefail
+
+          wheel_metadata=$(unzip -p dist/*.whl '*.dist-info/METADATA')
+          if [ -z "$wheel_metadata" ]; then
+            echo "::error::Failed to extract wheel METADATA (empty output)."
+            exit 1
+          fi
+          if echo "$wheel_metadata" | grep -E '^Requires-Dist:.*@ (file|git\+|https?)://'; then
+            echo "::error::Built wheel has a direct-URL dependency (shown above)."
+            exit 1
+          fi
+
+          sdist_metadata=$(tar -xOzf dist/*.tar.gz --wildcards '*/PKG-INFO')
+          if [ -z "$sdist_metadata" ]; then
+            echo "::error::Failed to extract sdist PKG-INFO (empty output)."
+            exit 1
+          fi
+          if echo "$sdist_metadata" | grep -E '^Requires-Dist:.*@ (file|git\+|https?)://'; then
+            echo "::error::Built sdist has a direct-URL dependency (shown above)."
+            exit 1
+          fi
+
+          echo "OK: no direct-URL dependencies in wheel or sdist metadata."
+
+      # Same walk python-ci.yml's build job does: a wheel can import
+      # cleanly while shipping no command, or ship the command while
+      # missing the config templates the quickstart tells the operator to
+      # copy. Neither is visible to the unit suite, which reads the
+      # source tree, not an installed artefact -- and this is the wheel a
+      # release is about to ship under a version tag that cannot be
+      # reused if it turns out to be broken.
+      - name: Install the wheel and walk the documented first run
+        run: |
+          set -o pipefail
+
+          python -m venv /tmp/wheel-check
+          /tmp/wheel-check/bin/pip install --quiet dist/*.whl
+          /tmp/wheel-check/bin/pr-review-agent --help
+
+          mkdir -p /tmp/wheel-run
+          cd /tmp/wheel-run
+          /tmp/wheel-check/bin/pr-review-agent config generate
+          /tmp/wheel-check/bin/pr-review-agent config validate
+          /tmp/wheel-check/bin/pr-review-agent config generate --full --force
+          /tmp/wheel-check/bin/pr-review-agent config validate
+
+          echo "OK: the installed wheel generates and validates a config."
+
+      # No API token: Trusted Publishing (below) exchanges GitHub's OIDC
+      # token for a short-lived PyPI one, so nothing here needs a
+      # long-lived credential.
+      - name: Publish GitHub Release
+        # v2.6.2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          generate_release_notes: true
+
+      # Handed to publish-pypi rather than rebuilt there, so what reaches
+      # PyPI is byte-identical to what is attached to the release. Two
+      # `poetry build` runs are not guaranteed to agree.
+      - name: Keep the built distributions for the publish job
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Separate job, and separate permissions: Trusted Publishing needs an
+  # OIDC token; the release job needs to write the GitHub Release.
+  # Neither needs the other's, so splitting them keeps the OIDC token off
+  # every step that has no business holding one.
+  #
+  # `needs: release` orders this after the GitHub Release is published,
+  # deliberately: a PyPI failure then leaves a complete, downloadable
+  # release behind rather than a tag with no artefacts.
+  #
+  # Only a major or minor tag publishes here (`vX.Y.0`). PyPI never
+  # accepts a re-upload of a version number, not even a deleted or
+  # yanked one, so every patch release would otherwise permanently spend
+  # a slot on the index for a change a PyPI install doesn't need to see
+  # immediately. A patch tag still gets a GitHub Release with the wheel
+  # and sdist attached -- the `release` job above runs unconditionally --
+  # it just does not also reach PyPI; `pip install pr-review-agent`
+  # always resolves to the latest `X.Y.0` either way.
+  publish-pypi:
+    needs: release
+    if: endsWith(github.ref_name, '.0')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi
+    permissions:
+      id-token: write # the OIDC token Trusted Publishing exchanges
+
+    steps:
+      - name: Fetch the distributions the release job built
+        # v7.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI (Trusted Publishing)
+        # v1.13.0
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e
