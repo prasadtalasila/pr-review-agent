@@ -8,6 +8,53 @@ arranged that way, start at [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md);
 [CLAUDE.md](CLAUDE.md) holds the behavioural rules that govern how a change is
 made, and [AGENTS.md](AGENTS.md) the coding conventions.
 
+## 🗂 Package layout
+
+```text
+src/pr_review_agent/
+├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
+├── _startup.py        # token + config, shared by both entry points
+├── bootstrap.py       # pre-flight egress checks for a new host
+├── budget.py          # rolling windows, the ladder, reserve-then-settle
+├── config.py          # config.yaml → frozen dataclasses
+├── daemon.py          # the poll-classify-enqueue loop, and its entry point
+├── queue.py           # claim protocol and per-pull-request leases
+├── worker.py          # claim → review → settle → close the row
+├── store.py           # SQLite: schema, watermarks, ETags, queue table
+├── triggers/
+│   ├── models.py      # payload-shaped dataclasses; PayloadError
+│   ├── allowlist.py   # numeric-user-id membership
+│   ├── mention.py     # @claude in *prose* only
+│   └── classifier.py  # PullRequest | Comment → Decision
+├── poller/
+│   ├── endpoints.py   # the three repo-wide request paths, and /pulls/{n}
+│   ├── client.py      # async conditional GET, rate-limit handling
+│   ├── etag_store.py  # the ETagCache protocol + in-memory cache
+│   ├── interval.py    # adaptive poll delay
+│   ├── payloads.py    # raw GitHub dicts → trigger models
+│   ├── pulls.py       # one pull request → PullRequestFacts
+│   └── poller.py      # one sweep across all three endpoints
+├── workspace/
+│   ├── gitcmd.py      # the one hardened `git` invocation
+│   └── repo.py        # bare mirror, per-run worktree, diff, teardown
+└── engine/
+    ├── models.py      # ReviewEngine protocol, Capabilities, request/result
+    └── fake.py         # an engine that spends nothing, for tests
+```
+
+## 🐍 The Python 3.10 shim
+
+Supporting Python 3.10 costs exactly one shim, in `_compat.py`: `enum.StrEnum`
+arrived in 3.11. The replacement is *not* the obvious `class StrEnum(str, Enum)`
+— on 3.10 that inherits `Enum.__str__`, so `str(member)` yields
+`"Endpoint.OPEN_PULLS"` instead of `"open_pulls"`, and any interpolated log
+line or persisted dict key would change meaning with the interpreter version.
+`_compat.py` delegates `__str__` and `__format__` to `str` to restore the 3.11
+behaviour, and `tests/test_compat.py` pins that parity.
+
+Those assertions are the reason the CI matrix includes 3.10: it is the only job
+where the shim is imported at all.
+
 ## 📦 Dependencies
 
 The agent supports **Python 3.10 through 3.14** and uses:

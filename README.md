@@ -5,55 +5,39 @@
 be summoned by a stranger.</b>
 </p>
 
-- [What it is](#-what-it-is)
-- [Quickstart](#-quickstart)
-- [Documentation](#-documentation)
-
-## ✍ What it is
-
 A single Python asyncio daemon with a SQLite store, running on a private host.
 It polls on pull requests of a GitHub repository for exactly two events:
 
 1. a freshly opened pull request whose author is pre-approved;
 2. a comment containing `@claude` whose commenter is pre-approved.
 
-No pull request leaves our infrastructure, and the publisher takes no approval
-or merge action regardless of what a review concludes — a machine's judgement
-can never block a merge. [docs/DESIGN.md](docs/DESIGN.md) has the constraints
-that shaped this design and every alternative that was turned down;
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the components that
-implement it.
+and performs code review using Claude CLI and posts review comments on the pull request.
 
 ## 🚀 Quickstart
 
-Python **3.10 – 3.14**, via [Poetry](https://python-poetry.org/docs/) —
-see [DEVELOPER.md](DEVELOPER.md) for the full setup, including why Poetry
-must live inside the project venv.
+_Requires_: Python **3.10 – 3.14** and python virtualenv.
+Download [latest release](https://github.com/prasadtalasila/pr-review-agent/releases). 
 
 ```bash
-git clone https://github.com/prasadtalasila/pr-review-agent
-cd pr-review-agent
-
 python -m venv .venv
-.venv/bin/python -m pip install --upgrade pip poetry
-export PATH="$PWD/.venv/bin:$PATH"
+source .venv/bin/activate
+
+pip install --upgrade pip poetry
 poetry install
 
-cp config.minimal.example.yaml config.yaml   # then edit: repo, agent_user_id,
-                                             # allowlist, budget
+cp config.minimal.example.yaml config.yaml
+# update config
+# see full config in config.example.yaml
 
-GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
+# get GitHub PAT with read and write permissions on pull requests
+GITHUB_TOKEN=xxxx poetry run python -m pr_review_agent.daemon
 ```
-
-`config.yaml` is gitignored — it names real accounts and will later sit beside
-the agent's credentials. [docs/CONFIG.md](docs/CONFIG.md) documents every key,
-and [DEVELOPER.md](DEVELOPER.md#-bootstrap-checks) covers the bootstrap check
-worth running before a first deploy on a new host.
 
 ## 🗂 Documentation
 
 | Document | Answers |
 | :-- | :-- |
+| [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
 | [docs/DESIGN.md](docs/DESIGN.md) | Why does this exist and why is it shaped like this? The four constraints, every alternative considered and rejected, the billing-mode question that is still open, and how prompt injection is handled |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | What actually runs? The components, the path an event takes, the package layout, and which layer may import which |
 | [docs/TRIGGERS.md](docs/TRIGGERS.md) | What starts a review and what does not? Every reason code and its log level, what counts as a mention, the dedupe keys, and why identity is a number |
@@ -66,12 +50,7 @@ worth running before a first deploy on a new host.
 | [docs/WORKER.md](docs/WORKER.md) | What drains the queue? The claim-run-settle loop, what a failed run settles at and why, which failures retry and which are permanent, what a run leaves behind, the supervisor, and why not a process per review |
 | [docs/PUBLISHER.md](docs/PUBLISHER.md) | How does a review become visible, and what stops the agent approving anything? The 👀 at claim time, the live `head_sha` re-check, one comment per pull request, `publish.dry_run`, and why a failed publish never costs a second review |
 | [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
-| [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |
 | [DEVELOPER.md](DEVELOPER.md) | How do I set up, test, lint and build this? |
 | [CLAUDE.md](CLAUDE.md) | The behavioural guidelines applied to every change |
 | [AGENTS.md](AGENTS.md) | The coding-assistant conventions |
-
-## 📄 Licence
-
-MIT. See [LICENSE](LICENSE).
