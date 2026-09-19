@@ -73,9 +73,47 @@ is not lost — it lives in `runs` and the ledger, where it can be queried and
 purged.
 
 The body names the commit it describes, because an edited comment otherwise
-says nothing about which revision it is about. Findings render in a pinned
-severity-then-location order, so a re-review that finds the same things
-produces a byte-identical body and the edit is a no-op.
+says nothing about which revision it is about. It also names the round and
+the commit count — "round 3" and "round 1" are different statements, and a
+reader returning to an edited comment cannot otherwise tell which one they
+are looking at. The commit count comes off the live pull request payload the
+publisher already reads to decide whether the head moved, so it costs no
+extra round trip and no database column.
+
+Findings render in a pinned section-then-number-then-location order, so a
+re-review that finds the same things produces the same body below the header
+and the edit is a no-op.
+
+### The rendered report
+
+[`reporting/review-report.md`](reporting/review-report.md) is the contract;
+this is the summary.
+
+Findings are grouped under three headings and numbered across the whole
+report:
+
+| `Severity` | heading |
+| ---------- | ------- |
+| `blocker` | Blocking |
+| `major`, `minor` | Should fix |
+| `nit` | Nits |
+
+`Severity` itself is **unchanged**. It is persisted in the `runs` table and
+asserted across the suite, so it is not collapsed to three values — but a
+`major` finding that is not a blocker must not print under a heading claiming
+it blocks, which is why the two middle levels share one.
+
+Numbers are stable for the life of the pull request. A finding carried over
+from an earlier round keeps its number; a finding that gets fixed leaves its
+number vacant, and the gaps are never closed. `1, 3, 5` says two earlier
+items were dealt with without spending a word on it, and renumbering would
+silently relabel items a reader had already referred to. See
+[WORKER.md](WORKER.md) for where the numbers are assigned.
+
+Nits render as prose rather than numbered entries: a nit that deserves its
+own entry is not a nit. A finding carries no `path:line` anchor — the paths
+that matter are the ones the reviewer names in its own prose, and the
+location stays on the stored `Finding` for a future line-anchored comment.
 
 ## 🛡 The publisher cannot approve anything
 

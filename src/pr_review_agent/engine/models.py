@@ -58,15 +58,27 @@ class Outcome(StrEnum):
 class Finding:
     """One line-anchored remark, in the shape a review comment needs.
 
-    Deliberately four fields. The publisher does not exist yet, and the
-    rationale, code excerpt and retention machinery ``docs/DESIGN.md``
-    sketches would be designing its data model before it has one.
+    ``title`` is the one-sentence headline the report renders in bold, and it
+    states the consequence rather than the mechanism -- it is read first and
+    often instead of the body. The remedy is the last paragraph of ``body``
+    rather than a field of its own: ``FINDINGS_SCHEMA`` is kept small on
+    purpose, because every required field is another way for a run to end in
+    a validation failure that spent tokens and produced nothing.
+
+    ``number`` is this finding's identity across review rounds, and it is the
+    one field the engine may leave unset. A finding carried over from an
+    earlier round keeps the number it was given; a new one is assigned the
+    next free number by ``numbering.assign`` before it is recorded. Numbers
+    are never reused and gaps are never closed, because a gap is what says an
+    earlier item was fixed.
     """
 
     path: str
     line: int
     severity: Severity
+    title: str
     body: str
+    number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -105,12 +117,18 @@ class ReviewRequest:
     ``mode`` is the rung of the degradation ladder the run was admitted
     under, which is what lets an engine spend less when the budget is tight
     rather than refuse outright.
+
+    ``prior`` is what the last completed round on this pull request found,
+    and it is how a re-review can say "still" truthfully. It arrives already
+    stripped of finding bodies -- see ``prompt._prior`` for why that is a
+    control rather than an economy.
     """
 
     checkout: Checkout
     facts: PullRequestFacts
     trigger: Trigger
     mode: Mode
+    prior: tuple[Finding, ...] = ()
 
 
 @dataclass(frozen=True)
