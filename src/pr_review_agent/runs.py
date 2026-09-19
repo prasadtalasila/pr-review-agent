@@ -97,6 +97,27 @@ LIMIT 1
 """
 
 
+# Every completed, unpurged round for this pull request, newest first. One
+# query answers both cross-round questions: the first row is what the last
+# round found, and the largest number across all rows is what has been
+# issued. A purged row is excluded because its findings were deleted, not
+# resolved -- reusing its numbers would relabel items a reader referred to.
+_HISTORY = """
+SELECT findings FROM runs
+WHERE repo = :repo AND pr_number = :pr
+  AND outcome = 'completed' AND content_purged_at IS NULL
+ORDER BY recorded_at DESC, rowid DESC
+"""
+
+# Oldest first, so the position of a key in this list is its round number.
+_ROUNDS = """
+SELECT dedupe_key FROM runs
+WHERE repo = :repo AND pr_number = :pr
+  AND outcome = 'completed' AND content_purged_at IS NULL
+ORDER BY recorded_at, rowid
+"""
+
+
 @dataclass(frozen=True)
 class RecordedRun:
     """One completed review, as it was stored."""
@@ -108,6 +129,20 @@ class RecordedRun:
     outcome: Outcome
     findings: tuple[Finding, ...]
     comment_id: int | None
+
+
+@dataclass(frozen=True)
+class PullRequestHistory:
+    """What earlier rounds on one pull request left behind.
+
+    ``prior`` is the last *completed* round's findings, which is what the
+    reviewer is shown so it can say "still" truthfully. ``high_water`` is the
+    largest number ever issued here, including on findings that have since
+    been fixed -- a retired number must never come back on something else.
+    """
+
+    prior: tuple[Finding, ...]
+    high_water: int
 
 
 class RunStore:
@@ -177,6 +212,32 @@ class RunStore:
         with self._store.transaction() as conn:
             row = conn.execute(_UNPUBLISHED, {"repo": repo, "pr": pr_number}).fetchone()
         return None if row is None else _run(row)
+
+    def history(self, repo: str, pr_number: int) -> PullRequestHistory:
+        """What earlier completed rounds on this pull request produced."""
+        with self._store.transaction() as conn:
+            rows = conn.execute(_HISTORY, {"repo": repo, "pr": pr_number}).fetchall()
+        rounds = [_load(row[0]) for row in rows]
+        numbers = [f.number for round_ in rounds for f in round_ if f.number]
+        return PullRequestHistory(
+            prior=rounds[0] if rounds else (),
+            high_water=max(numbers, default=0),
+        )
+
+    def round_of(self, repo: str, pr_number: int, dedupe_key: str) -> int:
+        """Which round this run is, counting only reviews that produced one.
+
+        A truncated or failed run posted nothing, so calling it a round would
+        make the number a reader sees disagree with the comments they can
+        actually find. An unrecorded key reads as round 1 rather than
+        raising: this decides a header, and no header is worth failing a
+        publish over.
+        """
+        with self._store.transaction() as conn:
+            keys = [
+                row[0] for row in conn.execute(_ROUNDS, {"repo": repo, "pr": pr_number})
+            ]
+        return keys.index(dedupe_key) + 1 if dedupe_key in keys else 1
 
     def mark_published(
         self, dedupe_key: str, *, comment_id: int | None, now: datetime

@@ -45,7 +45,7 @@ def assign(findings: tuple[Finding, ...], high_water: int) -> tuple[Finding, ...
             kept.append(None)
     nxt = high_water + 1
     numbered: list[Finding] = []
-    for finding, number in zip(findings, kept):
+    for finding, number in zip(findings, kept, strict=True):
         if number is None:
             number, nxt = nxt, nxt + 1
         numbered.append(replace(finding, number=number))

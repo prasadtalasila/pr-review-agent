@@ -33,6 +33,17 @@ FINDINGS = (
 )
 
 
+def numbered_finding(number, body="b", severity=Severity.MAJOR):
+    return Finding(
+        path="src/a.py",
+        line=12,
+        severity=severity,
+        title="The handle leaks on the error path.",
+        body=body,
+        number=number,
+    )
+
+
 def trigger(pr=7, key="pr_opened:o/r:7:deadbeef"):
     return Trigger(
         kind=TriggerKind.PR_OPENED,
@@ -214,3 +225,89 @@ def test_a_finding_stored_before_titles_existed_still_loads(runs):
             number=None,
         ),
     )
+
+
+# -- cross-round history --
+
+
+def test_a_first_review_has_no_history(runs):
+    history = runs.history(REPO, 7)
+    assert history.prior == ()
+    assert history.high_water == 0
+
+
+def test_history_returns_the_newest_completed_rounds_findings(runs):
+    first = (numbered_finding(number=1, body="round one"),)
+    second = (numbered_finding(number=1, body="round two"),)
+    runs.record(trigger(key="k1"), head_sha=HEAD, result=result(first), now=NOON)
+    runs.record(trigger(key="k2"), head_sha=HEAD, result=result(second), now=LATER)
+    assert runs.history(REPO, 7).prior == second
+
+
+def test_the_high_water_mark_is_the_largest_number_ever_issued(runs):
+    """Item 4 was fixed in round 2; its number must still not be reused."""
+    runs.record(
+        trigger(key="k1"),
+        head_sha=HEAD,
+        result=result((numbered_finding(number=4),)),
+        now=NOON,
+    )
+    runs.record(
+        trigger(key="k2"),
+        head_sha=HEAD,
+        result=result((numbered_finding(number=1),)),
+        now=LATER,
+    )
+    assert runs.history(REPO, 7).high_water == 4
+
+
+def test_a_truncated_round_contributes_no_prior_findings(runs):
+    runs.record(trigger(key="k1"), head_sha=HEAD, result=result(), now=NOON)
+    runs.record(
+        trigger(key="k2"),
+        head_sha=HEAD,
+        result=result((), outcome=Outcome.TRUNCATED),
+        now=LATER,
+    )
+    assert runs.history(REPO, 7).prior == FINDINGS
+
+
+def test_a_purged_pull_request_has_no_history(runs):
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    runs.purge_content(REPO, 7, now=LATER)
+    history = runs.history(REPO, 7)
+    assert history.prior == ()
+    assert history.high_water == 0
+
+
+def test_another_pull_requests_history_is_not_borrowed(runs):
+    runs.record(trigger(pr=8, key="k8"), head_sha=HEAD, result=result(), now=NOON)
+    assert runs.history(REPO, 7).prior == ()
+
+
+def test_the_first_completed_run_is_round_one(runs):
+    runs.record(trigger(key="k1"), head_sha=HEAD, result=result(), now=NOON)
+    assert runs.round_of(REPO, 7, "k1") == 1
+
+
+def test_each_completed_run_is_the_next_round(runs):
+    runs.record(trigger(key="k1"), head_sha=HEAD, result=result(), now=NOON)
+    runs.record(trigger(key="k2"), head_sha=HEAD, result=result(), now=LATER)
+    assert runs.round_of(REPO, 7, "k1") == 1
+    assert runs.round_of(REPO, 7, "k2") == 2
+
+
+def test_a_truncated_run_is_not_a_round(runs):
+    """A round is a review that produced a comment, not an attempt."""
+    runs.record(
+        trigger(key="k1"),
+        head_sha=HEAD,
+        result=result((), outcome=Outcome.TRUNCATED),
+        now=NOON,
+    )
+    runs.record(trigger(key="k2"), head_sha=HEAD, result=result(), now=LATER)
+    assert runs.round_of(REPO, 7, "k2") == 1
+
+
+def test_an_unknown_run_reads_as_round_one(runs):
+    assert runs.round_of(REPO, 7, "never-recorded") == 1
