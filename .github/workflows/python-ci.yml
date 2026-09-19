@@ -190,6 +190,20 @@ jobs:
 
           echo "OK: no direct-URL dependencies in wheel or sdist metadata."
 
+      # The wheel imported cleanly for twelve releases while shipping no
+      # command at all, because `[project.scripts]` was absent and nothing
+      # the unit suite can reach knows whether a console script exists. This
+      # installs the artefact the way an operator does and runs it.
+      - name: Install the wheel and run the command it ships
+        run: |
+          set -o pipefail
+
+          python -m venv /tmp/wheel-check
+          /tmp/wheel-check/bin/pip install --quiet dist/*.whl
+          /tmp/wheel-check/bin/pr-review-agent --help
+
+          echo "OK: the installed wheel provides a working pr-review-agent."
+
       - name: Name the artefact after the version it contains
         id: dist
         run: |

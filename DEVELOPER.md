@@ -215,7 +215,10 @@ poetry build            # produces dist/*.whl and dist/*.tar.gz
 
 CI additionally rejects any direct-URL (`file://`, `git+`, `https://`)
 dependency that leaked into the built metadata, since such a package cannot be
-installed from an index.
+installed from an index. It then installs the wheel into a throwaway venv and
+runs `pr-review-agent --help`, because a wheel can import perfectly while
+shipping no command — which is exactly what `[project.scripts]` being absent
+did for twelve releases, and what no unit test can see.
 
 ## 🤖 Continuous integration
 
@@ -228,8 +231,9 @@ bootstraps Poetry into `.venv` exactly as the Setup section does.
   per-OS difference is far likelier than a per-version one.
 - `quality` runs formatting, ruff, pylint, pyright and coverage once, on
   Ubuntu and 3.12, since none of those results vary by platform.
-- `build` verifies the lock file, builds the wheel and sdist, and rejects
-  direct-URL dependencies in the built metadata.
+- `build` verifies the lock file, builds the wheel and sdist, rejects
+  direct-URL dependencies in the built metadata, and installs the wheel to
+  check the command it ships actually runs.
 
 Everything CI runs can be run locally with the same `poetry run ...` command,
 which is deliberate: a CI failure should always be reproducible on a laptop.
