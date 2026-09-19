@@ -3,17 +3,27 @@
 One file, `config.yaml`, next to the daemon. `config.yaml` is gitignored: it
 names real accounts and will later sit beside the agent's credentials.
 
-Two examples ship with the repository, and both are parsed by the test suite
-so neither can drift out of step with the loader:
+Two templates ship *inside the installed package*, and `config generate`
+writes one out. Both are parsed by the test suite, so neither can drift out
+of step with the loader:
 
-| File | What it is |
-| :-- | :-- |
-| [`config.minimal.example.yaml`](https://github.com/prasadtalasila/pr-review-agent/blob/main/config.minimal.example.yaml) | The smallest file that loads — every required key and nothing else. Start here. |
-| [`config.example.yaml`](https://github.com/prasadtalasila/pr-review-agent/blob/main/config.example.yaml) | Every key the loader accepts, with the reasoning behind each. Values shown for optional keys are the defaults. |
+| Template | What it is | Written by |
+| :-- | :-- | :-- |
+| [`config.minimal.example.yaml`](https://github.com/prasadtalasila/pr-review-agent/blob/main/config.minimal.example.yaml) | The smallest file that loads — every required key and nothing else. Start here. | `config generate` |
+| [`config.example.yaml`](https://github.com/prasadtalasila/pr-review-agent/blob/main/config.example.yaml) | Every key the loader accepts, with the reasoning behind each. Values shown for optional keys are the defaults. | `config generate --full` |
 
 ```bash
-cp config.minimal.example.yaml config.yaml
+pr-review-agent config generate          # writes ./config.yaml
+pr-review-agent config validate          # loads it and reports what it found
 ```
+
+`config generate` refuses to overwrite an existing file unless `--force` is
+given: a `config.yaml` names real accounts, is gitignored, and has no copy
+anywhere. `config validate` needs no `GITHUB_TOKEN` — it answers a question
+about a file.
+
+The two copies at the repository root are the same bytes, kept for anyone
+working from a clone; a test asserts they match the packaged ones.
 
 ## 🧾 The rule the loader follows
 

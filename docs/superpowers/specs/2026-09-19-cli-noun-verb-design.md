@@ -223,6 +223,7 @@ source tree, where the templates have always been present.
 ## Files
 
 New: `src/pr_review_agent/cli/__init__.py` (root group and `main`),
+`cli/_common.py` (the shared `--config` option and the exit-3 path),
 `cli/cmd_config.py`, `cli/cmd_host.py`, `cli/cmd_daemon.py`;
 `src/pr_review_agent/templates/config.example.yaml` and
 `config.minimal.example.yaml`; `tests/test_cli.py`.

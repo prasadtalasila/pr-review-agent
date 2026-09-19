@@ -58,6 +58,12 @@ fixtures, needing no network and spending no tokens:
   the worker is its single caller. See [ENGINE.md](ENGINE.md).
 - `worker.py` is where `queue`, `budget`, `workspace`, `engine` and
   `poller/pulls.py` meet, and nothing imports it but `daemon.py`.
+- `cli/` is the outermost layer and the only one nothing imports. It parses
+  arguments, chooses an exit code, and calls `daemon.run` or
+  `bootstrap.run_checks`; it holds no behaviour of its own, so the modules
+  under it stay runnable and testable without it. Only `cli/cmd_daemon.py`
+  reaches the module that constructs a review engine, which is what makes
+  "no verb but `daemon start` can spend" checkable rather than a claim.
 
 The same rule is why `PullRequestFacts` is defined in `workspace/` and mapped
 in `poller/`: the module that issues the request depends on the module that

@@ -1,6 +1,6 @@
 [project]
 name = "pr-review-agent"
-version = "0.13.2"
+version = "0.14.0"
 description = "Locally-hosted LLM-based PR review agent with enforced usage budgets"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -17,6 +17,7 @@ classifiers = [
 dependencies = [
     "PyYAML>=6.0",
     "httpx>=0.27",
+    "click>=8.1,<9",
 ]
 
 [project.urls]
@@ -25,9 +26,9 @@ Repository = "https://github.com/prasadtalasila/pr-review-agent"
 # Without this the wheel ships the package and no command: `pip install` puts
 # `pr_review_agent` on the path and nothing in `bin/`, so an operator who
 # installed the released artefact had `python -m pr_review_agent.daemon` and
-# no `pr-review-agent`. The module stays runnable either way.
+# no `pr-review-agent`.
 [project.scripts]
-pr-review-agent = "pr_review_agent.daemon:main"
+pr-review-agent = "pr_review_agent.cli:main"
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]
@@ -35,6 +36,14 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 packages = [{ include = "pr_review_agent", from = "src" }]
+# The config templates are data, not code, so nothing would pull them into the
+# distribution on its own -- and for thirteen releases nothing did, leaving a
+# quickstart that told the operator to copy a file the wheel had never
+# contained. `config generate` reads them from here.
+include = [
+    { path = "src/pr_review_agent/templates/*.yaml", format = "sdist" },
+    { path = "src/pr_review_agent/templates/*.yaml", format = "wheel" },
+]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"

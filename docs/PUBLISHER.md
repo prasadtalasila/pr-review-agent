@@ -201,7 +201,7 @@ mean deciding it against rows already written the wrong way.
 
 The GitHub token needs **write** scope. `DESIGN.md` recorded that read-only
 sufficed for polling and that write scope was only needed once the publisher
-existed; it exists. `python -m pr_review_agent.bootstrap` checks it, because
+existed; it exists. `pr-review-agent host check` checks it, because
 the failure mode otherwise is a review that is polled for, claimed, paid for
 and computed, and then 403s on the last call.
 

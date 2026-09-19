@@ -13,11 +13,18 @@ made, and [AGENTS.md](AGENTS.md) the coding conventions.
 ```text
 src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
-├── _startup.py        # token + config, shared by both entry points
+├── _startup.py        # token and config, each loadable on its own
 ├── bootstrap.py       # pre-flight egress checks for a new host
 ├── budget.py          # rolling windows, the ladder, reserve-then-settle
 ├── config.py          # config.yaml → frozen dataclasses
-├── daemon.py          # the poll-classify-enqueue loop, and its entry point
+├── daemon.py          # the poll-classify-enqueue loop
+├── cli/
+│   ├── __init__.py    # the root group, the nouns, the exit codes
+│   ├── _common.py     # the shared --config option and startup handling
+│   ├── cmd_config.py  # config generate | validate
+│   ├── cmd_host.py    # host check
+│   └── cmd_daemon.py  # daemon start
+├── templates/         # the two config templates the wheel ships
 ├── queue.py           # claim protocol and per-pull-request leases
 ├── worker.py          # claim → review → settle → close the row
 ├── store.py           # SQLite: schema, watermarks, ETags, queue table
@@ -64,6 +71,12 @@ The agent supports **Python 3.10 through 3.14** and uses:
 - [httpx](https://www.python-httpx.org/) — the async HTTP client used by the
   poller for conditional (`If-None-Match`) GETs against the GitHub REST API.
   Its `MockTransport` is what lets the poller tests run with no network.
+- [Click](https://click.palletsprojects.com/) — the `pr-review-agent <noun>
+  <verb>` command tree. Chosen over `argparse`, which the two entry points
+  used before 0.14, for consistency with the
+  [DTaaS CLI](https://github.com/INTO-CPS-Association/DTaaS/tree/feature/distributed-demo/cli):
+  same association, same language, same grammar, and a reviewer moving
+  between the two should not meet two idioms for it.
 - [Poetry](https://python-poetry.org/docs/) — manages dependencies and builds
   the package. The configuration is _pyproject.toml_; new dependencies are
   added there and locked into _poetry.lock_.
@@ -141,11 +154,18 @@ environment in `.venv/` inside the repository, so editors and CI find the same
 interpreter. Prefix commands with `poetry run`, or open a subshell with
 `poetry env activate`.
 
-Copy `config.minimal.example.yaml` to `config.yaml` before running the
-daemon — it carries the required keys and nothing else.
-`config.example.yaml` is the comprehensive one: every key the loader
-accepts, with the reasoning behind each and the defaults shown. Both are
-parsed by the test suite, so neither can drift from the loader.
+Run `poetry run pr-review-agent config generate` before running the daemon,
+or copy `config.minimal.example.yaml` to `config.yaml` by hand — from a
+clone the two are the same bytes. `config.example.yaml` is the
+comprehensive one (`config generate --full`): every key the loader accepts,
+with the reasoning behind each and the defaults shown.
+
+Each template exists twice: at the repository root, which is what a clone
+and the documentation's links use, and under
+`src/pr_review_agent/templates/`, which is what the wheel ships and what
+`config generate` reads. `tests/test_cli.py` asserts the two copies are
+byte-identical, and `tests/test_config.py` parses the root ones against the
+loader, so neither copy can drift.
 
 `config.yaml` is gitignored: it names real accounts and will later sit beside
 the agent's credentials. Every key is documented in
@@ -173,19 +193,47 @@ before claiming a change is done.
 Async tests need no decorator — `asyncio_mode = "auto"` means an
 `async def test_*` is collected and run on a fresh event loop.
 
-## 🚦 Bootstrap checks
+## 🖥 The command line
+
+Every command follows one grammar, `pr-review-agent <noun> <verb>`, with the
+nouns listed in the order an operator meets them:
+
+```text
+pr-review-agent config generate [--output PATH] [--full] [--force]
+pr-review-agent config validate [--config PATH]
+pr-review-agent host   check    [--config PATH]
+pr-review-agent daemon start    [--config PATH]
+```
+
+| Exit | Meaning |
+| :-- | :-- |
+| `0` | success |
+| `1` | a `host check` check failed |
+| `2` | usage error, including a bare `pr-review-agent` |
+| `3` | unusable config, missing token, or a refusal to overwrite a file |
+
+`3` is not `2` because Click owns `2` for usage errors; merging them would
+make a mistyped command indistinguishable from a missing credential. A bare
+`pr-review-agent` started the daemon before 0.14 and now exits `2` rather
+than printing help and exiting `0` — a zero exit would turn an unmigrated
+systemd unit into a restart loop that reports success on every pass.
+
+`python -m pr_review_agent.daemon` and `python -m pr_review_agent.bootstrap`
+were the pre-0.14 spellings and no longer work.
+
+## 🚦 Host checks
 
 Before the daemon runs on a host for the first time, confirm the host can
 reach what it needs:
 
 ```bash
-GITHUB_TOKEN=... poetry run python -m pr_review_agent.bootstrap
+GITHUB_TOKEN=... poetry run pr-review-agent host check
 ```
 
 It fetches the three watched endpoints with the same client the poller uses,
 re-fetches one conditionally and insists on a `304`, and checks the route to
 `api.anthropic.com`. Exit status is `0` when every check passes, `1` when one
-fails and `2` when the token or the config file is missing.
+fails and `3` when the token or the config file is missing.
 
 The conditional check is the one worth running even where egress obviously
 works: the whole rate-limit budget rests on conditional requests being free,
@@ -198,7 +246,7 @@ printed. `--config` points at a config file other than `./config.yaml`.
 ## 🔄 Running the daemon
 
 ```bash
-GITHUB_TOKEN=... poetry run python -m pr_review_agent.daemon
+GITHUB_TOKEN=... poetry run pr-review-agent daemon start
 ```
 
 It polls on the adaptive interval, classifies what changed, and enqueues what
@@ -207,8 +255,8 @@ cannot spend allowance — the queue fills and nothing drains it until the worke
 and the first engine adapter land. The [budget governor](docs/BUDGET.md) is already in place ahead
 of it, so the spending rails exist before anything can spend.
 
-Same conventions as the bootstrap checks: `GITHUB_TOKEN` from the environment,
-`--config` for a config file elsewhere, exit `2` when either is missing. Exit
+Same conventions as the host checks: `GITHUB_TOKEN` from the environment,
+`--config` for a config file elsewhere, exit `3` when either is missing. Exit
 is `0` on `SIGINT` or `SIGTERM`, which are handled rather than waited out — a
 shutdown does not sit through the remainder of a 600 s idle interval.
 
@@ -263,9 +311,13 @@ poetry build            # produces dist/*.whl and dist/*.tar.gz
 CI additionally rejects any direct-URL (`file://`, `git+`, `https://`)
 dependency that leaked into the built metadata, since such a package cannot be
 installed from an index. It then installs the wheel into a throwaway venv and
-runs `pr-review-agent --help`, because a wheel can import perfectly while
-shipping no command — which is exactly what `[project.scripts]` being absent
-did for twelve releases, and what no unit test can see.
+walks the documented first run — `--help`, then `config generate` and
+`config validate` in an empty directory. A wheel can import perfectly while
+shipping no command, which is what `[project.scripts]` being absent did for
+twelve releases; and it can ship a command while omitting the config
+templates the quickstart tells the operator to copy, which is what the
+missing `include` did for thirteen. No unit test can see either: every test
+reads the source tree, where both have always been present.
 
 ## 🤖 Continuous integration
 

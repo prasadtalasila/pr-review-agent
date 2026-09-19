@@ -27,19 +27,16 @@ loses the trigger permanently.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import contextlib
 import logging
 import signal
-import sys
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ._startup import StartupError, startup
 from .budget import Governor
 from .config import Config, ConfigError
 from .engine import ReviewEngine
@@ -446,25 +443,3 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
             )
     finally:
         await client.aclose()
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the daemon from the command line; non-zero exit means unusable."""
-    parser = argparse.ArgumentParser(description="pr-review-agent daemon")
-    parser.add_argument("--config", default="config.yaml", help="path to config.yaml")
-    args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    try:
-        config, token = startup(args.config)
-    except StartupError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    asyncio.run(run(config, token, Path(args.config)))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

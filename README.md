@@ -25,19 +25,21 @@ source .venv/bin/activate
 # download the latest release
 pip install pr_review_agent-<version>-py3-none-any.whl
 
-cp config.minimal.example.yaml config.yaml
-# update config
-# see full config in config.example.yaml
+pr-review-agent config generate      # writes ./config.yaml
+# update config; `config generate --full` writes the commented template
+pr-review-agent config validate
 
 # get GitHub PAT with read and write permissions on pull requests
-GITHUB_TOKEN=xxxx pr-review-agent                       # reads ./config.yaml
-GITHUB_TOKEN=xxxx pr-review-agent --config /etc/pr-review-agent/config.yaml
+GITHUB_TOKEN=xxxx pr-review-agent host check            # can this host reach it all?
+GITHUB_TOKEN=xxxx pr-review-agent daemon start          # reads ./config.yaml
+GITHUB_TOKEN=xxxx pr-review-agent daemon start --config /etc/pr-review-agent/config.yaml
 ```
 
-Installing the package puts `pr-review-agent` on the path. `--config` is
-optional: without it the daemon reads `config.yaml` from the directory it is
-started in, which is also where `state.db` is written. `python -m
-pr_review_agent.daemon` runs the same entry point and still works.
+Installing the package puts `pr-review-agent` on the path. Commands follow a
+`pr-review-agent <noun> <verb>` grammar, grouped by the setup workflow:
+`config` → `host` → `daemon`. `--config` is optional: without it a command
+reads `config.yaml` from the directory it is started in, which is also where
+`state.db` is written.
 
 ## 🗂 Documentation
 
