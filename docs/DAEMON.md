@@ -146,16 +146,18 @@ An installed wheel puts the same entry point on the path, so a host that
 form:
 
 ```bash
-GITHUB_TOKEN=... pr-review-agent --config /etc/pr-review-agent/config.yaml
+GITHUB_TOKEN=... pr-review-agent
 ```
 
 Both are the same `daemon.main`, and the module form keeps working: a
 service unit already written against it does not have to change.
 
-`--config` points at a config file other than `./config.yaml`. The token is
-read from the environment, never from `config.yaml`, and is never printed.
-Exit status is `2` when the token or the config file is missing, and `0` on a
-clean shutdown.
+`--config` points at a config file other than `./config.yaml`, which is
+resolved against the working directory the daemon starts in — the same rule
+`store.path` follows below, so a service unit that sets `WorkingDirectory`
+needs neither flag. The token is read from the environment, never from
+`config.yaml`, and is never printed. Exit status is `2` when the token or the
+config file is missing, and `0` on a clean shutdown.
 
 The SQLite file comes from [`store.path`](CONFIG.md), default `state.db`. A
 relative path is resolved against the working directory the daemon starts in,
