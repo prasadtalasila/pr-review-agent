@@ -117,12 +117,18 @@ class ReviewRequest:
     ``mode`` is the rung of the degradation ladder the run was admitted
     under, which is what lets an engine spend less when the budget is tight
     rather than refuse outright.
+
+    ``prior`` is what the last completed round on this pull request found,
+    and it is how a re-review can say "still" truthfully. It arrives already
+    stripped of finding bodies -- see ``prompt._prior`` for why that is a
+    control rather than an economy.
     """
 
     checkout: Checkout
     facts: PullRequestFacts
     trigger: Trigger
     mode: Mode
+    prior: tuple[Finding, ...] = ()
 
 
 @dataclass(frozen=True)
