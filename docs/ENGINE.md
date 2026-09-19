@@ -266,6 +266,11 @@ What the worker does need is an honest `usage`: it settles the ledger with
 exactly what `ReviewResult.usage` reports, and a run that fails after the
 engine started is charged its full reservation.
 
+The exception is `EngineUnavailable`, and it is a contract on the adapter
+rather than a courtesy: raise it only when nothing was executed. The worker
+settles it at zero, so an adapter raising it after doing work would record a
+real spend as nothing.
+
 ## 🚧 What lands next
 
 The publisher [has landed](PUBLISHER.md), and so has the

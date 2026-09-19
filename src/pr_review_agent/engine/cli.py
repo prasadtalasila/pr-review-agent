@@ -42,7 +42,13 @@ class EngineError(RuntimeError):
 
 
 class EngineUnavailable(EngineError):
-    """The binary is missing, or could not be started."""
+    """The binary is missing, or the subprocess could not be started.
+
+    An adapter may raise this **only when nothing was executed**. The worker
+    settles it at a provable zero rather than at the reserved ceiling, so an
+    adapter that raised it after doing work would write a real spend into
+    the ledger as nothing -- see ``docs/WORKER.md``.
+    """
 
 
 class EngineTimeout(EngineError):
@@ -211,7 +217,10 @@ class CliEngine(ABC):
                 stderr=asyncio.subprocess.PIPE,
             )
         except OSError as exc:
-            raise EngineUnavailable(f"cannot run {argv[0]!r}: {exc}") from exc
+            # The cwd is named because it is the other thing that can be
+            # missing here, and "cannot run 'claude'" sent the first reading
+            # of exactly that failure to the wrong subsystem entirely.
+            raise EngineUnavailable(f"cannot run {argv[0]!r} in {cwd}: {exc}") from exc
 
     @staticmethod
     async def _stop(process: asyncio.subprocess.Process) -> None:
