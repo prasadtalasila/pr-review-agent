@@ -223,6 +223,73 @@ def test_the_two_firehose_reasons_stay_at_debug(classifier, caplog):
     assert caplog.records == []
 
 
+def test_pr_not_open_stays_at_debug(classifier, caplog):
+    # It fires once per comment on every closed pull request in the repo,
+    # which is what made the live log unreadable in the first place.
+    closed = replace(classifier, open_pull_requests=frozenset({8}))
+    with caplog.at_level("INFO", logger="pr_review_agent.triggers.classifier"):
+        closed.classify_comment(make_comment())
+    assert caplog.records == []
+
+
+# -- comments on closed pull requests -------------------------------------
+#
+# `/pulls?state=open` is filtered by state; the two comment endpoints are
+# repo-wide and are not. The set of open pull request numbers comes from the
+# same sweep, and `None` means the sweep has not reported one yet.
+
+
+def test_a_comment_on_a_closed_pull_request_is_rejected(classifier):
+    closed = replace(classifier, open_pull_requests=frozenset({8}))
+    decision = closed.classify_comment(make_comment())  # pr 7
+    assert not decision.accepted
+    assert decision.reason == "pr_not_open"
+
+
+def test_a_comment_on_an_open_pull_request_is_still_accepted(classifier):
+    open_ = replace(classifier, open_pull_requests=frozenset({7}))
+    assert open_.classify_comment(make_comment()).accepted
+
+
+def test_comments_are_not_filtered_while_the_open_set_is_unknown(classifier):
+    # Failing open is deliberate: dropping every mention because the pulls
+    # leg answered 304 would be worse than logging a few closed-PR lines.
+    assert classifier.open_pull_requests is None
+    assert classifier.classify_comment(make_comment()).accepted
+
+
+# -- freshness outranks identity ------------------------------------------
+#
+# Anything at or below the watermark has already been decided, whoever wrote
+# it, so no other reason is informative -- and `not_fresh` is the one that
+# keeps a re-seen item at DEBUG.
+
+
+@pytest.mark.parametrize(
+    "pr",
+    [
+        make_pr(author=AGENT, created_at=EARLIER),
+        make_pr(author=BOT, created_at=EARLIER),
+        make_pr(is_draft=True, created_at=EARLIER),
+        make_pr(author=OUTSIDER, created_at=EARLIER),
+    ],
+)
+def test_a_stale_pull_request_is_rejected_not_fresh(classifier, pr):
+    assert classifier.classify_pull_request(pr).reason == "not_fresh"
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        make_comment(author=AGENT, updated_at=EARLIER),
+        make_comment(author=BOT, updated_at=EARLIER),
+        make_comment(author=OUTSIDER, updated_at=EARLIER),
+    ],
+)
+def test_a_stale_comment_is_rejected_not_fresh(classifier, comment):
+    assert classifier.classify_comment(comment).reason == "not_fresh"
+
+
 def test_a_mention_on_a_draft_is_still_honoured(classifier):
     # draft exists to stop unasked-for auto-review; an allowlisted human
     # typing @claude on a draft is the ask.

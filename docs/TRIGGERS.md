@@ -21,24 +21,34 @@ outside contributions still get reviewed when we want them to".
                      polled pull request or comment
                                   │
                                   ▼
-                  bot, or the agent's own account? ──yes──► bot_* / self_*
+          at or below the watermark? ──yes──► not_fresh
                                   │no
-                                  ▼
-                actor's numeric id allowlisted? ──no──► *_not_allowlisted
-                                  │yes
                   ┌───────────────┴────────────────┐
              pull request                       comment
                   │                                  │
-          fresh pull request         mentions @handle outside a
-          that is a draft?           fence, code span or blockquote?
-          ──yes──► draft             ──no──► no_mention
-                  │no                          │yes
-                  ▼                            ▼
-          at or below the watermark? ──yes──► not_fresh
-                  │no
-                  ▼
-               Trigger ──► enqueue
+                  │                   on an open pull request?
+                  │                   ──no──► pr_not_open
+                  │                                  │yes
+                  ▼                                  ▼
+                  bot, or the agent's own account? ──yes──► bot_* / self_*
+                  │no                                 │no
+                  ▼                                   ▼
+          a draft? ──yes──► draft      mentions @handle outside a
+                  │no                  fence, code span or blockquote?
+                  │                    ──no──► no_mention
+                  └───────────────┬────────────────┘
+                                  ▼
+                actor's numeric id allowlisted? ──no──► *_not_allowlisted
+                                  │yes
+                                  ▼
+                            Trigger ──► enqueue
 ```
+
+Freshness comes first because anything at or below the watermark has already
+been decided, whoever wrote it — so no other reason is informative, and a
+re-seen item stays at `DEBUG` instead of repeating `bot_commenter` at `INFO`
+on every cycle. No accept/reject outcome depends on the order: every one of
+these paths rejects either way.
 
 Every arrow in that diagram is one row of the table below, with the reason
 code and log level it is rejected at.
@@ -56,14 +66,38 @@ code and log level it is rejected at.
 | `@claude` in a fence, code span or blockquote | `no_mention` | `DEBUG` |
 | Already-open pull request seen below the watermark | `not_fresh` | `DEBUG` |
 | Comment last updated at or below the watermark | `not_fresh` | `DEBUG` |
+| Comment on a pull request that is not open | `pr_not_open` | `DEBUG` |
 
 Every decision is logged, accepted or not — it is the only observability the
 daemon has into *why wasn't this reviewed*. The two levels matter: at a blanket
 `DEBUG` the log is invisible at the default level, which hides exactly the
-cases an operator asks about; at a blanket `INFO` the two firehose reasons bury
+cases an operator asks about; at a blanket `INFO` the firehose reasons bury
 everything else. `not_fresh` fires once per already-open pull request on the
-first poll, and `no_mention` fires once per comment on every poll that returns
-a `200`, so those two stay at `DEBUG` and everything else is visible.
+first poll, `no_mention` fires once per comment on every poll that returns a
+`200`, and `pr_not_open` fires once per comment on every pull request the
+repository has ever closed — so those three stay at `DEBUG` and everything
+else is visible.
+
+### Comments are filtered to open pull requests
+
+`/pulls?state=open` is filtered by state. The two comment endpoints are
+repo-wide and are not: they return comments on pull requests closed weeks ago,
+and in the v0.12.0 live run that was a hundred `INFO` decisions per cycle that
+nothing could ever come of.
+
+So the daemon keeps the set of pull request numbers the `/pulls` leg reported
+and rejects a comment outside it as `pr_not_open`. The set lives across cycles
+because that leg answers `304` whenever nothing changed, and a `304` means
+*unchanged*, not *unknown*. Until the first `200` the set is unknown and the
+filter is off — failing open costs a few `DEBUG` lines, whereas failing closed
+would silently drop every mention.
+
+Both legs belong to one sweep and the pulls leg is classified first, so a
+comment on a pull request opened in that very cycle is still matched. The
+trade-off worth stating: **a mention posted on a pull request that closes
+before the next cycle is dropped.** That is a behaviour change rather than
+only a quieter log, and it is the intended reading — the agent has nothing
+useful to say about a closed pull request.
 
 The agent's own events are separated from third-party bots
 (`self_author` rather than `bot_author`) because the strings are

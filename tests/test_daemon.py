@@ -240,6 +240,71 @@ async def test_both_comment_endpoints_share_one_watermark(tmp_path):
     assert daemon.store.watermark(COMMENTS) == RECENT
 
 
+# -- comments on closed pull requests -------------------------------------
+#
+# Both comment endpoints are repo-wide, so they return comments on pull
+# requests closed weeks ago. The open set comes off the `/pulls` leg of the
+# same sweep and has to survive that leg answering 304.
+
+
+async def test_a_comment_on_a_closed_pull_request_is_not_enqueued(tmp_path):
+    # The comment names pr 12; the only open pull request is 3.
+    daemon = make_daemon(
+        tmp_path,
+        responder(
+            pulls=[pr_item(3, OLD)],
+            issue_comments=[issue_comment(11, RECENT)],
+        ),
+    )
+    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.store.advance_watermark(COMMENTS, OLD)
+
+    summary = await daemon.run_once()
+
+    assert summary.enqueued == 0
+    assert queued(daemon) == 0
+
+
+async def test_a_comment_on_a_pull_request_opened_this_cycle_is_enqueued(tmp_path):
+    # Both legs belong to one sweep, and the pulls leg is classified first.
+    daemon = make_daemon(
+        tmp_path,
+        responder(
+            pulls=[pr_item(12, OLD)],
+            issue_comments=[issue_comment(11, RECENT)],
+        ),
+    )
+    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.store.advance_watermark(COMMENTS, OLD)
+
+    assert (await daemon.run_once()).enqueued == 1
+
+
+async def test_the_open_pull_request_set_survives_a_304(tmp_path):
+    """A 304 on the pulls leg means unchanged, not unknown."""
+    cycles = iter(
+        [
+            # First: pr 12 is open, no comments yet.
+            responder(pulls=[pr_item(12, OLD)]),
+            # Second: the pulls leg 304s, and the mention arrives.
+            responder(issue_comments=[issue_comment(11, RECENT)]),
+        ]
+    )
+    handler = next(cycles)
+
+    def dispatch(request):
+        return handler(request)
+
+    daemon = make_daemon(tmp_path, dispatch)
+    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.store.advance_watermark(COMMENTS, OLD)
+
+    await daemon.run_once()
+    handler = next(cycles)
+
+    assert (await daemon.run_once()).enqueued == 1
+
+
 async def test_a_failing_enqueue_leaves_the_watermark_unmoved(tmp_path):
     # Enqueue happens before the watermark advances, so a crash in between
     # costs one re-classification rather than a lost trigger.
