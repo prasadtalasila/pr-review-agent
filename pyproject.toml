@@ -1,6 +1,6 @@
 [project]
 name = "pr-review-agent"
-version = "0.12.0"
+version = "0.12.1"
 description = "Locally-hosted LLM-based PR review agent with enforced usage budgets"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -21,6 +21,13 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/prasadtalasila/pr-review-agent"
+
+# Without this the wheel ships the package and no command: `pip install` puts
+# `pr_review_agent` on the path and nothing in `bin/`, so an operator who
+# installed the released artefact had `python -m pr_review_agent.daemon` and
+# no `pr-review-agent`. The module stays runnable either way.
+[project.scripts]
+pr-review-agent = "pr_review_agent.daemon:main"
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]
