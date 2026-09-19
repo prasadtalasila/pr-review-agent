@@ -58,5 +58,8 @@ nav:
       - Review worker: WORKER.md
       - Engine seam: ENGINE.md
       - Publisher: PUBLISHER.md
+  - Review output:
+      - Report template: templates/review-report.md
+      - Review prompt: templates/review-prompt.md
   - Configuration reference: CONFIG.md
   - Roadmap and acceptance criteria: ROADMAP.md
