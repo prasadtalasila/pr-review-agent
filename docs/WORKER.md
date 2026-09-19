@@ -50,6 +50,12 @@ different numbers on purpose: the API's counts cover every changed path,
 while `reviewed` is what survived the exclusions, which is both what the gate
 measures and what the engine is shown.
 
+The same number reaches `settle` as `reviewed_lines`, which is what the rate
+is fitted against — so the threshold the next run is measured by comes from
+what the runs before it actually cost. Only a **completed** review reports
+it; see [BUDGET.md](BUDGET.md#-the-pre-flight-token-estimate) for why the
+others say nothing.
+
 `settle` runs **before** the queue verb, and both are guarded on the owner.
 A worker whose lease lapsed mid-run gets `False` from `settle` and stops
 there — which is how it learns to discard a result it is no longer entitled

@@ -188,6 +188,13 @@ make an adapter responsible for reporting the size it was handed, and an
 adapter that under-reported would bias the rate downward. A spending control
 must not take its input from the thing it controls.
 
+Only a **completed** review writes it. A truncated run was cut off with work
+outstanding, a failed one produced nothing, and a usage-limited one settles
+at `exact` zero — each spent less than reviewing those lines actually costs,
+so each would fit a rate below the truth and the estimate would refuse less
+than it should. Every other run leaves the column NULL, which is how a row
+says nothing about tokens per line rather than saying something wrong.
+
 ### The cold start errs high
 
 A fresh database has no rows to fit against, and the first runs are exactly

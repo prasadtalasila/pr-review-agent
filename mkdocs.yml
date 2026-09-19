@@ -44,7 +44,7 @@ markdown_extensions:
       alternate_style: true
 
 nav:
-  - Home: INDEX.md
+  - Home: index.md
   - Why this exists: DESIGN.md
   - Architecture: ARCHITECTURE.md
   - How it works:

@@ -30,5 +30,11 @@ cp config.minimal.example.yaml config.yaml
 # see full config in config.example.yaml
 
 # get GitHub PAT with read and write permissions on pull requests
-GITHUB_TOKEN=xxxx poetry run python -m pr_review_agent.daemon
+GITHUB_TOKEN=xxxx pr-review-agent                       # reads ./config.yaml
+GITHUB_TOKEN=xxxx pr-review-agent --config /etc/pr-review-agent/config.yaml
 ```
+
+Installing the package puts `pr-review-agent` on the path. `--config` is
+optional: without it the daemon reads `config.yaml` from the directory it is
+started in, which is also where `state.db` is written. `python -m
+pr_review_agent.daemon` runs the same entry point and still works.

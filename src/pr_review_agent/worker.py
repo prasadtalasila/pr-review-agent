@@ -206,6 +206,7 @@ class ReviewWorker:
         reason = StopReason.INFRASTRUCTURE
         finish = self.queue.complete
         reviewed: RecordedRun | None = None
+        reviewed_lines: int | None = None
         try:
             facts = await fetch_pull_request_facts(
                 self.client, self.endpoints, claim.trigger.pr_number
@@ -217,7 +218,11 @@ class ReviewWorker:
                 max_changed_lines=config.max_changed_lines,
                 excluded_paths=config.excluded_paths,
             ) as checkout:
-                if not self.governor.preflight(claim, checkout.reviewed.lines, _now()):
+                # Captured here because the checkout is torn down by the time
+                # the run settles, and it is the worker's own number rather
+                # than the adapter's: see `Governor.settle`.
+                handed_over = checkout.reviewed.lines
+                if not self.governor.preflight(claim, handed_over, _now()):
                     # The last free refusal, and it released the reservation
                     # inside that call -- so this path must not settle again.
                     # Deterministic for this head, so the row ends here.
@@ -239,6 +244,12 @@ class ReviewWorker:
             reason = _REASON_FOR[result.outcome]
             if result.outcome is Outcome.COMPLETED:
                 self.completed += 1
+                # Only a finished review is a sample of what reviewing this
+                # many lines costs. A truncated or failed run spent less than
+                # a whole one over the same lines, and a usage-limited run
+                # settles at *exact* zero -- all three fit a rate lower than
+                # the truth, which is the direction that under-refuses.
+                reviewed_lines = handed_over
                 # Recorded before the settle so the content outlives any
                 # failure after it. Only a completed run has publishable
                 # findings -- the seam enforces that -- so only one is kept.
@@ -291,7 +302,9 @@ class ReviewWorker:
             )
             finish = self.queue.release
 
-        await self._settle_publish_and_finish(claim, usage, reason, finish, reviewed)
+        await self._settle_publish_and_finish(
+            claim, usage, reason, finish, reviewed, reviewed_lines=reviewed_lines
+        )
 
     def _finish_for(self, outcome: Outcome) -> Callable[[Claim], bool]:
         """Which queue verb closes a row whose run ended this way.
@@ -370,6 +383,8 @@ class ReviewWorker:
         reason: StopReason,
         finish: Callable[[Claim], bool],
         reviewed: RecordedRun | None,
+        *,
+        reviewed_lines: int | None,
     ) -> None:
         """Record what the run cost, post it, then close its row.
 
@@ -378,8 +393,17 @@ class ReviewWorker:
         it learns to discard a result it is no longer entitled to publish --
         now with teeth, because the thing being discarded is a comment under
         the agent's own account.
+
+        ``reviewed_lines`` is what the pre-flight estimate is fitted against,
+        and it is ``None`` for every run that did not finish a review.
         """
-        if not self.governor.settle(claim, usage, now=_now(), stop_reason=reason):
+        if not self.governor.settle(
+            claim,
+            usage,
+            now=_now(),
+            stop_reason=reason,
+            reviewed_lines=reviewed_lines,
+        ):
             logger.warning(
                 "no reservation to settle for %s: discarding the run",
                 claim.trigger.dedupe_key,
