@@ -43,28 +43,29 @@ reads `config.yaml` from the directory it is started in, which is also where
 
 ## 🗂 Documentation
 
-Every link below is absolute and pinned to the released tag, because this
-README is also the PyPI project description, and there a relative path
-resolves against `pypi.org` and 404s. `poetry run pytest tests/test_readme_links.py`
-fails if one becomes relative again or falls behind the version in
-`pyproject.toml`.
+The links below are relative, which is what works on GitHub and in the
+[documentation site](https://prasad.talasila.in/pr-review-agent/). They are
+not what PyPI gets: a relative target there resolves against `pypi.org` and
+404s, so the release workflow builds from
+[`scripts/pypi_readme.py`](scripts/pypi_readme.py)'s rewrite of this file,
+with every target made absolute and pinned to the tag being released.
 
 | Document | Answers |
 | :-- | :-- |
-| [docs/CONFIG.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
-| [docs/DESIGN.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/DESIGN.md) | Why does this exist and why is it shaped like this? The four constraints, every alternative considered and rejected, the billing-mode question that is still open, and how prompt injection is handled |
-| [docs/ARCHITECTURE.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/ARCHITECTURE.md) | What actually runs? The components, the path an event takes, the package layout, and which layer may import which |
-| [docs/TRIGGERS.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/TRIGGERS.md) | What starts a review and what does not? Every reason code and its log level, what counts as a mention, the dedupe keys, and why identity is a number |
-| [docs/POLLER.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/POLLER.md) | How does it learn something happened without an inbound port? The three endpoints, the rate-limit arithmetic, the adaptive interval, the retry rules, and how a comment payload is mapped to a pull request |
-| [docs/DAEMON.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/DAEMON.md) | What runs continuously, and what is it careful not to do? The cycle, the cold-start spend bound, the two watermark ordering rules, and how it shuts down |
-| [docs/QUEUE.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
-| [docs/STORAGE.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
-| [docs/WORKSPACE.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/WORKSPACE.md) | How does a pull request's code get onto disk, and why is none of it ever run? The bare mirror, the per-run worktree, the untrusted-tree hardening, and the diff-size caps |
-| [docs/BUDGET.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/BUDGET.md) | The rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, the circuit breaker, and what is still not built |
-| [docs/WORKER.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/WORKER.md) | What drains the queue? The claim-run-settle loop, what a failed run settles at and why, which failures retry and which are permanent, what a run leaves behind, the supervisor, and why not a process per review |
-| [docs/PUBLISHER.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/PUBLISHER.md) | How does a review become visible, and what stops the agent approving anything? The 👀 at claim time, the live `head_sha` re-check, one comment per pull request, `publish.dry_run`, and why a failed publish never costs a second review |
-| [docs/ENGINE.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
-| [docs/ROADMAP.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |
-| [DEVELOPER.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/DEVELOPER.md) | How do I set up, test, lint and build this? |
-| [CLAUDE.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/CLAUDE.md) | The behavioural guidelines applied to every change |
-| [AGENTS.md](https://github.com/prasadtalasila/pr-review-agent/blob/v0.16.0/AGENTS.md) | The coding-assistant conventions |
+| [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
+| [docs/DESIGN.md](docs/DESIGN.md) | Why does this exist and why is it shaped like this? The four constraints, every alternative considered and rejected, the billing-mode question that is still open, and how prompt injection is handled |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | What actually runs? The components, the path an event takes, the package layout, and which layer may import which |
+| [docs/TRIGGERS.md](docs/TRIGGERS.md) | What starts a review and what does not? Every reason code and its log level, what counts as a mention, the dedupe keys, and why identity is a number |
+| [docs/POLLER.md](docs/POLLER.md) | How does it learn something happened without an inbound port? The three endpoints, the rate-limit arithmetic, the adaptive interval, the retry rules, and how a comment payload is mapped to a pull request |
+| [docs/DAEMON.md](docs/DAEMON.md) | What runs continuously, and what is it careful not to do? The cycle, the cold-start spend bound, the two watermark ordering rules, and how it shuts down |
+| [docs/QUEUE.md](docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
+| [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
+| [docs/WORKSPACE.md](docs/WORKSPACE.md) | How does a pull request's code get onto disk, and why is none of it ever run? The bare mirror, the per-run worktree, the untrusted-tree hardening, and the diff-size caps |
+| [docs/BUDGET.md](docs/BUDGET.md) | The rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, the circuit breaker, and what is still not built |
+| [docs/WORKER.md](docs/WORKER.md) | What drains the queue? The claim-run-settle loop, what a failed run settles at and why, which failures retry and which are permanent, what a run leaves behind, the supervisor, and why not a process per review |
+| [docs/PUBLISHER.md](docs/PUBLISHER.md) | How does a review become visible, and what stops the agent approving anything? The 👀 at claim time, the live `head_sha` re-check, one comment per pull request, `publish.dry_run`, and why a failed publish never costs a second review |
+| [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |
+| [DEVELOPER.md](DEVELOPER.md) | How do I set up, test, lint and build this? |
+| [CLAUDE.md](CLAUDE.md) | The behavioural guidelines applied to every change |
+| [AGENTS.md](AGENTS.md) | The coding-assistant conventions |

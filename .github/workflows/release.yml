@@ -101,6 +101,19 @@ jobs:
       - name: Verify the lock file matches pyproject.toml
         run: poetry check --lock
 
+      # `pyproject.toml`'s `readme` stays README.md: `poetry install` reads
+      # it too, not only `poetry build`, so it has to name a file every
+      # checkout has rather than one this job generates. This overwrites
+      # README.md with the absolute-link rewrite of it in *this* checkout
+      # only, immediately before the one build whose output reaches PyPI and
+      # the release assets -- never committed, and gone with the runner. It
+      # sits after the test and lint steps deliberately, since those assert
+      # the source README's links are relative.
+      - name: Rewrite README.md for the PyPI-bound build
+        run: |
+          python scripts/pypi_readme.py
+          mv README.pypi.md README.md
+
       - name: Build wheel and sdist
         run: poetry build
 
