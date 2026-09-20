@@ -7,7 +7,7 @@ than rediscovered one at a time.
 
 Sections A and F are now written from a second input: the hardening review of
 19 September,
-[docs/superpowers/specs/2026-09-19-hardening-review.md](docs/superpowers/specs/2026-09-19-hardening-review.md),
+[superpowers/specs/2026-09-19-hardening-review.md](superpowers/specs/2026-09-19-hardening-review.md),
 which read the same code against Claude Code's own
 [secure-deployment guidance](https://code.claude.com/docs/en/agent-sdk/secure-deployment),
 [qlty.sh's published security model](https://docs.qlty.sh/cloud/security), and
@@ -16,7 +16,7 @@ where the gap is and disagrees about how to close it, so §A below has been
 rewritten around its findings, and §F is new and comes entirely from it.
 
 Every candidate is judged against the two constraints in
-[CLAUDE.md](CLAUDE.md) §5 that a later fix cannot undo: **the agent spends a
+[CLAUDE.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/CLAUDE.md) §5 that a later fix cannot undo: **the agent spends a
 shared metered budget**, and **it posts under a real account**. A feature
 that widens either is not free, however good it looks. Each one below names
 the module it would touch, because several ideas that read well in the
@@ -43,10 +43,10 @@ demonstration web app. Both still contribute one idea each, recorded below.
 ## 🔒 A. Confining the engine for real
 
 Start from what the code already does, because it is more than the docs
-suggest. [`engine/cli.py`](src/pr_review_agent/engine/cli.py) builds the
+suggest. [`engine/cli.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/engine/cli.py) builds the
 child's environment from an **allowlist** — `PATH`, `HOME`, and whatever
 matches `env_prefixes` — so `GITHUB_TOKEN` genuinely does not reach the
-engine. [`engine/claude.py`](src/pr_review_agent/engine/claude.py) pins
+engine. [`engine/claude.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/engine/claude.py) pins
 `--tools Read,Grep,Glob` (no Bash, no Write, no Edit), `--restricted`,
 `--setting-sources ""`, `--strict-mcp-config`, `--disable-slash-commands`
 and `--permission-prompts none`. A `CLAUDE.md` in the tree under review is
@@ -67,7 +67,7 @@ three at once:
   repository's own deployment the mirror's `config` holds the remote URL, and
   the remote URL holds a PAT.
 - **Exfiltration channel**: `Finding.title` and `Finding.body` are free text
-  that [`publisher.py`](src/pr_review_agent/publisher.py) renders **verbatim**
+  that [`publisher.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/publisher.py) renders **verbatim**
   into a comment on a public pull request. No network tool is needed; the
   comment is the egress.
 
@@ -115,7 +115,7 @@ or ignore it (not fine) — and the adapter would log a warning and review
 anyway, unrestricted. Probe `claude --help` and refuse to run unless every
 flag in `argv()` appears in it. Pure, offline, spends nothing, and testable
 against a captured fixture: the trigger-suite standard from
-[CLAUDE.md](CLAUDE.md) §5.
+[CLAUDE.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/CLAUDE.md) §5.
 
 **A4. Default-deny egress for the engine child.**
 The child needs `api.anthropic.com`, plus `claude.ai` and
@@ -126,7 +126,7 @@ applies — a hostname allowlist without TLS termination is defeatable by
 domain fronting — so this is depth, not the boundary.
 
 **A5. Resolve `git` and `claude` to absolute, pinned paths.**
-`GIT = "git"` in [`workspace/gitcmd.py`](src/pr_review_agent/workspace/gitcmd.py)
+`GIT = "git"` in [`workspace/gitcmd.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/workspace/gitcmd.py)
 and `binary = "claude"` in `engine/claude.py` both resolve through the
 inherited `PATH`, which `cli_environment` passes through. A shadowed binary
 on `PATH` defeats every other control in this section. Make both absolute
@@ -150,7 +150,7 @@ catch an encoded secret, but it catches the straightforward one and turns a
 silent leak into an alert.
 
 **A7. Give `Capabilities.read_only_sandbox` a consumer.**
-[`engine/models.py`](src/pr_review_agent/engine/models.py) says plainly that
+[`engine/models.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/engine/models.py) says plainly that
 the field has none, and `claude.py`'s comment says it is "a claim about the
 argv". Once A1 and A2 exist the field can mean the sandbox, an adapter that
 cannot be wrapped declares `False`, and the worker can decline to run an
@@ -159,7 +159,7 @@ unconfinable engine over an untrusted tree.
 **A8. Treat a sandbox denial as a finding, not a failure.**
 A run that tried to read `$HOME/.ssh` is the strongest available evidence
 that the diff under review contained an injection. It deserves a
-`StopReason` of its own in [`budget.py`](src/pr_review_agent/budget.py) —
+`StopReason` of its own in [`budget.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/budget.py) —
 alongside `TIMEOUT` and `ENGINE_ERROR`, which exist for the same reason —
 and a line in the posted comment.
 
@@ -178,7 +178,7 @@ prefix, a bwrap profile, a systemd unit and an nftables rule. A single
 `confinement.py` holding the profile — uid, bind mounts, environment, tool
 set, egress — with the systemd and nftables fragments generated from it or
 checked against it, makes "did this change widen the reviewer's reach?" a
-diff to one file. That is exactly the bar [CLAUDE.md](CLAUDE.md) §5 sets for
+diff to one file. That is exactly the bar [CLAUDE.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/CLAUDE.md) §5 sets for
 spending and identity. Two jail properties are worth naming as acceptance
 criteria: the boundary is irreversible from inside (`no_new_privs`, dropped
 capabilities), and every capability the reviewer holds is a line in that
@@ -212,7 +212,7 @@ choice), and whether the model credential in use refreshes over the network
 SAST engine: it invokes Bandit, Semgrep, Gitleaks, pip-audit, Trivy and
 Checkov as subprocesses and unifies their output into tiers. Every one of
 those runs on the worktree
-[`workspace/repo.py`](src/pr_review_agent/workspace/repo.py) already builds,
+[`workspace/repo.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/workspace/repo.py) already builds,
 and none of them costs a token.
 
 **B1. Run scanners on the worktree before the engine, and pass the findings
@@ -279,7 +279,7 @@ absent or that crashes must not fail the review.
 
 `pr-agent` exposes distinct commands — `/describe`, `/review`, `/improve`,
 `/ask` — rather than one monolithic review. Here,
-[`triggers/mention.py`](src/pr_review_agent/triggers/mention.py) answers a
+[`triggers/mention.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/triggers/mention.py) answers a
 single boolean question, `has_mention`, and every trigger costs a full
 review.
 
@@ -317,7 +317,7 @@ default.
 
 **C4. Inline, line-anchored comments.**
 `Finding` already carries `path` and `line`; the acceptance criterion in
-[ROADMAP.md](docs/ROADMAP.md) was reworded away from "line-anchored" because
+[ROADMAP.md](ROADMAP.md) was reworded away from "line-anchored" because
 inline comments need the reviews endpoint and with it an `event` field.
 `pr-agent` does this and is MIT, so its handling can be read and borrowed.
 What must be preserved is the thing `publisher.py` is built around: today the
@@ -328,7 +328,7 @@ should be taken knowingly, with `event: COMMENT` pinned by its own test.
 
 **C5. Per-repository review configuration.**
 `pr-agent` drives review categories from a checked-in config.
-[`engine/standards.py`](src/pr_review_agent/engine/standards.py) already
+[`engine/standards.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/engine/standards.py) already
 reads instructions from the merge base — deliberately not from the head, so
 a diff cannot rewrite the reviewer's instructions — and the same trust
 argument covers structured settings read the same way. What is missing is
@@ -336,7 +336,7 @@ knobs (categories, severities, paths), not the mechanism.
 
 **Explicitly not recommended:** `pr-agent`'s multi-provider support (GitLab,
 Bitbucket, Azure DevOps, Gitea) and its LiteLLM model abstraction.
-[DESIGN.md](docs/DESIGN.md) chose one host and a CLI-subprocess engine seam
+[DESIGN.md](DESIGN.md) chose one host and a CLI-subprocess engine seam
 deliberately, and `CliEngine` is built on the assumption that no vendor SDK
 is linked. Both would be large diffs bought against a requirement nobody has
 stated.
@@ -411,7 +411,7 @@ all of it, and it is configuration rather than code.
 
 **F2. Bound the disk the fetch spends before the gate fires.**
 `Checkout._gate` fires **after** the fetch, deliberately and correctly — the
-docstring in [`workspace/repo.py`](src/pr_review_agent/workspace/repo.py)
+docstring in [`workspace/repo.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/workspace/repo.py)
 says why. The consequence is that an oversized pull request costs disk
 before it is refused, and nothing caps that disk, so a pathological
 repository can fill `cache_dir`. A free-space floor checked in
