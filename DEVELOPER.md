@@ -308,6 +308,16 @@ Pyright errors should be resolved before submitting a pull request.
 poetry build            # produces dist/*.whl and dist/*.tar.gz
 ```
 
+A local build ships README.md as it stands, with relative documentation
+links. The release workflow does one thing more: it runs
+`python scripts/pypi_readme.py` and builds from that rewrite, in which every
+relative link is absolute and pinned to the tag being released. PyPI resolves
+a relative target against `pypi.org`, so an unrewritten README is a
+documentation table that leads nowhere — the state of every release up to
+0.16.0. The rewrite happens in the runner's checkout only and is never
+committed; `pyproject.toml`'s `readme` has to keep naming README.md, because
+`poetry install` reads it too.
+
 CI additionally rejects any direct-URL (`file://`, `git+`, `https://`)
 dependency that leaked into the built metadata, since such a package cannot be
 installed from an index. It then installs the wheel into a throwaway venv and

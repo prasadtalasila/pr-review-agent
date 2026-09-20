@@ -63,3 +63,4 @@ nav:
       - Review prompt: reporting/review-prompt.md
   - Configuration reference: CONFIG.md
   - Roadmap and acceptance criteria: ROADMAP.md
+  - Candidate features: FEATURE-ROADMAP.md

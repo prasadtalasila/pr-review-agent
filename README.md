@@ -43,6 +43,13 @@ reads `config.yaml` from the directory it is started in, which is also where
 
 ## 🗂 Documentation
 
+The links below are relative, which is what works on GitHub and in the
+[documentation site](https://prasad.talasila.in/pr-review-agent/). They are
+not what PyPI gets: a relative target there resolves against `pypi.org` and
+404s, so the release workflow builds from
+[`scripts/pypi_readme.py`](scripts/pypi_readme.py)'s rewrite of this file,
+with every target made absolute and pinned to the tag being released.
+
 | Document | Answers |
 | :-- | :-- |
 | [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
@@ -59,6 +66,7 @@ reads `config.yaml` from the directory it is started in, which is also where
 | [docs/PUBLISHER.md](docs/PUBLISHER.md) | How does a review become visible, and what stops the agent approving anything? The 👀 at claim time, the live `head_sha` re-check, one comment per pull request, `publish.dry_run`, and why a failed publish never costs a second review |
 | [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |
+| [docs/FEATURE-ROADMAP.md](docs/FEATURE-ROADMAP.md) | What could be built next, drawn from five neighbouring projects and a hardening review, each candidate with its cost |
 | [DEVELOPER.md](DEVELOPER.md) | How do I set up, test, lint and build this? |
 | [CLAUDE.md](CLAUDE.md) | The behavioural guidelines applied to every change |
 | [AGENTS.md](AGENTS.md) | The coding-assistant conventions |
