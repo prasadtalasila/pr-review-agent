@@ -20,8 +20,15 @@ dependencies = [
     "click>=8.1,<9",
 ]
 
+# PyPI renders these as the sidebar links, which is the only navigation a
+# reader of the project page gets: the README's own links were relative for
+# sixteen releases and every one of them resolved against `pypi.org` and
+# 404'd.
 [project.urls]
+Homepage = "https://prasad.talasila.in/pr-review-agent/"
+Documentation = "https://prasad.talasila.in/pr-review-agent/"
 Repository = "https://github.com/prasadtalasila/pr-review-agent"
+Releases = "https://github.com/prasadtalasila/pr-review-agent/releases"
 
 # Without this the wheel ships the package and no command: `pip install` puts
 # `pr_review_agent` on the path and nothing in `bin/`, so an operator who
