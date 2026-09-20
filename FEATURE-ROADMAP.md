@@ -1,9 +1,19 @@
-# Candidate features, drawn from five neighbouring projects
+# Candidate features, from five neighbouring projects and a hardening review
 
 A survey of what five other pull-request and code-security projects do, and
 which of it is worth having here. Nothing in this document is implemented.
 It exists so that the ideas are recorded with their costs attached, rather
 than rediscovered one at a time.
+
+Sections A and F are now written from a second input: the hardening review of
+19 September,
+[docs/superpowers/specs/2026-09-19-hardening-review.md](docs/superpowers/specs/2026-09-19-hardening-review.md),
+which read the same code against Claude Code's own
+[secure-deployment guidance](https://code.claude.com/docs/en/agent-sdk/secure-deployment),
+[qlty.sh's published security model](https://docs.qlty.sh/cloud/security), and
+the FreeBSD jail as a model of confinement. It agrees with the survey about
+where the gap is and disagrees about how to close it, so §A below has been
+rewritten around its findings, and §F is new and comes entirely from it.
 
 Every candidate is judged against the two constraints in
 [CLAUDE.md](CLAUDE.md) §5 that a later fix cannot undo: **the agent spends a
@@ -18,7 +28,7 @@ guarantee the code holds deliberately.
 | Project | Licence | What may be taken |
 | :-- | :-- | :-- |
 | [the-pr-agent/pr-agent](https://github.com/the-pr-agent/pr-agent) | MIT (© The PR Agent) | Code, with attribution. Usable as a dependency. |
-| [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime) | Apache-2.0 | Usable as a direct dependency (`srt`, bubblewrap underneath). |
+| [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime) | Apache-2.0 | Usable as a direct dependency (`srt`, bubblewrap underneath), though §A2 argues for calling bubblewrap directly instead. |
 | [marshallguillory86/secure-code-agent](https://github.com/marshallguillory86/secure-code-agent) | MIT (© Marshall Guillory) | Code, with attribution. |
 | [kh-bikash/pr_agent](https://github.com/kh-bikash/pr_agent) | none stated | Inspiration only. No licence grant means no copying. |
 | [VinitaSilaparasetty/pr-automation-agent](https://github.com/VinitaSilaparasetty/pr-automation-agent) | AGPL-3.0 | Inspiration only. Copying would relicense this project. |
@@ -42,61 +52,157 @@ engine. [`engine/claude.py`](src/pr_review_agent/engine/claude.py) pins
 and `--permission-prompts none`. A `CLAUDE.md` in the tree under review is
 not instructions to the reviewer, and there is no shell to escape into.
 
-What remains is narrower and more specific than "the sandbox is missing":
+What remains is narrower and more specific than "the sandbox is missing".
+The hardening review states it as the
+[lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)
+— untrusted input, private data, and a channel out — and this agent has all
+three at once:
 
-- Nothing in that argv confines `Read`, `Grep` and `Glob` to the working
-  directory. `cwd` is the worktree; an absolute path is not.
-- `HOME` is passed through, and the process runs as the daemon's user, so
-  `config.yaml`, `state.db` and the bare mirror's `config` are all readable.
-  In this repository's own deployment the mirror's `config` holds the remote
-  URL, and the remote URL holds a PAT.
-- The output channel is public. `Finding.body` is a free-text string that
-  [`publisher.py`](src/pr_review_agent/publisher.py) renders into a comment
-  on a public pull request.
+- **Untrusted input**: the diff, the tree, the pull request and comment
+  bodies. Nothing in the argv confines `Read`, `Grep` and `Glob` to the
+  working directory either. `cwd` is the worktree; an absolute path is not.
+- **Private data**: `HOME` is passed through and the child runs as the
+  daemon's user, so `~/.claude/.credentials.json`, `~/.ssh`, `config.yaml`,
+  the SQLite store and the bare mirror's `config` are all readable. In this
+  repository's own deployment the mirror's `config` holds the remote URL, and
+  the remote URL holds a PAT.
+- **Exfiltration channel**: `Finding.title` and `Finding.body` are free text
+  that [`publisher.py`](src/pr_review_agent/publisher.py) renders **verbatim**
+  into a comment on a public pull request. No network tool is needed; the
+  comment is the egress.
 
 Those three compose into one chain: a diff that talks the reviewer into
 reading a file outside the worktree and quoting it in a finding body has
-exfiltrated it. No tool beyond the three that are already granted is needed.
+exfiltrated it, using no tool beyond the three already granted. What stands
+in the way today is `--tools`, `--restricted` and `--permission-prompts
+none`, every one of them enforced *inside* an upgradeable vendor binary.
+That the argv is asserted by a test is not the same as the argv still
+meaning what it meant, which is the gap the items below close.
 
-**A1. Run the engine subprocess under `srt`.**
-`sandbox-runtime` is an OS-level sandbox — bubblewrap on Linux, Seatbelt on
-macOS — that wraps an arbitrary command, so this is a dependency and a change
-to `CliEngine._start`, not copied code. The confinement to aim for:
+**A1. Run the engine child under a dedicated unprivileged uid.**
+The highest value per line on this list, and it needs no container. Give the
+reviewer its own user whose `$HOME` holds the model credential and nothing
+else; `config.yaml`, the store, the token `EnvironmentFile` and the daemon's
+`~/.ssh` then become unreadable at the kernel level rather than by policy.
+Mechanically the daemon is unchanged and `CliEngine._start` execs through
+`setpriv --reuid … --regid … --clear-groups --no-new-privs`. The prefix is a
+tuple, so a test pins it element by element exactly as the existing flags are
+pinned. It pairs with a systemd unit carrying `NoNewPrivileges=yes`,
+`PrivateTmp=yes`, `ProtectHome=`, `ProtectSystem=strict` and
+`InaccessiblePaths=` over the config and store — and there is no deployment
+or hardening document in `docs/` at all today, so this is where one starts.
 
-- `allowRead`: the run's worktree. `denyRead`: `$HOME`, the config, the
-  store, and the mirror.
-- `allowWrite`: nothing but the worktree and `/tmp`.
-- `allowedDomains`: the model API endpoint alone — not `github.com`, which
-  the engine has no reason to reach.
+**A2. Wrap the child in an OS sandbox — `bwrap` directly.**
+On top of A1, not instead of it. `anthropics/sandbox-runtime` is the
+vendor's own answer and wraps bubblewrap with JSON allowlists for paths and
+domains, but it is a declared beta with an unstable config format and it
+pulls an npm dependency into a daemon whose whole tree is `httpx`, `PyYAML`
+and the standard library. Invoking `bwrap` from `CliEngine._start` — the
+worktree bound read-only, `--tmpfs` over everything writable,
+`--unshare-all` — is more work up front and stays a fixed argv tuple in the
+module that already owns the subprocess boundary. The review recommends
+`bwrap` for the same reason this project rejected vendor SDKs: a subprocess
+and an argv are a smaller contract than a library. Either way the shape of
+the confinement is the same — read the worktree, write the worktree and
+`/tmp`, reach the model endpoint and nothing else, and in particular not
+`github.com`, which the engine has no reason to touch.
 
-This is what turns the containment from a property of the argv into a
-property the kernel holds.
+**A3. Assert at preflight that the containment flags still exist.**
+The sharpest concrete defect on the list. `preflight` in
+`engine/claude.py` only *warns* on an unexpected CLI version, so a future
+`claude` that renamed or dropped `--restricted` would either error out (fine)
+or ignore it (not fine) — and the adapter would log a warning and review
+anyway, unrestricted. Probe `claude --help` and refuse to run unless every
+flag in `argv()` appears in it. Pure, offline, spends nothing, and testable
+against a captured fixture: the trigger-suite standard from
+[CLAUDE.md](CLAUDE.md) §5.
 
-**A2. Give `Capabilities.read_only_sandbox` a consumer.**
+**A4. Default-deny egress for the engine child.**
+The child needs `api.anthropic.com`, plus `claude.ai` and
+`platform.claude.com` if the credential refreshes over the network. It needs
+nothing else. With A1 in place that is one nftables rule keyed on the
+reviewer's uid; with A2 it is the sandbox's own proxy. The vendor's caveat
+applies — a hostname allowlist without TLS termination is defeatable by
+domain fronting — so this is depth, not the boundary.
+
+**A5. Resolve `git` and `claude` to absolute, pinned paths.**
+`GIT = "git"` in [`workspace/gitcmd.py`](src/pr_review_agent/workspace/gitcmd.py)
+and `binary = "claude"` in `engine/claude.py` both resolve through the
+inherited `PATH`, which `cli_environment` passes through. A shadowed binary
+on `PATH` defeats every other control in this section. Make both absolute
+and configurable, and check them where the bootstrap already does its
+pre-flight.
+
+**A6. Neutralise the outbound comment, and canary it.**
+`publisher.render`'s docstring argues correctly that engine output is
+harmless because the module can take no action. That covers actions, not
+what the text does to readers: an `@mention` in a finding body notifies
+arbitrary users from the agent's account, `#123` cross-links an unrelated
+issue, HTML comments and a crafted `<sub>` trailer can forge a second
+"Automated review…" footer or a line that reads as an approval, and an
+unbounded body can exceed GitHub's comment limit and fail the publish after
+the tokens are spent. Cap the rendered length with a truncation marker,
+escape `@` and `#` at word start in engine-authored text, and strip HTML
+comments — all pure functions, testable without tokens. Alongside it, scan
+the rendered body for the live `GITHUB_TOKEN` value and the first bytes of
+the model credential file and refuse to post on a hit. That canary cannot
+catch an encoded secret, but it catches the straightforward one and turns a
+silent leak into an alert.
+
+**A7. Give `Capabilities.read_only_sandbox` a consumer.**
 [`engine/models.py`](src/pr_review_agent/engine/models.py) says plainly that
 the field has none, and `claude.py`'s comment says it is "a claim about the
-argv". Once A1 exists the field can mean the sandbox, an adapter that cannot
-be wrapped declares `False`, and the worker can decline to run an
+argv". Once A1 and A2 exist the field can mean the sandbox, an adapter that
+cannot be wrapped declares `False`, and the worker can decline to run an
 unconfinable engine over an untrusted tree.
 
-**A3. Treat a sandbox denial as a finding, not a failure.**
-`srt` reports violations. A run that tried to read `$HOME/.ssh` is the
-strongest available evidence that the diff under review contained an
-injection. It deserves a `StopReason` of its own in
-[`budget.py`](src/pr_review_agent/budget.py) — alongside `TIMEOUT` and
-`ENGINE_ERROR`, which exist for the same reason — and a line in the posted
-comment.
+**A8. Treat a sandbox denial as a finding, not a failure.**
+A run that tried to read `$HOME/.ssh` is the strongest available evidence
+that the diff under review contained an injection. It deserves a
+`StopReason` of its own in [`budget.py`](src/pr_review_agent/budget.py) —
+alongside `TIMEOUT` and `ENGINE_ERROR`, which exist for the same reason —
+and a line in the posted comment.
 
-**A4. Extend `host check` to the sandbox.**
-`bubblewrap`, `socat` and `ripgrep` are the Linux prerequisites. The
+**A9. Extend `host check` to the sandbox.**
+`setpriv`, `bubblewrap` and `ripgrep` are the Linux prerequisites. The
 bootstrap checks already exist; an operator should learn they are missing
 there rather than from the first review that fails.
 
-**Cost:** a non-Python runtime dependency on the host, and a new hard failure
+**A10. Put the whole confinement in one file.**
+This is the jail lesson, and the repository has already applied it once:
+`gitcmd`'s docstring says its controls live in one module "so that they
+cannot be forgotten at one of them." The engine side never got the same
+treatment. Confinement is spread across `BASE_ENVIRONMENT`, `env_prefixes`,
+`TOOLS` and the argv tuple, and after A1–A4 it would also span a `setpriv`
+prefix, a bwrap profile, a systemd unit and an nftables rule. A single
+`confinement.py` holding the profile — uid, bind mounts, environment, tool
+set, egress — with the systemd and nftables fragments generated from it or
+checked against it, makes "did this change widen the reviewer's reach?" a
+diff to one file. That is exactly the bar [CLAUDE.md](CLAUDE.md) §5 sets for
+spending and identity. Two jail properties are worth naming as acceptance
+criteria: the boundary is irreversible from inside (`no_new_privs`, dropped
+capabilities), and every capability the reviewer holds is a line in that
+file rather than an inherited default.
+
+**The test that measures the boundary.** Most of the tests above check
+configuration. One checks containment: a file outside the worktree holding a
+known string, a fixture diff carrying a direct prompt injection asking for
+it, and an assertion that the string appears in no finding. It belongs under
+the existing `live` marker beside `test_cli_engine_live.py`.
+
+**Cost:** a non-Python runtime dependency on the host, an operator step that
+did not exist before (creating the reviewer user), and a new hard failure
 mode — a sandbox that denies the worktree produces a review of nothing.
 Needs a config escape that is loud in the logs, and `EngineUnavailable` is
 the right shape for "the wrapper would not start", since it settles at a
 provable zero.
+
+**What the operator decides first.** Three answers change the shape of this
+section: whether the deployment host is single-tenant (if so, A1 alone closes
+most of the gap and A2 becomes depth rather than necessity), whether `npm` is
+acceptable on the host (that is the whole of the `srt`-versus-`bwrap`
+choice), and whether the model credential in use refreshes over the network
+(if it is a plain API key, A4's allowlist drops to one domain).
 
 ---
 
@@ -116,8 +222,8 @@ deterministically, for free, and the model's job shrinks to the part that
 needs judgement. This is a budget feature at least as much as a security
 one. The subprocess discipline `CliEngine` already encodes — built
 environment, wall clock, terminate-then-kill — is what these scanners should
-be run under, and they inherit the A1 sandbox for the same reason the engine
-does.
+be run under, and they inherit the A1 uid and the A2 sandbox for the same
+reason the engine does.
 
 **B2. A scanner-only rung at the bottom of the degradation ladder.**
 `Mode` in `budget.py` is `FULL`, `MENTION_ONLY`, `EXHAUSTED`, and `EXHAUSTED`
@@ -289,25 +395,82 @@ SQLite. Every field it needs is already recorded.
 
 ---
 
+## ⚖️ F. Ceilings, residue and log hygiene
+
+From the hardening review, and from qlty.sh's rule that the analysis host
+holds no durable secret and no durable copy of the code. This project keeps
+a bare mirror as a cache, which is a defensible trade — but it is a trade,
+and these are the things that follow from it.
+
+**F1. Bound memory, processes and CPU, not only wall clock.**
+`timeout_seconds=900` and the budget governor bound *time* and *spend*;
+nothing bounds anything else. A runaway or injected child can fork and
+nothing caps pids. A cgroup v2 slice (`MemoryMax`, `TasksMax`, `CPUQuota`)
+covering both the git and engine children is the one mechanism that covers
+all of it, and it is configuration rather than code.
+
+**F2. Bound the disk the fetch spends before the gate fires.**
+`Checkout._gate` fires **after** the fetch, deliberately and correctly — the
+docstring in [`workspace/repo.py`](src/pr_review_agent/workspace/repo.py)
+says why. The consequence is that an oversized pull request costs disk
+before it is refused, and nothing caps that disk, so a pathological
+repository can fill `cache_dir`. A free-space floor checked in
+`Workspace.sweep`, refusing new checkouts below it, is the smaller half of
+the fix; §D2's truncation is the other half.
+
+**F3. Tighten the on-disk residue.**
+`cache_dir` is created `0700`, but `runs/` is created with the default
+umask, so on a multi-user host an untrusted checked-out tree may be
+world-readable. Create it `0o700` and set the daemon's umask at startup.
+Separately, nothing ever collects the mirror of a repository that has been
+removed from config; that retention sweep belongs beside the existing
+crash-recovery `sweep()`.
+
+**F4. Log hygiene.**
+`GitCommandError` carries full argv and stderr, `EngineProtocolError` carries
+200 bytes of stdout, and the worker logs both with `exc_info=True` — all of
+it attacker-influenced text landing in the operator's journal. Low severity,
+but the prompt is already logged as a digest for exactly this reason, and
+the argument does not stop at the prompt.
+
+**Cost:** F1 and F3 are close to free. F2 introduces a refusal an operator
+has to be able to read in the logs, or a full disk becomes a silent stall.
+
+---
+
 ## 🧭 Suggested order
 
 Ordered by value per unit of diff, not by section:
 
-1. **A1–A4, the sandbox.** The read-and-quote chain above is the largest
-   unclosed gap, and it closes as a dependency rather than as a design.
-2. **C2, incremental review.** The largest budget saving, and the ledger
+1. **A3, the flag check, and A5, absolute binaries.** Both are small, pure,
+   offline and spend nothing, and each one is a live defect rather than a
+   missing layer: today an upgraded CLI can silently stop being restricted,
+   and a shadowed `PATH` entry defeats everything else here.
+2. **A1, the reviewer's own uid.** The largest reduction in what a
+   read-and-quote chain can reach, bought with a `setpriv` prefix and a
+   systemd unit rather than a design.
+3. **A6, the outbound comment.** Escaping, a length cap and the secret
+   canary — pure render-layer functions, and the canary is the only thing
+   standing between a leak and a public comment.
+4. **C2, incremental review.** The largest budget saving, and the ledger
    already holds the range it needs.
-3. **B1 + B2, scanners and the scanner-only rung.** Turns budget exhaustion
+5. **A2 and A4, the sandbox and default-deny egress.** Depth on top of A1,
+   and the point where the operator's answers about tenancy and `npm`
+   decide the route.
+6. **B1 + B2, scanners and the scanner-only rung.** Turns budget exhaustion
    from silence into a cheap answer, and `Mode` already reaches the adapter
    unused.
-4. **E1, the disclosure line.** Nearly free.
-5. **C1, verbs after the mention.** Cuts average cost per trigger, but lands
+7. **E1, the disclosure line, and F1/F3, the cheap ceilings.** Nearly free.
+8. **C1, verbs after the mention.** Cuts average cost per trigger, but lands
    in the trigger layer, so it wants the most care per line on this list.
-6. **B3–B5, provenance, baselining and silence detection.** Quality of the
-   report rather than new capability.
-7. **C3, C4, D1, D2.** Each is worth doing and none is urgent. C4 costs a
-   guarantee; the other three do not.
-8. **B6, SARIF.** Only after a decision about widening the token's scope.
+9. **A7–A10, F2, F4.** The consumers, the reason code, the host check, the
+   single confinement file and the remaining residue. A10 is worth more the
+   later it is left undone, because it is what stops A1–A4 from scattering.
+10. **B3–B5, provenance, baselining and silence detection.** Quality of the
+    report rather than new capability.
+11. **C3, C4, D1, D2.** Each is worth doing and none is urgent. C4 costs a
+    guarantee; the other three do not.
+12. **B6, SARIF.** Only after a decision about widening the token's scope.
 
 Nothing above should land without the bound it needs: a feature that widens
 what triggers a review, or that raises what one can spend, says so in its
