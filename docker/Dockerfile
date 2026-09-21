@@ -20,7 +20,7 @@
 #     --build-arg PRA_UID="$(id -u)" --build-arg PRA_GID="$(id -g)" .
 # Run (from docker/, so compose resolves its own relative defaults):
 #   cd docker && cp .env.example .env   # then edit it
-#   docker compose up -d && docker compose exec dev bash
+#   docker compose up -d && docker compose exec dev zsh
 
 # Pinned rather than floating on `node:26`, and Node rather than a `python:`
 # base, because two of the three toolchains here are Node programs: the
@@ -56,6 +56,8 @@ RUN : "${PRA_USER:?required: set PRA_USER in docker/.env, or pass --build-arg PR
 # python3-venv is what answers PEP 668, which forbids a bare `pip install`
 # here as it does on any modern Debian; python-is-python3 makes a bare
 # `python` the same interpreter as the venv's.
+# sudo, zsh and tmux are for the interactive session, not the gate itself;
+# curl fetches the oh-my-zsh installer and its plugins below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         python3 \
@@ -63,10 +65,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python-is-python3 \
         ca-certificates \
         less \
+        sudo \
+        zsh \
+        tmux \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
+# zsh as the login shell -- zsh is already on disk from the apt-get above --
+# and passwordless sudo inside the container. The account already owns
+# /workspace, the bind-mounted checkout, so sudo here is convenience rather
+# than a wider blast radius: an interactive dev shell that needs `apt-get
+# install` for a one-off tool without a rebuild.
 RUN groupadd -g "${PRA_GID}" "${PRA_USER}" && \
-    useradd -u "${PRA_UID}" -g "${PRA_GID}" -m -s /bin/bash "${PRA_USER}"
+    useradd -u "${PRA_UID}" -g "${PRA_GID}" -m -s /bin/zsh "${PRA_USER}" && \
+    usermod -aG sudo "${PRA_USER}" && \
+    echo "${PRA_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${PRA_USER}" && \
+    chmod 0440 "/etc/sudoers.d/${PRA_USER}"
 
 # Claude Code lands after the account exists: `npm install -g` writes into
 # root-owned /usr/local, which is fine, but the first *run* wants a writable
@@ -127,6 +141,22 @@ RUN poetry install --no-root && rm -rf "${HOME}/.cache/pypoetry" "${HOME}/.cache
 # second copy.
 RUN pyright --version
 
+# oh-my-zsh, still as the unprivileged account since it lives under $HOME.
+# --unattended skips the installer's own chsh prompt, which would fail
+# non-interactively anyway -- the account's login shell is already zsh, set
+# on useradd above. The four plugins are the two that ship outside oh-my-zsh
+# (cloned into custom/plugins) plus history-substring-search, which oh-my-zsh
+# already carries and only needs enabling.
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended && \
+    git clone --depth 1 https://github.com/zsh-users/zsh-autosuggestions \
+        "${HOME}/.oh-my-zsh/custom/plugins/zsh-autosuggestions" && \
+    git clone --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting \
+        "${HOME}/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting" && \
+    git clone --depth 1 https://github.com/marlonrichert/zsh-autocomplete \
+        "${HOME}/.oh-my-zsh/custom/plugins/zsh-autocomplete" && \
+    sed -i 's/^plugins=(git)$/plugins=(git zsh-autosuggestions zsh-syntax-highlighting history-substring-search zsh-autocomplete)/' \
+        "${HOME}/.zshrc"
+
 USER root
 # /usr/local/bin rather than the account's home: ENTRYPOINT bakes this path
 # in, and a path under /home/<user> would make it depend on PRA_USER.
@@ -138,4 +168,4 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 USER ${PRA_USER}
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["bash"]
+CMD ["zsh"]

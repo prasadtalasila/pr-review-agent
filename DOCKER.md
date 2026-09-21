@@ -13,8 +13,8 @@ Dockerfile, the pinned `claude` version.
 | | |
 | :-- | :-- |
 | Base | `node:26.6.0-trixie` — Debian trixie, Python 3.13, git 2.47 |
-| Size | ~1.4GB |
-| Carries | `poetry.lock` installed into `/opt/venv`, Poetry, the `claude` CLI, git |
+| Size | ~2.7GB |
+| Carries | `poetry.lock` installed into `/opt/venv`, Poetry, the `claude` CLI, git, sudo, zsh (the account's login shell) with oh-my-zsh, tmux |
 | Mounts | your checkout at `/workspace`, `~/.claude` for the login |
 | Built by CI | **No.** Nothing in `.github/workflows` builds it, so a break here is caught by hand or not at all |
 
@@ -38,7 +38,7 @@ $EDITOR .env          # PRA_USER / PRA_UID / PRA_GID are required
 mkdir -p claude       # the mount point for the container's ~/.claude
 
 docker compose up -d
-docker compose exec dev bash
+docker compose exec dev zsh
 ```
 
 `.env.example` documents every variable the compose file reads. Three of them
