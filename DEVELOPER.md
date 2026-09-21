@@ -176,6 +176,23 @@ package layout and the dev dependency group left under `[tool.poetry]`. This
 is safe precisely because Poetry is pinned to the project venv: nothing has to
 stay readable by the old system Poetry.
 
+## 🐳 Setting up in a container instead
+
+Everything above assumes the toolchain on your own machine. `docker/` holds a
+development image that carries it instead -- Python, git, Poetry with
+`poetry.lock` installed, and the `claude` CLI -- with your checkout mounted,
+so the same `poetry run ...` commands work inside it unchanged:
+
+```bash
+cd docker && cp .env.example .env   # then set PRA_USER/PRA_UID/PRA_GID
+mkdir -p claude && docker compose up -d
+docker compose exec dev bash
+```
+
+[DOCKER.md](DOCKER.md) is the whole of it, including the two things that are
+not obvious: PID 1 has to be a real init or the suite kills the container, and
+a git *worktree* checkout needs its main repository mounted as well.
+
 ## 🧪 Testing
 
 Test files live in _tests_ and must follow the `test_*.py` naming convention.

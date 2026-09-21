@@ -1,0 +1,73 @@
+# The development container: one long-lived service you exec into, with the
+# checkout bind-mounted so the code it runs is the code you are editing.
+#
+# Nothing here is host-specific. The account inside the image has to match the
+# human outside it -- otherwise every file the container writes into your
+# checkout is owned by someone you are not -- and that account is a property
+# of your machine, so it is a variable rather than a value. Copy
+# `.env.example` to `.env` beside this file (gitignored) and edit that; every
+# variable is documented there rather than twice.
+#
+#   cd docker
+#   cp .env.example .env
+#   $EDITOR .env
+#   docker compose up -d
+#   docker compose exec dev bash
+name: ${PRA_PROJECT_NAME:-pr-review-agent}
+
+services:
+  dev:
+    build:
+      # The repository root, not docker/: the Dockerfile COPYs pyproject.toml
+      # and poetry.lock to bake the dependency set in.
+      context: ..
+      dockerfile: docker/Dockerfile
+      # Passed to the ARGs of the same meaning in the Dockerfile, so the
+      # account inside the image and the `user:` below cannot disagree --
+      # they read one variable.
+      args:
+        PRA_USER: ${PRA_USER:?set PRA_USER in docker/.env -- see .env.example}
+        PRA_UID: ${PRA_UID:?set PRA_UID in docker/.env to your `id -u`}
+        PRA_GID: ${PRA_GID:?set PRA_GID in docker/.env to your `id -g`}
+    image: pr-review-agent-dev:${PRA_IMAGE_TAG:-latest}
+    container_name: ${PRA_CONTAINER_NAME:-pr-review-agent-dev}
+    hostname: ${PRA_CONTAINER_NAME:-pr-review-agent-dev}
+    user: ${PRA_USER:?set PRA_USER in docker/.env -- see .env.example}
+
+    volumes:
+      # The checkout. Defaults to the parent of this file, which is right for
+      # the ordinary case of working in a clone; PRA_WORKSPACE overrides it
+      # for a worktree or a second clone.
+      - ${PRA_WORKSPACE:-..}:/workspace
+      # The agent's login, which is what makes a restart not a
+      # re-authentication. The engine adapter runs `claude` as a subprocess
+      # with HOME inherited, so this is where it looks.
+      - ${PRA_CLAUDE_HOME:-./claude}:/home/${PRA_USER}/.claude
+
+    environment:
+      # Read from the environment and never from config.yaml, which is the
+      # rule the code enforces; compose passes through whatever is in your
+      # shell or in docker/.env. Absent, the toolchain still works -- it is
+      # `host check` and `daemon start` that need it.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+
+    # The container is a place to exec into, so it has to outlive the command
+    # that started it. `docker compose run --rm dev <cmd>` is the other shape
+    # -- one command, no long-lived container -- and DOCKER.md shows both.
+    command: ["sleep", "infinity"]
+
+    # A real init (tini) as PID 1, and this is load-bearing rather than
+    # hygiene. The test suite spawns `git` through asyncio with its own
+    # session, and those children reparent to PID 1 when they finish. `sleep`
+    # never calls wait(), so they pile up as zombies -- ~200 of them by the
+    # time the suite reaches tests/test_worker.py -- and the container is then
+    # SIGKILLed out from under the run: `docker compose exec` returns 137,
+    # pytest's output stops mid-file, and nothing in `docker logs` or
+    # `docker inspect` says why (no OOM, no pids limit, both checked).
+    #
+    # Measured rather than reasoned about, because the symptom looks like a
+    # flaky test and is not one: five runs of tests/test_worker.py without
+    # this line died three times and passed twice; five runs with it passed
+    # five times, and the zombies are reaped as they appear.
+    init: true
+    restart: unless-stopped
