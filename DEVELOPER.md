@@ -186,7 +186,7 @@ so the same `poetry run ...` commands work inside it unchanged:
 ```bash
 cd docker && cp .env.example .env   # then set PRA_USER/PRA_UID/PRA_GID
 mkdir -p claude && docker compose up -d
-docker compose exec dev bash
+docker compose exec dev zsh
 ```
 
 [DOCKER.md](DOCKER.md) is the whole of it, including the two things that are
