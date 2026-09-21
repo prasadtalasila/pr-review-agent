@@ -1,0 +1,18 @@
+# The build context is the repository root (the Dockerfile COPYs
+# pyproject.toml and poetry.lock from it), and without this every one of these
+# is uploaded to the daemon on each build. `.venv` alone is the bulk of it,
+# and it is the one that would also be actively wrong to carry in: a venv
+# built against the host's interpreter and paths.
+.venv/
+.git/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+dist/
+site/
+*.db
+*.db-wal
+*.db-shm
+config.yaml
+docker/.env
+docker/claude/

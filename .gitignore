@@ -15,3 +15,12 @@ site/
 coverage.xml
 .coverage
 README.pypi.md
+
+# The compose file's local settings: your account's uid, your token, your paths.
+# docker/.env.example is the committed documentation of what belongs here.
+docker/.env
+# The container's ~/.claude: a login, not source.
+docker/claude/
+# A local compose overlay -- the worktree mount DOCKER.md describes, a port,
+# an extra volume. Machine-specific by definition; compose picks it up on its own.
+docker/docker-compose.override.yml

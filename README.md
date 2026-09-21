@@ -68,5 +68,6 @@ with every target made absolute and pinned to the tag being released.
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |
 | [docs/FEATURE-ROADMAP.md](docs/FEATURE-ROADMAP.md) | What could be built next, drawn from five neighbouring projects and a hardening review, each candidate with its cost |
 | [DEVELOPER.md](DEVELOPER.md) | How do I set up, test, lint and build this? |
+| [DOCKER.md](DOCKER.md) | How do I get all of that without installing any of it? The development container, what it carries, and the two things about it that are not obvious |
 | [CLAUDE.md](CLAUDE.md) | The behavioural guidelines applied to every change |
 | [AGENTS.md](AGENTS.md) | The coding-assistant conventions |
