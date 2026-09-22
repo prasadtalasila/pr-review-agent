@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from .logs import DEFAULT_LEVEL, LevelError, parse_level
 from .queue import DEFAULT_LEASE
 from .triggers.allowlist import Allowlist, AllowlistConfigError
 from .triggers.classifier import Classifier
@@ -405,6 +406,33 @@ class PublishConfig:
         return cls(dry_run=dry_run)
 
 
+@dataclass(frozen=True)
+class LoggingConfig:
+    """How verbose the daemon is.
+
+    The lowest-precedence of the three layers: ``--log-level`` beats
+    ``PR_REVIEW_AGENT_LOG_LEVEL`` beats this. It exists so a level chosen
+    once survives in the same file as everything else about the deployment,
+    and a unit that wants to override it has the environment.
+
+    A level and nothing else. No destinations, and no per-logger map -- see
+    ``docs/LOGGING.md`` for why both were rejected.
+    """
+
+    level: str = DEFAULT_LEVEL
+
+    @classmethod
+    def parse(cls, data: dict) -> LoggingConfig:
+        """Validate the ``logging`` section."""
+        value = data.get("level", DEFAULT_LEVEL)
+        if not isinstance(value, str):
+            raise ConfigError(f"logging.level must be a level name, got {value!r}")
+        try:
+            return cls(level=parse_level(value, source="logging.level"))
+        except LevelError as exc:
+            raise ConfigError(str(exc)) from exc
+
+
 #: The CLI an adapter runs when the operator does not name one.
 DEFAULT_ENGINE_BINARY = "claude"
 
@@ -531,6 +559,9 @@ class Config:
     workspace: WorkspaceConfig
     worker: WorkerConfig
     publish: PublishConfig
+    #: Optional, and its default cannot spend anything: a level decides how
+    #: much the daemon says, never what it does.
+    logging: LoggingConfig
     #: Required, because the worker now wires it. While nothing drained the
     #: queue an absent section could not spend and so could be absent; a
     #: daemon that claims work and has no engine to run would instead fail
@@ -552,6 +583,7 @@ class Config:
                 "workspace",
                 "worker",
                 "publish",
+                "logging",
                 "engine",
             }
         )
@@ -612,6 +644,11 @@ class Config:
             # allowance and show nobody the result.
             publish=PublishConfig.parse(
                 _section(data, "publish", {"dry_run"}) if "publish" in data else {}
+            ),
+            # Optional, like `store` and `workspace`, and for the same
+            # reason: its default is a level, which cannot spend anything.
+            logging=LoggingConfig.parse(
+                _section(data, "logging", {"level"}) if "logging" in data else {}
             ),
             # Required: there is no model an operator could be assumed to
             # have chosen, and every key here decides a cost.

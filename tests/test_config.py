@@ -38,7 +38,7 @@ ENGINE = {
 }
 
 VALID = {
-    "github": {"repo": "INTO-CPS-Association/DTaaS", "agent_user_id": 42},
+    "github": {"repo": "prasadtalasila/pr-review-agent", "agent_user_id": 42},
     "triggers": {"handle": "claude", "allowlist": [114395272]},
     "budget": BUDGET,
     "engine": ENGINE,
@@ -58,8 +58,8 @@ BUDGET_YAML = (
 
 def test_valid_config_parses():
     config = Config.from_mapping(VALID)
-    assert config.github.owner == "INTO-CPS-Association"
-    assert config.github.name == "DTaaS"
+    assert config.github.owner == "prasadtalasila"
+    assert config.github.name == "pr-review-agent"
     assert config.triggers.allowlist.allows(Actor(114395272, "8ohamed"))
 
 
@@ -105,7 +105,8 @@ def test_an_unusable_agent_user_id_is_rejected(value):
 
 
 @pytest.mark.parametrize(
-    "repo", ["DTaaS", "a/b/c", "", "/DTaaS", "INTO-CPS-Association/", 42, None]
+    "repo",
+    ["pr-review-agent", "a/b/c", "", "/pr-review-agent", "prasadtalasila/", 42, None],
 )
 def test_invalid_repo_rejected(repo):
     with pytest.raises(ConfigError):
@@ -173,11 +174,11 @@ def test_allowlist_must_be_a_list():
 def test_load_reads_yaml_file(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
-        "github:\n  repo: INTO-CPS-Association/DTaaS\n  agent_user_id: 42\n"
+        "github:\n  repo: prasadtalasila/pr-review-agent\n  agent_user_id: 42\n"
         "triggers:\n  allowlist:\n    - 114395272\n" + BUDGET_YAML,
         encoding="utf-8",
     )
-    assert Config.load(path).github.name == "DTaaS"
+    assert Config.load(path).github.name == "pr-review-agent"
 
 
 def test_load_missing_file_is_a_config_error(tmp_path):
@@ -198,7 +199,7 @@ def test_shipped_example_config_is_valid():
 
     example = Path(__file__).parent.parent / "config.example.yaml"
     config = Config.load(example)
-    assert config.github.repo == "INTO-CPS-Association/DTaaS"
+    assert config.github.repo == "prasadtalasila/pr-review-agent"
     assert config.triggers.allowlist.allows(Actor(114395272, "8ohamed"))
 
 
@@ -579,7 +580,7 @@ def test_the_minimal_example_loads():
     documentation and the loader drifting apart again.
     """
     config = Config.load(EXAMPLES / "config.minimal.example.yaml")
-    assert config.github.repo == "INTO-CPS-Association/DTaaS"
+    assert config.github.repo == "prasadtalasila/pr-review-agent"
     assert config.budget.enabled is True
 
 
@@ -625,7 +626,9 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
         "engine",
         "worker",
         "publish",
+        "logging",
     }
+    assert set(data["logging"]) == {"level"}
     assert set(data["github"]) == {"repo", "agent_user_id"}
     assert set(data["triggers"]) == {"allowlist", "handle"}
     assert set(data["budget"]) == {

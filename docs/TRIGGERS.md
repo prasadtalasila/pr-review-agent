@@ -68,6 +68,10 @@ code and log level it is rejected at.
 | Comment last updated at or below the watermark | `not_fresh` | `DEBUG` |
 | Comment on a pull request that is not open | `pr_not_open` | `DEBUG` |
 
+The `DEBUG` rows are reached with `--log-level DEBUG`,
+`PR_REVIEW_AGENT_LOG_LEVEL=DEBUG` or `logging.level` in `config.yaml` — see
+[LOGGING.md](LOGGING.md) and [CONFIG.md](CONFIG.md#logging).
+
 Every decision is logged, accepted or not — it is the only observability the
 daemon has into *why wasn't this reviewed*. The two levels matter: at a blanket
 `DEBUG` the log is invisible at the default level, which hides exactly the

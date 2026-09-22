@@ -175,8 +175,14 @@ class Publisher:
             commits=commits,
         )
         if self.config.dry_run:
+            # The whole rendered review body on every run is a DEBUG-sized
+            # record, so INFO keeps only the one line saying it happened --
+            # which is what tells an operator the brake is on at all.
             logger.info(
-                "publish.dry_run: not posting on %s#%d:\n%s",
+                "publish.dry_run: not posting on %s#%d", run.repo, run.pr_number
+            )
+            logger.debug(
+                "publish.dry_run: the body not posted on %s#%d:\n%s",
                 run.repo,
                 run.pr_number,
                 body,

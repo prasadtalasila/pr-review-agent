@@ -11,15 +11,12 @@ parsing, the log configuration and the exit status, nothing else.
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 
 import click
 
-from .. import daemon
-from ._common import config_option, startup_or_exit
-
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+from .. import daemon, logs
+from ._common import config_option, fail, startup_or_exit
 
 
 @click.group(name="daemon")
@@ -29,8 +26,25 @@ def daemon_group() -> None:
 
 @daemon_group.command(name="start")
 @config_option
-def start(config_path: str) -> None:
+@click.option(
+    "--log-level",
+    type=click.Choice(logs.LEVELS, case_sensitive=False),
+    default=None,
+    help=(
+        f"how much to log. Overrides {logs.LEVEL_ENV_VAR} and "
+        "logging.level in the config file."
+    ),
+)
+def start(config_path: str, log_level: str | None) -> None:
     """Poll, classify, review and publish until stopped."""
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    # The config is loaded before logging is configured, because it carries
+    # the lowest-precedence layer of the level. Nothing between here and
+    # `logs.configure` logs: a startup failure is reported on stderr by
+    # `fail`, which does not go through logging at all.
     config, token = startup_or_exit(config_path)
+    try:
+        level = logs.resolve_level(log_level, config.logging.level)
+    except logs.LevelError as exc:
+        fail(str(exc))
+    logs.configure(level)
     asyncio.run(daemon.run(config, token, Path(config_path)))

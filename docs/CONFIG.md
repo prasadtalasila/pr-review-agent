@@ -284,6 +284,39 @@ refusing both is the only answer that cannot surprise an operator.
 Reloadable on `SIGHUP` — see [Reload](#-reload) — and described in full in
 [PUBLISHER.md](PUBLISHER.md#-publishdry_run).
 
+### `logging`
+
+| Key | Type | Required | Meaning |
+| :-- | :-- | :-- | :-- |
+| `level` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` | no (default `INFO`) | How much the daemon says. Case-insensitive; an unrecognised name is refused at startup. |
+
+Optional, and the whole section. There are **no destinations** and **no
+per-logger map** — the daemon writes one stream to stderr and the supervisor
+owns where it goes. [LOGGING.md](LOGGING.md) has the reasoning for both
+omissions.
+
+This is the *lowest* of three layers. Precedence is **flag > environment >
+this file**:
+
+```bash
+pr-review-agent daemon start --log-level DEBUG   # highest
+PR_REVIEW_AGENT_LOG_LEVEL=DEBUG                  # what a systemd unit uses
+# then logging.level in config.yaml, then the INFO default
+```
+
+The environment layer is the one deployment uses. `GITHUB_TOKEN` already
+arrives that way, so a unit already has an `Environment=` block and the level
+lands beside it without touching `ExecStart=`.
+
+**`DEBUG` never turns up `httpx`.** The level is applied to the
+`pr_review_agent` logger, not to the root, and `httpx`, `httpcore` and
+`asyncio` are pinned at `WARNING` whatever is asked for — those loggers print
+request headers, which means `GITHUB_TOKEN`, and `DEBUG` is the first thing
+anyone reaches for during an incident. `tests/test_logs.py` pins it.
+
+Not reloadable on `SIGHUP`: only `budget` and `publish` are, and both are
+brakes. Changing the level needs a restart.
+
 ## 📄 A minimal file
 
 Every key below is required; everything else has a default. This is
@@ -300,7 +333,7 @@ set of accounts the deployment knows about.
 
 ```yaml
 github:
-  repo: INTO-CPS-Association/DTaaS
+  repo: prasadtalasila/pr-review-agent
   agent_user_id: 9206466
 
 triggers:

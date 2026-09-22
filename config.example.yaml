@@ -33,7 +33,7 @@
 github:
   # REQUIRED. The repository to poll. Reviews are posted here. Exactly one
   # "/", both halves non-empty.
-  repo: INTO-CPS-Association/DTaaS
+  repo: prasadtalasila/pr-review-agent
 
   # REQUIRED. The numeric id of the account the agent posts as. It is how
   # the agent ignores its own comments, so a posted review can never
@@ -229,6 +229,34 @@ publish:
   #
   # Reloaded on SIGHUP, like budget: a brake that needs a restart is not one.
   dry_run: false
+
+# ---------------------------------------------------------------------------
+# logging -- OPTIONAL. How much the daemon says.
+# ---------------------------------------------------------------------------
+#
+# A level, and nothing else. No destinations: the daemon writes one stream to
+# stderr and the supervisor -- systemd, rsyslog, a log collector -- owns where
+# it goes. See docs/LOGGING.md for why a sink list was rejected.
+logging:
+  # Optional (default INFO). DEBUG | INFO | WARNING | ERROR | CRITICAL,
+  # case-insensitive. An unrecognised name is refused at startup rather than
+  # falling back, because an operator who asked for DEBUG during an incident
+  # has to find out that they did not get it.
+  #
+  # This is the LOWEST of three layers. Precedence is flag > environment >
+  # this file:
+  #
+  #     pr-review-agent daemon start --log-level DEBUG   # highest
+  #     PR_REVIEW_AGENT_LOG_LEVEL=DEBUG                  # a systemd unit
+  #
+  # The environment layer is the one deployments use: GITHUB_TOKEN already
+  # arrives that way, so the level lands in the Environment= block a unit
+  # already has, without editing ExecStart=.
+  #
+  # DEBUG here never turns up httpx. The level moves the pr_review_agent
+  # logger, not the root one, and httpx/httpcore/asyncio stay pinned at
+  # WARNING -- they log request headers, which means GITHUB_TOKEN.
+  level: INFO
 
 # ---------------------------------------------------------------------------
 # engine -- REQUIRED. Which coding agent reviews, and how it is run.
