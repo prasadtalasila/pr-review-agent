@@ -46,48 +46,53 @@ outside contributions still get reviewed when we want them to".
 
 Freshness comes first because anything at or below the watermark has already
 been decided, whoever wrote it — so no other reason is informative, and a
-re-seen item stays at `DEBUG` instead of repeating `bot_commenter` at `INFO`
-on every cycle. No accept/reject outcome depends on the order: every one of
-these paths rejects either way.
+a re-seen item is reported as `not_fresh` rather than repeating
+`bot_commenter` on every cycle. No accept/reject outcome depends on the
+order: every one of these paths rejects either way.
 
 Every arrow in that diagram is one row of the table below, with the reason
 code and log level it is rejected at.
 
 ## 🚫 Every rejection, and its reason code
 
-| Event | Reason code | Log level |
-| :-- | :-- | :-- |
-| Push to an existing pull request | *never classified* — the poller emits no push event | — |
-| Draft pull request | `draft` | `INFO` |
-| Pull request from an unlisted author | `author_not_allowlisted` | `INFO` |
-| Comment from an unlisted account | `commenter_not_allowlisted` | `INFO` |
-| Any bot account | `bot_author` / `bot_commenter` | `INFO` |
-| The agent's own account | `self_author` / `self_commenter` | `INFO` |
-| `@claude` in a fence, code span or blockquote | `no_mention` | `DEBUG` |
-| Already-open pull request seen below the watermark | `not_fresh` | `DEBUG` |
-| Comment last updated at or below the watermark | `not_fresh` | `DEBUG` |
-| Comment on a pull request that is not open | `pr_not_open` | `DEBUG` |
+Every row below is logged at `DEBUG`, accepted decisions included.
 
-The `DEBUG` rows are reached with `--log-level DEBUG`,
+| Event | Reason code |
+| :-- | :-- |
+| Push to an existing pull request | *never classified* — the poller emits no push event |
+| Draft pull request | `draft` |
+| Pull request from an unlisted author | `author_not_allowlisted` |
+| Comment from an unlisted account | `commenter_not_allowlisted` |
+| Any bot account | `bot_author` / `bot_commenter` |
+| The agent's own account | `self_author` / `self_commenter` |
+| `@claude` in a fence, code span or blockquote | `no_mention` |
+| Already-open pull request seen below the watermark | `not_fresh` |
+| Comment last updated at or below the watermark | `not_fresh` |
+| Comment on a pull request that is not open | `pr_not_open` |
+
+They are reached with `--log-level DEBUG`,
 `PR_REVIEW_AGENT_LOG_LEVEL=DEBUG` or `logging.level` in `config.yaml` — see
 [LOGGING.md](LOGGING.md) and [CONFIG.md](CONFIG.md#logging).
 
 Every decision is logged, accepted or not — it is the only observability the
-daemon has into *why wasn't this reviewed*. The two levels matter: at a blanket
-`DEBUG` the log is invisible at the default level, which hides exactly the
-cases an operator asks about; at a blanket `INFO` the firehose reasons bury
-everything else. `not_fresh` fires once per already-open pull request on the
-first poll, `no_mention` fires once per comment on every poll that returns a
-`200`, and `pr_not_open` fires once per comment on every pull request the
-repository has ever closed — so those three stay at `DEBUG` and everything
-else is visible.
+daemon has into *why wasn't this reviewed*. One level for all of them, rather
+than the per-reason split this table used to carry, because a decision fires
+for every pull request and every comment on every cycle: `not_fresh` once per
+already-open pull request on the first poll, `no_mention` once per comment on
+every poll that returns a `200`, and `pr_not_open` once per comment on every
+pull request the repository has ever closed. That is the whole record's
+shape, not three exceptional reasons inside it, so the whole record sits on
+the level an operator turns on to ask the question. What a review actually
+did is [LOGGING.md](LOGGING.md)'s events 3 to 6, and those are louder than
+the default.
 
 ### Comments are filtered to open pull requests
 
 `/pulls?state=open` is filtered by state. The two comment endpoints are
 repo-wide and are not: they return comments on pull requests closed weeks ago,
-and in the v0.12.0 live run that was a hundred `INFO` decisions per cycle that
-nothing could ever come of.
+and in the v0.12.0 live run that was a hundred decisions per cycle that
+nothing could ever come of — at the time, all of them visible at the default
+level.
 
 So the daemon keeps the set of pull request numbers the `/pulls` leg reported
 and rejects a comment outside it as `pr_not_open`. The set lives across cycles

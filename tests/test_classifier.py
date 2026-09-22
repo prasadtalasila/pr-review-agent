@@ -178,8 +178,8 @@ def test_trigger_kinds_share_no_dedupe_namespace(classifier):
     assert pr_key.split(":")[0] != mention_key.split(":")[0]
 
 
-def test_accepted_decision_is_logged_at_info(classifier, caplog):
-    with caplog.at_level("INFO", logger="pr_review_agent.triggers.classifier"):
+def test_accepted_decision_is_logged(classifier, caplog):
+    with caplog.at_level("DEBUG", logger="pr_review_agent.triggers.classifier"):
         classifier.classify_pull_request(make_pr())
     assert any("reason=accepted" in r.message for r in caplog.records)
 
@@ -204,30 +204,29 @@ def test_a_naive_watermark_is_rejected_at_construction():
         make_pr(author=BOT),
         make_pr(author=AGENT),
         make_pr(is_draft=True),
+        make_pr(created_at=EARLIER),
     ],
 )
-def test_operator_relevant_rejections_are_visible_at_info(classifier, caplog, pr):
-    # At the default level these are the whole answer to "why wasn't this
-    # reviewed?"; at DEBUG the log exists but nobody sees it.
-    with caplog.at_level("INFO", logger="pr_review_agent.triggers.classifier"):
+def test_every_rejection_is_logged_at_debug(classifier, caplog, pr):
+    """One level for the whole record, firehose reasons and operator-relevant
+    ones alike. A decision fires for every pull request on every poll, so it
+    belongs on the level an operator turns on to ask "why wasn't this
+    reviewed" rather than on the one they read by default."""
+    with caplog.at_level("DEBUG", logger="pr_review_agent.triggers.classifier"):
         decision = classifier.classify_pull_request(pr)
-    assert any(decision.reason in r.message for r in caplog.records)
+    assert [r.levelname for r in caplog.records] == ["DEBUG"]
+    assert decision.reason in caplog.records[0].message
 
 
-def test_the_two_firehose_reasons_stay_at_debug(classifier, caplog):
-    # not_fresh fires once per already-open PR and no_mention once per
-    # comment; at INFO they would bury everything above.
-    with caplog.at_level("INFO", logger="pr_review_agent.triggers.classifier"):
-        classifier.classify_pull_request(make_pr(created_at=EARLIER))
-        classifier.classify_comment(make_comment(body="looks good"))
-    assert caplog.records == []
-
-
-def test_pr_not_open_stays_at_debug(classifier, caplog):
-    # It fires once per comment on every closed pull request in the repo,
-    # which is what made the live log unreadable in the first place.
+def test_no_decision_is_visible_at_the_default_level(classifier, caplog):
+    """The v0.12.0 failure this closes for good: roughly a hundred decisions
+    per cycle at INFO, which buried everything a review actually did."""
     closed = replace(classifier, open_pull_requests=frozenset({8}))
     with caplog.at_level("INFO", logger="pr_review_agent.triggers.classifier"):
+        classifier.classify_pull_request(make_pr())
+        classifier.classify_pull_request(make_pr(author=OUTSIDER))
+        classifier.classify_pull_request(make_pr(created_at=EARLIER))
+        classifier.classify_comment(make_comment(body="looks good"))
         closed.classify_comment(make_comment())
     assert caplog.records == []
 

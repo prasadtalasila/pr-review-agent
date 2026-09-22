@@ -148,13 +148,42 @@ an unstated assumption — that the level of each call site is fixed. It is
 not. Selection lives in the levels assigned *at the call sites*, and then a
 global INFO is exactly the operator's view.
 
+The six events carry the levels below. The split is **per poll cycle**
+against **per review**: events 1 and 2 fire for every pull request and every
+comment on every cycle, so they sit at DEBUG where an operator turns them on
+to ask *why wasn't this reviewed*. Events 3 to 6 fire once per review, so
+they are visible at the default INFO — and event 6, the one number an
+operator wants whatever else is switched off, is louder still.
+
+| # | Event | Record | Where | Level |
+| :-- | :-- | :-- | :-- | :-- |
+| 1 | Poll cycle | `cycle seen=N enqueued=N` | `daemon.py` | **DEBUG** |
+| 2 | The PR, and why it was or was not taken | `trigger decision kind=… repo=… pr=… reason=…` | `triggers/classifier.py` | **DEBUG** |
+| 3 | Start of a review | `reviewing repo#N as … (mode=…)` | `worker.py` | **INFO** |
+| 4 | The review's outcome | `reviewed …: …, N findings, N tokens` | `worker.py` | **INFO** |
+| 5 | The review being posted | `published … as comment N` | `publisher.py` | **INFO** |
+| 6 | Remaining token budget | `budget after …: N tokens left in the … window, mode=…` | `worker.py` | **ERROR** |
+
+`tests/test_logs.py` pins all six by reading the levels out of the four
+modules, so the table above and the code cannot drift apart.
+
+Everything else keeps the levels it had:
+
 | Level | Records |
 | :-- | :-- |
-| **INFO** | startup (state database, workspace cache, worker count); `cycle seen=N enqueued=N`; cold-start watermark; `SIGHUP` reload; classifier decisions; **review start** *(new)*; `reviewed …` **with remaining budget** *(new)*; resumed and superseded runs; publisher's stale-head discard; `published …` |
+| **INFO** | startup (state database, workspace cache, worker count); cold-start watermark; `SIGHUP` reload; resumed and superseded runs; publisher's stale-head discard; the one-line `publish.dry_run` summary |
 | **WARNING and above** | every budget refusal, lapsed lease, retry and crash |
-| **DEBUG** | `not_fresh`, `no_mention` and `pr_not_open` decisions, unchanged — see [Triggers](TRIGGERS.md); `engine/cli.py:155` argv and prompt digest *(demoted)*; `publisher.py:178` dry-run review body *(demoted, keeping a one-line INFO summary)* |
+| **DEBUG** | `engine/cli.py` argv and prompt digest *(demoted)*; `publisher.py` dry-run review body *(demoted, keeping the one-line INFO summary)* |
 
-Two demotions and two additions. The demoted pair are the only INFO records
+Event 6 is the one deliberate departure from severity-as-severity, and its
+cost is worth naming rather than discovering: `budget after …` at ERROR reads
+like a failure to anything classifying by level alone, and
+`journalctl -p err` will show one per review on a healthy daemon. What it
+buys is that the remaining allowance — the number that decides whether the
+agent can still work at all — answers at every level an operator might set,
+including the one they drop to precisely when they want the log quiet.
+
+Two demotions and two additions besides. The demoted pair are the only INFO records
 that do not belong in an operator's view: the engine adapter's argv and
 prompt digest fire once per review and are also the **F4** log-hygiene
 surface, and the dry-run branch dumps an entire rendered review body into the

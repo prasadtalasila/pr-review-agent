@@ -9,6 +9,8 @@ incident.
 """
 
 import logging
+import re
+from pathlib import Path
 
 import pytest
 
@@ -201,3 +203,80 @@ def test_an_unknown_key_in_the_section_is_refused():
         Config.from_mapping(
             {**BASE, "logging": {"level": "INFO", "loggers": {"x": "DEBUG"}}}
         )
+
+
+# --------------------------------------------------------------------------
+# The six events, and the level each is emitted at
+# --------------------------------------------------------------------------
+#
+# `docs/LOGGING.md` names six things an operator wants visible while the
+# daemon runs. The level each one carries is the contract between that page
+# and the code, and it is spread over four modules -- so it is pinned here,
+# in one place, by reading the levels out of the source rather than by
+# running a daemon.
+
+SIX_EVENTS = [
+    ("1 poll cycle", "daemon.py", '"cycle seen=%d enqueued=%d"', "debug"),
+    (
+        "2 trigger decision",
+        "triggers/classifier.py",
+        '"trigger decision kind=%s repo=%s pr=%s reason=%s"',
+        "debug",
+    ),
+    ("3 review start", "worker.py", '"reviewing %s#%d as %s (mode=%s)"', "info"),
+    (
+        "4 review outcome",
+        "worker.py",
+        '"reviewed %s: %s, %d findings, %d tokens"',
+        "info",
+    ),
+    (
+        "5 review posted",
+        "publisher.py",
+        '"published %s on %s#%d as comment %d"',
+        "info",
+    ),
+    (
+        "6 remaining budget",
+        "worker.py",
+        '"budget after %s: %d tokens left in the %s window, mode=%s"',
+        "error",
+    ),
+]
+
+_SRC = Path(logs.__file__).parent
+
+
+@pytest.mark.parametrize(
+    ("event", "module", "message", "level"),
+    SIX_EVENTS,
+    ids=[e[0] for e in SIX_EVENTS],
+)
+def test_each_of_the_six_events_is_emitted_at_its_agreed_level(
+    event, module, message, level
+):
+    source = (_SRC / module).read_text(encoding="utf-8")
+    assert message in source, f"{event}: the record is gone from {module}"
+    call = re.search(r"logger\.(\w+)\(\s*" + re.escape(message), source)
+    assert call, f"{event}: no logger call found for the record in {module}"
+    assert call.group(1) == level, (
+        f"{event}: emitted at logger.{call.group(1)}, agreed level is {level}"
+    )
+
+
+def test_the_first_two_events_are_hidden_at_the_default_level(clean_logging):
+    """Events 1 and 2 fire per poll cycle and per pull request; 3 to 6 fire
+    per review. Only the second group is visible without asking."""
+    logs.configure(logs.DEFAULT_LEVEL)
+    package = logging.getLogger(logs.PACKAGE_LOGGER)
+    assert not package.isEnabledFor(logging.DEBUG)
+    assert package.isEnabledFor(logging.INFO)
+
+
+def test_the_budget_readout_survives_the_quietest_useful_level(clean_logging):
+    """Event 6 alone sits at ERROR, so `--log-level ERROR` still answers
+    "what is left to spend" after every review."""
+    logs.configure("ERROR")
+    package = logging.getLogger(logs.PACKAGE_LOGGER)
+    assert package.isEnabledFor(logging.ERROR)
+    assert not package.isEnabledFor(logging.WARNING)

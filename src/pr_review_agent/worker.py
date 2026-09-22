@@ -203,6 +203,20 @@ class ReviewWorker:
         # beat a review that takes minutes, and it is what makes an adaptive
         # poll interval feel like an answer rather than a silence.
         await self.publisher.acknowledge(claim.trigger)
+        # The start of a review, here rather than in the engine adapter. The
+        # adapter's line fires only once the pull request facts and the
+        # checkout have both succeeded, and a cold clone is the slow part --
+        # so a run that stalls there would be indistinguishable from one that
+        # never started. Held to the moment the lease is confirmed and
+        # nothing slow has been attempted, this is the record that makes
+        # *started and still going* a different thing from *never started*.
+        logger.info(
+            "reviewing %s#%d as %s (mode=%s)",
+            claim.trigger.repo,
+            claim.trigger.pr_number,
+            claim.trigger.dedupe_key,
+            mode,
+        )
 
         usage = Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name)
         # Everything that can fail before the engine starts is infrastructure,
@@ -449,6 +463,20 @@ class ReviewWorker:
                 claim.trigger.dedupe_key,
             )
             return
+        # The remaining allowance, once per review rather than once per poll
+        # cycle. Read *after* the settle on purpose: until then the ledger
+        # still holds this run's reservation at `max_run_tokens`, so the
+        # number would understate what is left by whatever the run did not
+        # spend. `headroom` is already public and already actor-agnostic --
+        # its docstring names this use.
+        headroom = self.governor.headroom(_now())
+        logger.error(
+            "budget after %s: %d tokens left in the %s window, mode=%s",
+            claim.trigger.dedupe_key,
+            headroom.remaining,
+            headroom.tightest,
+            headroom.mode,
+        )
         if reviewed is not None:
             # This attempt *did* reach an engine, so a failed post counts
             # against the bound like any other retry -- unlike the
