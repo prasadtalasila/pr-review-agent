@@ -104,30 +104,41 @@ environment layer exists precisely so a unit can override the file.
 ### The level is applied to `pr_review_agent`, never to root
 
 `basicConfig` configured the **root** logger, so a naive `--log-level DEBUG`
-would have switched on `httpx` and `httpcore` at DEBUG — which print request
-headers, meaning `GITHUB_TOKEN`, into the operator's journal. The level
-therefore moves the `pr_review_agent` logger, and `httpx`, `httpcore` and
-`asyncio` follow it **only downwards**, with a floor at WARNING:
+would have switched on `httpx` and `httpcore` — and `httpcore` prints
+fourteen records per request at DEBUG, the response header list among them.
+The level therefore moves the `pr_review_agent` logger, and three
+third-party loggers follow it only as far down as each one stays quiet:
 
-| `level` | `pr_review_agent` | `httpx`, `httpcore`, `asyncio` |
+| `level` | `pr_review_agent` | `httpx` | `httpcore` | `asyncio` |
+| :-- | :-- | :-- | :-- | :-- |
+| `DEBUG` | `DEBUG` | `WARNING` | `INFO` | `DEBUG` |
+| `INFO` | `INFO` | `WARNING` | `INFO` | `INFO` |
+| `WARNING` | `WARNING` | `WARNING` | `WARNING` | `WARNING` |
+| `ERROR` | `ERROR` | `ERROR` | `ERROR` | `ERROR` |
+| `CRITICAL` | `CRITICAL` | `CRITICAL` | `CRITICAL` | `CRITICAL` |
+
+A floor each rather than one shared pin, and the floors differ because the
+libraries do. The rule is **the lowest level at which that library is
+quiet**, measured against the pinned versions with one request each:
+
+| Library | What it emits | Floor |
 | :-- | :-- | :-- |
-| `DEBUG` | `DEBUG` | `WARNING` |
-| `INFO` | `INFO` | `WARNING` |
-| `WARNING` | `WARNING` | `WARNING` |
-| `ERROR` | `ERROR` | `ERROR` |
-| `CRITICAL` | `CRITICAL` | `CRITICAL` |
+| `httpx` | Nothing at DEBUG; one line per request at INFO, and the poller makes several every cycle for as long as the daemon runs | WARNING |
+| `httpcore` | Nothing at INFO; fourteen records per request at DEBUG including the response header list, and it is the half of the pair the credential travels through | INFO |
+| `asyncio` | One record for the whole process, nothing per request, no credential near it | DEBUG — it follows |
 
-A floor rather than a pin, because the two differ above WARNING and the pin
-is wrong there: `--log-level ERROR` would still print third-party warnings,
-which is not what an operator who asked for ERROR meant. Below the floor the
-two refusals have different grounds. DEBUG is where the token leaks. INFO is
-where `httpx` logs a line per request — several per poll cycle, for as long
-as the daemon runs, on top of the six events INFO is meant to be.
+Two consequences worth stating. At the default INFO **all three are
+silent**, which is the noise this design replaces: the root-logger
+`basicConfig` put `httpx`'s per-request line into the log on every poll. And
+`--log-level ERROR` silences their warnings too, which a shared pin at
+WARNING would not have done — a pin and a floor only agree below WARNING.
 
-With a single global knob the DEBUG bound is load-bearing rather than merely
-careful: `LOG_LEVEL=DEBUG` is the first thing an operator reaches for during
-an incident. Per **CLAUDE.md** §5 the whole table gets a test, not just
-attention — `tests/test_logs.py`, over each of the three loggers.
+What a transport prints about itself is a library-version detail rather than
+a contract, which is the argument for holding `httpcore` above DEBUG
+independently of what any given release happens to log there. With a single
+global knob that matters: `LOG_LEVEL=DEBUG` is the first thing an operator
+reaches for during an incident. Per **CLAUDE.md** §5 the whole table gets a
+test, not just attention — `tests/test_logs.py`.
 
 ## 📊 Global level, not per-logger
 
@@ -388,8 +399,8 @@ root = logging.getLogger()
 root.addHandler(handler)
 root.setLevel(logging.WARNING)
 logging.getLogger("pr_review_agent").setLevel(level)
-for noisy in ("httpx", "httpcore", "asyncio"):
-    logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
+for noisy, floor in FLOORS.items():        # httpx WARNING, httpcore INFO, asyncio DEBUG
+    logging.getLogger(noisy).setLevel(max(level, floor))
 ```
 
 Both decisions are resolved here, at handler construction, and neither is
@@ -575,9 +586,10 @@ both redirect stderr to a file; the Event Log analogue,
 ## 🧪 What the tests must pin
 
 - Precedence: flag beats environment beats config file.
-- `DEBUG` leaves `httpx` and `httpcore` at WARNING, and so does `INFO`,
-  while `ERROR` and `CRITICAL` do lower them. The first is the
-  security-relevant one — those loggers print request headers.
+- The five-by-four level table above, end to end. The load-bearing rows:
+  `DEBUG` leaves `httpx` at WARNING and `httpcore` at INFO, so neither the
+  per-request line nor the transport's fourteen-record trace is reachable by
+  asking the agent for DEBUG; `ERROR` and `CRITICAL` do lower all three.
 - At INFO the six events are emitted and the engine adapter's argv line is
   not.
 - `_on_journal` is true when `JOURNAL_STREAM` matches a real `os.fstat` and

@@ -14,9 +14,10 @@ Two things this deliberately does not do, both recorded in
 a naive ``--log-level DEBUG`` today would switch on ``httpx`` and
 ``httpcore`` -- and those print request headers, meaning ``GITHUB_TOKEN``,
 into the operator's journal. The level moves the ``pr_review_agent`` logger
-alone, and the three noisy third-party loggers follow it only downwards --
-see :func:`_third_party_level`. ``LOG_LEVEL=DEBUG`` is the first thing
-reached for in an incident, so per **CLAUDE.md** §5 that bound has a test.
+alone, and three third-party loggers follow it only as far down as each one
+stays quiet -- see :data:`THIRD_PARTY_FLOORS`. ``LOG_LEVEL=DEBUG`` is the
+first thing reached for in an incident, so per **CLAUDE.md** §5 the whole
+table has a test rather than just attention.
 
 **It offers no per-logger map.** Selection lives in the levels assigned at
 the call sites, so a global ``INFO`` is already the operator's view; the
@@ -43,11 +44,33 @@ DEFAULT_LEVEL = "INFO"
 LEVEL_ENV_VAR = "PR_REVIEW_AGENT_LOG_LEVEL"
 
 #: Third-party loggers the resolved level is allowed to quieten but not to
-#: make louder than ``WARNING``. See :func:`_third_party_level`.
-THIRD_PARTY_LOGGERS = ("httpx", "httpcore", "asyncio")
-
-#: The loudest these three may get, whatever the operator asks for.
-THIRD_PARTY_FLOOR = logging.WARNING
+#: make louder than their own floor, which is **the lowest level at which
+#: that library is quiet**. One rule, three different answers, because the
+#: three get loud at three different levels. See :func:`_third_party_level`.
+#:
+#: The numbers are measured against the pinned ``httpx`` and ``httpcore``,
+#: one request each:
+#:
+#: ``httpx``
+#:     Says nothing at DEBUG and one line per request at INFO
+#:     (``HTTP Request: GET https://... "HTTP/1.1 200 OK"``). The poller
+#:     makes several every cycle for as long as the daemon runs, so INFO is
+#:     where it would bury the six events that level exists to show.
+#: ``httpcore``
+#:     Says nothing at INFO and fourteen records per request at DEBUG,
+#:     including the response header list verbatim. It is also the half of
+#:     the pair the credential actually travels through, and precisely what
+#:     a transport prints about itself is a library-version detail rather
+#:     than a contract -- so it is held above DEBUG whatever is installed.
+#: ``asyncio``
+#:     One record for the whole process (``Using selector: EpollSelector``),
+#:     no credential anywhere near it, and nothing per request. There is
+#:     nothing to hold back, so it simply follows the operator's level.
+THIRD_PARTY_FLOORS = {
+    "httpx": logging.WARNING,
+    "httpcore": logging.INFO,
+    "asyncio": logging.DEBUG,
+}
 
 #: The logger the level is applied to: this package, and nothing above it.
 PACKAGE_LOGGER = "pr_review_agent"
@@ -86,29 +109,24 @@ def resolve_level(flag: str | None, configured: str) -> str:
     return configured
 
 
-def _third_party_level(level: str) -> int:
-    """What ``httpx``, ``httpcore`` and ``asyncio`` are set to under ``level``.
+def _third_party_level(name: str, level: str) -> int:
+    """What third-party logger ``name`` is set to under ``level``.
 
-    They follow the operator's level *downwards* and stop at ``WARNING``
-    going up. Asking for ``ERROR`` really does silence their warnings --
-    which pinning them would not have done -- while the two levels below the
-    floor are refused for different reasons:
+    Each one follows the operator's level *downwards* without limit, and
+    upwards only as far as its own floor -- so ``--log-level ERROR`` really
+    does silence their warnings too, which one shared pin would not have
+    done, and ``--log-level DEBUG`` still does not turn the transport pair
+    on.
 
-    ``DEBUG`` is a security floor. ``httpx`` and ``httpcore`` log request
-    headers at ``DEBUG``, which means ``GITHUB_TOKEN`` in the operator's
-    journal, and ``--log-level DEBUG`` is the first thing anyone reaches for
-    during an incident -- so the one level that leaks is the one most likely
-    to be asked for.
-
-    ``INFO`` is a noise floor. ``httpx`` logs a line per request there, and
-    the poller makes several every cycle for as long as the daemon runs;
-    that would bury the six events ``docs/LOGGING.md`` says ``INFO`` is for.
-    The per-request view is what ``poller`` itself logs at ``DEBUG``.
+    The asymmetry is the point. Quietening a library can only cost an
+    operator information they explicitly asked not to have; making one
+    louder than its floor costs them the review log, and in ``httpcore``'s
+    case prints transport internals nobody asked for.
     """
     # `getattr`, not `logging.getLevelNamesMapping()`: that is 3.11+ and the
     # supported range starts at 3.10. `level` is already one of `LEVELS`, so
     # the attribute exists.
-    return max(getattr(logging, level), THIRD_PARTY_FLOOR)
+    return max(getattr(logging, level), THIRD_PARTY_FLOORS[name])
 
 
 def configure(level: str) -> None:
@@ -127,5 +145,5 @@ def configure(level: str) -> None:
     root.setLevel(logging.WARNING)
 
     logging.getLogger(PACKAGE_LOGGER).setLevel(level)
-    for name in THIRD_PARTY_LOGGERS:
-        logging.getLogger(name).setLevel(_third_party_level(level))
+    for name in THIRD_PARTY_FLOORS:
+        logging.getLogger(name).setLevel(_third_party_level(name, level))

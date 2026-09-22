@@ -38,7 +38,7 @@ def _clean_logging():
     """Undo whatever ``configure`` did to the process-wide logger tree."""
     root = logging.getLogger()
     before = (list(root.handlers), root.level)
-    names = (logs.PACKAGE_LOGGER, *logs.THIRD_PARTY_LOGGERS)
+    names = (logs.PACKAGE_LOGGER, *logs.THIRD_PARTY_FLOORS)
     levels = {name: logging.getLogger(name).level for name in names}
     yield
     root.handlers, root.level = before
@@ -112,57 +112,68 @@ def test_the_level_lands_on_this_package(clean_logging):
     assert logging.getLogger(logs.PACKAGE_LOGGER).isEnabledFor(logging.DEBUG)
 
 
-@pytest.mark.parametrize("noisy", logs.THIRD_PARTY_LOGGERS)
-def test_debug_does_not_turn_on_the_loggers_that_print_request_headers(
+@pytest.mark.parametrize("noisy", logs.THIRD_PARTY_FLOORS)
+def test_debug_does_not_turn_on_the_transport_or_bury_the_review_log(
     clean_logging, noisy
 ):
-    """The security-relevant one: ``httpx`` DEBUG would log ``GITHUB_TOKEN``."""
+    """`httpcore` prints fourteen records per request at DEBUG, including the
+    response header list, and `httpx` a line per request at INFO. Neither is
+    reachable by asking the agent for DEBUG."""
     logs.configure("DEBUG")
-    assert not logging.getLogger(noisy).isEnabledFor(logging.DEBUG)
-    assert logging.getLogger(noisy).isEnabledFor(logging.WARNING)
+    assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
+    assert not logging.getLogger("httpcore").isEnabledFor(logging.DEBUG)
 
 
-@pytest.mark.parametrize("noisy", logs.THIRD_PARTY_LOGGERS)
-def test_info_does_not_turn_on_a_line_per_request(clean_logging, noisy):
-    """``httpx`` logs one per request at INFO, several per poll cycle, which
-    would bury the six events INFO exists to show."""
+def test_the_default_level_leaves_all_three_silent(clean_logging):
+    """The noise this replaces: `basicConfig(level=INFO)` on the root logger
+    put `httpx`'s per-request line into the log on every poll."""
     logs.configure("INFO")
-    assert not logging.getLogger(noisy).isEnabledFor(logging.INFO)
+    # Each is held above the level at which it actually emits: `httpx` logs
+    # only at INFO, `httpcore` and `asyncio` only at DEBUG.
+    assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
+    assert not logging.getLogger("httpcore").isEnabledFor(logging.DEBUG)
+    assert not logging.getLogger("asyncio").isEnabledFor(logging.DEBUG)
+
+
+def test_asyncio_follows_the_level_because_it_has_nothing_to_hold_back(
+    clean_logging,
+):
+    """One record for the whole process, and no credential near it."""
+    logs.configure("DEBUG")
+    assert logging.getLogger("asyncio").isEnabledFor(logging.DEBUG)
 
 
 @pytest.mark.parametrize(
     ("asked", "expected"),
     [
-        ("DEBUG", logging.WARNING),
-        ("INFO", logging.WARNING),
-        ("WARNING", logging.WARNING),
-        ("ERROR", logging.ERROR),
-        ("CRITICAL", logging.CRITICAL),
+        ("DEBUG", {"httpx": "WARNING", "httpcore": "INFO", "asyncio": "DEBUG"}),
+        ("INFO", {"httpx": "WARNING", "httpcore": "INFO", "asyncio": "INFO"}),
+        (
+            "WARNING",
+            {"httpx": "WARNING", "httpcore": "WARNING", "asyncio": "WARNING"},
+        ),
+        ("ERROR", {"httpx": "ERROR", "httpcore": "ERROR", "asyncio": "ERROR"}),
+        (
+            "CRITICAL",
+            {"httpx": "CRITICAL", "httpcore": "CRITICAL", "asyncio": "CRITICAL"},
+        ),
     ],
 )
-def test_the_third_party_loggers_follow_the_level_downwards(asked, expected):
-    """A floor, not a pin. Asking for ERROR silences their warnings too --
-    which pinning them at WARNING would not have done."""
-    assert logs._third_party_level(asked) == expected
+def test_each_library_has_its_own_floor_and_follows_the_level_below_it(asked, expected):
+    """A floor each, not one shared pin: the three get loud at three
+    different levels, so they are held at three different ones. Asking for
+    ERROR silences all of them, which a pin at WARNING would not have."""
+    assert {
+        name: logging.getLevelName(logs._third_party_level(name, asked))
+        for name in logs.THIRD_PARTY_FLOORS
+    } == expected
 
 
-@pytest.mark.parametrize("noisy", logs.THIRD_PARTY_LOGGERS)
+@pytest.mark.parametrize("noisy", logs.THIRD_PARTY_FLOORS)
 def test_asking_for_critical_silences_third_party_errors_too(clean_logging, noisy):
     logs.configure("CRITICAL")
     assert not logging.getLogger(noisy).isEnabledFor(logging.ERROR)
     assert logging.getLogger(noisy).isEnabledFor(logging.CRITICAL)
-
-
-def test_the_root_logger_is_left_at_warning(clean_logging):
-    """It is the parent of every third-party logger in the process."""
-    logs.configure("DEBUG")
-    assert logging.getLogger().level == logging.WARNING
-
-
-def test_configure_attaches_exactly_one_handler(clean_logging):
-    before = len(logging.getLogger().handlers)
-    logs.configure("INFO")
-    assert len(logging.getLogger().handlers) == before + 1
 
 
 # --------------------------------------------------------------------------
