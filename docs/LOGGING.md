@@ -104,16 +104,30 @@ environment layer exists precisely so a unit can override the file.
 ### The level is applied to `pr_review_agent`, never to root
 
 `basicConfig` configured the **root** logger, so a naive `--log-level DEBUG`
-would have switched on `httpx` and `httpcore` at DEBUG — which print request headers, meaning
-`GITHUB_TOKEN`, into the operator's journal. The level therefore moves the
-`pr_review_agent` logger, and `httpx`, `httpcore` and `asyncio` are pinned at
-WARNING explicitly.
+would have switched on `httpx` and `httpcore` at DEBUG — which print request
+headers, meaning `GITHUB_TOKEN`, into the operator's journal. The level
+therefore moves the `pr_review_agent` logger, and `httpx`, `httpcore` and
+`asyncio` follow it **only downwards**, with a floor at WARNING:
 
-With a single global knob this is load-bearing rather than merely careful:
-`LOG_LEVEL=DEBUG` is the first thing an operator reaches for during an
-incident. Per **CLAUDE.md** §5 it gets a test, not just attention —
-`tests/test_logs.py::test_debug_does_not_turn_on_the_loggers_that_print_request_headers`,
-over each of the three pinned loggers.
+| `level` | `pr_review_agent` | `httpx`, `httpcore`, `asyncio` |
+| :-- | :-- | :-- |
+| `DEBUG` | `DEBUG` | `WARNING` |
+| `INFO` | `INFO` | `WARNING` |
+| `WARNING` | `WARNING` | `WARNING` |
+| `ERROR` | `ERROR` | `ERROR` |
+| `CRITICAL` | `CRITICAL` | `CRITICAL` |
+
+A floor rather than a pin, because the two differ above WARNING and the pin
+is wrong there: `--log-level ERROR` would still print third-party warnings,
+which is not what an operator who asked for ERROR meant. Below the floor the
+two refusals have different grounds. DEBUG is where the token leaks. INFO is
+where `httpx` logs a line per request — several per poll cycle, for as long
+as the daemon runs, on top of the six events INFO is meant to be.
+
+With a single global knob the DEBUG bound is load-bearing rather than merely
+careful: `LOG_LEVEL=DEBUG` is the first thing an operator reaches for during
+an incident. Per **CLAUDE.md** §5 the whole table gets a test, not just
+attention — `tests/test_logs.py`, over each of the three loggers.
 
 ## 📊 Global level, not per-logger
 
@@ -375,7 +389,7 @@ root.addHandler(handler)
 root.setLevel(logging.WARNING)
 logging.getLogger("pr_review_agent").setLevel(level)
 for noisy in ("httpx", "httpcore", "asyncio"):
-    logging.getLogger(noisy).setLevel(logging.WARNING)
+    logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
 ```
 
 Both decisions are resolved here, at handler construction, and neither is
@@ -561,7 +575,8 @@ both redirect stderr to a file; the Event Log analogue,
 ## 🧪 What the tests must pin
 
 - Precedence: flag beats environment beats config file.
-- `DEBUG` leaves `httpx` and `httpcore` at WARNING. This is the
+- `DEBUG` leaves `httpx` and `httpcore` at WARNING, and so does `INFO`,
+  while `ERROR` and `CRITICAL` do lower them. The first is the
   security-relevant one — those loggers print request headers.
 - At INFO the six events are emitted and the engine adapter's argv line is
   not.

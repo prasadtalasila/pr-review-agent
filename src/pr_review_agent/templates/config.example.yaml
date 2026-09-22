@@ -254,8 +254,10 @@ logging:
   # already has, without editing ExecStart=.
   #
   # DEBUG here never turns up httpx. The level moves the pr_review_agent
-  # logger, not the root one, and httpx/httpcore/asyncio stay pinned at
-  # WARNING -- they log request headers, which means GITHUB_TOKEN.
+  # logger, not the root one, and httpx/httpcore/asyncio follow it only
+  # downwards, with a floor at WARNING: ERROR silences their warnings too,
+  # while DEBUG and INFO do not raise them. DEBUG is where they log request
+  # headers, which means GITHUB_TOKEN; INFO is a line per request.
   level: INFO
 
 # ---------------------------------------------------------------------------

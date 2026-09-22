@@ -14,9 +14,9 @@ Two things this deliberately does not do, both recorded in
 a naive ``--log-level DEBUG`` today would switch on ``httpx`` and
 ``httpcore`` -- and those print request headers, meaning ``GITHUB_TOKEN``,
 into the operator's journal. The level moves the ``pr_review_agent`` logger
-alone, and the three noisy third-party loggers are pinned at ``WARNING``
-whatever the operator asks for. ``LOG_LEVEL=DEBUG`` is the first thing
-reached for in an incident, so per **CLAUDE.md** §5 that pinning has a test.
+alone, and the three noisy third-party loggers follow it only downwards --
+see :func:`_third_party_level`. ``LOG_LEVEL=DEBUG`` is the first thing
+reached for in an incident, so per **CLAUDE.md** §5 that bound has a test.
 
 **It offers no per-logger map.** Selection lives in the levels assigned at
 the call sites, so a global ``INFO`` is already the operator's view; the
@@ -42,10 +42,12 @@ DEFAULT_LEVEL = "INFO"
 #: every subprocess the daemon spawns -- ``claude`` and ``git`` among them.
 LEVEL_ENV_VAR = "PR_REVIEW_AGENT_LOG_LEVEL"
 
-#: Pinned at ``WARNING`` regardless of the resolved level. The first two
-#: log request headers at ``DEBUG``; ``asyncio`` logs per-task chatter that
-#: says nothing about a review.
-QUIET_LOGGERS = ("httpx", "httpcore", "asyncio")
+#: Third-party loggers the resolved level is allowed to quieten but not to
+#: make louder than ``WARNING``. See :func:`_third_party_level`.
+THIRD_PARTY_LOGGERS = ("httpx", "httpcore", "asyncio")
+
+#: The loudest these three may get, whatever the operator asks for.
+THIRD_PARTY_FLOOR = logging.WARNING
 
 #: The logger the level is applied to: this package, and nothing above it.
 PACKAGE_LOGGER = "pr_review_agent"
@@ -84,12 +86,38 @@ def resolve_level(flag: str | None, configured: str) -> str:
     return configured
 
 
+def _third_party_level(level: str) -> int:
+    """What ``httpx``, ``httpcore`` and ``asyncio`` are set to under ``level``.
+
+    They follow the operator's level *downwards* and stop at ``WARNING``
+    going up. Asking for ``ERROR`` really does silence their warnings --
+    which pinning them would not have done -- while the two levels below the
+    floor are refused for different reasons:
+
+    ``DEBUG`` is a security floor. ``httpx`` and ``httpcore`` log request
+    headers at ``DEBUG``, which means ``GITHUB_TOKEN`` in the operator's
+    journal, and ``--log-level DEBUG`` is the first thing anyone reaches for
+    during an incident -- so the one level that leaks is the one most likely
+    to be asked for.
+
+    ``INFO`` is a noise floor. ``httpx`` logs a line per request there, and
+    the poller makes several every cycle for as long as the daemon runs;
+    that would bury the six events ``docs/LOGGING.md`` says ``INFO`` is for.
+    The per-request view is what ``poller`` itself logs at ``DEBUG``.
+    """
+    # `getattr`, not `logging.getLevelNamesMapping()`: that is 3.11+ and the
+    # supported range starts at 3.10. `level` is already one of `LEVELS`, so
+    # the attribute exists.
+    return max(getattr(logging, level), THIRD_PARTY_FLOOR)
+
+
 def configure(level: str) -> None:
     """Send this package's records to stderr at ``level``.
 
     The root logger is left at ``WARNING`` rather than at ``level``: it is
-    the parent of every third-party logger in the process, and raising it is
-    what would put ``httpx``'s request headers into the log.
+    the parent of every third-party logger in the process, including ones
+    not named here, and raising it is what would put ``httpx``'s request
+    headers into the log.
     """
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
@@ -99,5 +127,5 @@ def configure(level: str) -> None:
     root.setLevel(logging.WARNING)
 
     logging.getLogger(PACKAGE_LOGGER).setLevel(level)
-    for name in QUIET_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    for name in THIRD_PARTY_LOGGERS:
+        logging.getLogger(name).setLevel(_third_party_level(level))

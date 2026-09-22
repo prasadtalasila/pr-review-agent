@@ -309,10 +309,24 @@ arrives that way, so a unit already has an `Environment=` block and the level
 lands beside it without touching `ExecStart=`.
 
 **`DEBUG` never turns up `httpx`.** The level is applied to the
-`pr_review_agent` logger, not to the root, and `httpx`, `httpcore` and
-`asyncio` are pinned at `WARNING` whatever is asked for — those loggers print
-request headers, which means `GITHUB_TOKEN`, and `DEBUG` is the first thing
-anyone reaches for during an incident. `tests/test_logs.py` pins it.
+`pr_review_agent` logger, not to the root. `httpx`, `httpcore` and `asyncio`
+follow it *downwards* and stop at `WARNING` going up:
+
+| `logging.level` | `pr_review_agent` | `httpx`, `httpcore`, `asyncio` |
+| :-- | :-- | :-- |
+| `DEBUG` | `DEBUG` | `WARNING` |
+| `INFO` | `INFO` | `WARNING` |
+| `WARNING` | `WARNING` | `WARNING` |
+| `ERROR` | `ERROR` | `ERROR` |
+| `CRITICAL` | `CRITICAL` | `CRITICAL` |
+
+So asking for `ERROR` really does silence their warnings as well. The two
+levels below the floor are refused for different reasons. `DEBUG` is a
+*security* floor: those loggers print request headers, which means
+`GITHUB_TOKEN`, and `DEBUG` is the first thing anyone reaches for during an
+incident. `INFO` is a *noise* floor: `httpx` logs a line per request there
+and the poller makes several every cycle, which would bury the six events
+`INFO` exists to show. `tests/test_logs.py` pins the whole table.
 
 Not reloadable on `SIGHUP`: only `budget` and `publish` are, and both are
 brakes. Changing the level needs a restart.

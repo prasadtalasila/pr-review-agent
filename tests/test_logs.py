@@ -38,7 +38,7 @@ def _clean_logging():
     """Undo whatever ``configure`` did to the process-wide logger tree."""
     root = logging.getLogger()
     before = (list(root.handlers), root.level)
-    names = (logs.PACKAGE_LOGGER, *logs.QUIET_LOGGERS)
+    names = (logs.PACKAGE_LOGGER, *logs.THIRD_PARTY_LOGGERS)
     levels = {name: logging.getLogger(name).level for name in names}
     yield
     root.handlers, root.level = before
@@ -112,7 +112,7 @@ def test_the_level_lands_on_this_package(clean_logging):
     assert logging.getLogger(logs.PACKAGE_LOGGER).isEnabledFor(logging.DEBUG)
 
 
-@pytest.mark.parametrize("noisy", logs.QUIET_LOGGERS)
+@pytest.mark.parametrize("noisy", logs.THIRD_PARTY_LOGGERS)
 def test_debug_does_not_turn_on_the_loggers_that_print_request_headers(
     clean_logging, noisy
 ):
@@ -120,6 +120,37 @@ def test_debug_does_not_turn_on_the_loggers_that_print_request_headers(
     logs.configure("DEBUG")
     assert not logging.getLogger(noisy).isEnabledFor(logging.DEBUG)
     assert logging.getLogger(noisy).isEnabledFor(logging.WARNING)
+
+
+@pytest.mark.parametrize("noisy", logs.THIRD_PARTY_LOGGERS)
+def test_info_does_not_turn_on_a_line_per_request(clean_logging, noisy):
+    """``httpx`` logs one per request at INFO, several per poll cycle, which
+    would bury the six events INFO exists to show."""
+    logs.configure("INFO")
+    assert not logging.getLogger(noisy).isEnabledFor(logging.INFO)
+
+
+@pytest.mark.parametrize(
+    ("asked", "expected"),
+    [
+        ("DEBUG", logging.WARNING),
+        ("INFO", logging.WARNING),
+        ("WARNING", logging.WARNING),
+        ("ERROR", logging.ERROR),
+        ("CRITICAL", logging.CRITICAL),
+    ],
+)
+def test_the_third_party_loggers_follow_the_level_downwards(asked, expected):
+    """A floor, not a pin. Asking for ERROR silences their warnings too --
+    which pinning them at WARNING would not have done."""
+    assert logs._third_party_level(asked) == expected
+
+
+@pytest.mark.parametrize("noisy", logs.THIRD_PARTY_LOGGERS)
+def test_asking_for_critical_silences_third_party_errors_too(clean_logging, noisy):
+    logs.configure("CRITICAL")
+    assert not logging.getLogger(noisy).isEnabledFor(logging.ERROR)
+    assert logging.getLogger(noisy).isEnabledFor(logging.CRITICAL)
 
 
 def test_the_root_logger_is_left_at_warning(clean_logging):
