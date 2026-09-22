@@ -72,7 +72,13 @@ Every row below is logged at `DEBUG`, accepted decisions included.
 
 They are reached with `--log-level DEBUG`,
 `PR_REVIEW_AGENT_LOG_LEVEL=DEBUG` or `logging.level` in `config.yaml` — see
-[LOGGING.md](LOGGING.md) and [CONFIG.md](CONFIG.md#logging).
+[LOGGING.md](LOGGING.md) and [CONFIG.md](CONFIG.md#logging). In JSON mode the
+reason is a field rather than text, so the question can be asked of the whole
+log at once:
+
+```bash
+jq -r 'select(.reason) | [.pr, .reason] | @tsv' agent.jsonl
+```
 
 Every decision is logged, accepted or not — it is the only observability the
 daemon has into *why wasn't this reviewed*. One level for all of them, rather

@@ -1,13 +1,18 @@
-"""How verbose the daemon is, and who gets to say so.
+"""How verbose the daemon is, how a record is shaped, and who gets to say so.
 
-One global level, resolved from three layers -- ``--log-level``, then
-``PR_REVIEW_AGENT_LOG_LEVEL``, then ``logging.level`` in ``config.yaml`` --
-in that order of precedence, per clig.dev's configuration order. The
-environment layer is the one deployment uses: ``GITHUB_TOKEN`` already
-arrives that way, so a systemd unit already has an ``Environment=`` block and
-the level lands beside it without touching ``ExecStart=``.
+Two scalars and no destinations. One global level and one format, each
+resolved from three layers -- the flag, then the environment, then
+``config.yaml`` -- in that order of precedence, per clig.dev's configuration
+order. The environment layer is the one deployment uses: ``GITHUB_TOKEN``
+already arrives that way, so a systemd unit already has an ``Environment=``
+block and both settings land beside it without touching ``ExecStart=``.
 
-Two things this deliberately does not do, both recorded in
+The stream itself is always stderr. The daemon opens no files and holds no
+list of sinks; duplicating the stream is systemd's job, or rsyslog's. What
+is decided here is only the *shape* of a record and whether journald is told
+its priority.
+
+Three things this deliberately does not do, all recorded in
 :doc:`LOGGING.md <../../docs/LOGGING>`:
 
 **It does not configure the root logger.** ``basicConfig`` does, which is why
@@ -21,14 +26,23 @@ table has a test rather than just attention.
 
 **It offers no per-logger map.** Selection lives in the levels assigned at
 the call sites, so a global ``INFO`` is already the operator's view; the
-per-component slice is taken at query time from the logger name instead.
+per-component slice is taken at query time from the ``logger`` field of the
+JSON record instead.
+
+**It offers no ``level_prefix`` switch.** Whether records carry journald's
+``<N>`` priority prefix is detected, not configured: a boolean would offer
+four states, two of them broken, and the broken one puts ``<6>`` in front of
+every line of a JSON file, silently. See :func:`_on_journal`.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
+from typing import IO
 
 #: The levels an operator may name, loudest last. Spelled out rather than
 #: taken from ``logging.getLevelName``, which also answers to ``WARN``,
@@ -42,6 +56,17 @@ DEFAULT_LEVEL = "INFO"
 #: a bare ``LOG_LEVEL`` in a unit's ``Environment=`` block is inherited by
 #: every subprocess the daemon spawns -- ``claude`` and ``git`` among them.
 LEVEL_ENV_VAR = "PR_REVIEW_AGENT_LOG_LEVEL"
+
+#: The shapes a record may take. ``auto`` is the answer to "who is reading
+#: this": text when stderr is a terminal, JSON when anything else is.
+FORMATS = ("auto", "text", "json")
+
+#: What the daemon formats as when no layer says otherwise.
+DEFAULT_FORMAT = "auto"
+
+#: The format's environment layer, prefixed for the same reason as the
+#: level's.
+FORMAT_ENV_VAR = "PR_REVIEW_AGENT_LOG_FORMAT"
 
 #: Third-party loggers the resolved level is allowed to quieten but not to
 #: make louder than their own floor, which is **the lowest level at which
@@ -75,11 +100,40 @@ THIRD_PARTY_FLOORS = {
 #: The logger the level is applied to: this package, and nothing above it.
 PACKAGE_LOGGER = "pr_review_agent"
 
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+#: What a record looks like for a human. Kept whole, including ``asctime``
+#: and ``levelname``, which journald duplicates: this is the terminal shape,
+#: and under a unit the JSON one is what is in force.
+TEXT_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+#: The syslog priority journald stores a record at, per Python level. The
+#: single digit of the ``<N>`` prefix; it sets the level only, and the
+#: facility stays whatever ``SyslogFacility=`` says.
+PRIORITIES = {
+    logging.CRITICAL: 2,
+    logging.ERROR: 3,
+    logging.WARNING: 4,
+    logging.INFO: 6,
+    logging.DEBUG: 7,
+}
+
+#: Attributes every record carries, which are therefore not ``extra=``.
+#: Taken from a throwaway record rather than listed, so a new attribute in a
+#: future Python does not leak into the JSON. The three added by hand are
+#: set after construction: ``message`` and ``asctime`` by the formatters,
+#: ``taskName`` by 3.12's asyncio, which the supported range starts below.
+_RESERVED = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {
+    "message",
+    "asctime",
+    "taskName",
+}
 
 
 class LevelError(ValueError):
     """Raised when a layer names a level that does not exist."""
+
+
+class FormatError(ValueError):
+    """Raised when a layer names a format that does not exist."""
 
 
 def parse_level(value: str, *, source: str) -> str:
@@ -94,6 +148,20 @@ def parse_level(value: str, *, source: str) -> str:
     return level
 
 
+def parse_format(value: str, *, source: str) -> str:
+    """The canonical spelling of ``value``, or :class:`FormatError`.
+
+    Lowercase where the level is uppercase, because that is how both are
+    spelled in ``config.yaml`` and in ``docs/LOGGING.md``.
+    """
+    fmt = value.strip().lower()
+    if fmt not in FORMATS:
+        raise FormatError(
+            f"{source} must be one of {', '.join(FORMATS)}, got {value!r}"
+        )
+    return fmt
+
+
 def resolve_level(flag: str | None, configured: str) -> str:
     """The level in force: flag, then environment, then ``configured``.
 
@@ -106,6 +174,21 @@ def resolve_level(flag: str | None, configured: str) -> str:
     from_env = os.environ.get(LEVEL_ENV_VAR)
     if from_env:
         return parse_level(from_env, source=LEVEL_ENV_VAR)
+    return configured
+
+
+def resolve_format(flag: str | None, configured: str) -> str:
+    """The format in force: flag, then environment, then ``configured``.
+
+    The same three layers as :func:`resolve_level`, and for the same reason:
+    a unit overrides the file from its ``Environment=`` block, and a human
+    running the daemon by hand overrides both from the command line.
+    """
+    if flag is not None:
+        return parse_format(flag, source="--log-format")
+    from_env = os.environ.get(FORMAT_ENV_VAR)
+    if from_env:
+        return parse_format(from_env, source=FORMAT_ENV_VAR)
     return configured
 
 
@@ -129,16 +212,104 @@ def _third_party_level(name: str, level: str) -> int:
     return max(getattr(logging, level), THIRD_PARTY_FLOORS[name])
 
 
-def configure(level: str) -> None:
-    """Send this package's records to stderr at ``level``.
+def _on_journal(stream: IO[str]) -> bool:
+    """Whether ``stream`` is the journal socket systemd handed this process.
+
+    The comparison, and not the mere presence of ``JOURNAL_STREAM``, because
+    the environment is inherited: the engine adapter spawns ``claude`` and
+    the workspace spawns ``git``, both with a pipe for stderr and both
+    carrying the variable. A presence check is wrong in exactly those cases,
+    in the direction that corrupts their output.
+
+    The cheaper tests do not work either. ``isatty`` is false for the
+    journal *and* for a file, a pipe and a container runtime, and
+    ``S_ISSOCK`` is true for any socket.
+    """
+    spec = os.environ.get("JOURNAL_STREAM")
+    if not spec:
+        return False
+    device, _, inode = spec.partition(":")
+    try:
+        st = os.fstat(stream.fileno())
+    except (OSError, ValueError):
+        # A stream with no descriptor -- pytest's capture, a StringIO --
+        # cannot be the socket systemd opened.
+        return False
+    return (str(st.st_dev), str(st.st_ino)) == (device, inode)
+
+
+class JsonFormatter(logging.Formatter):
+    """One JSON object per record, with ``extra=`` fields promoted.
+
+    Modelled on ``dockerd``'s own JSON output: a timestamp, a level, the
+    logger that spoke and the message, then whatever the call site attached.
+    The promoted fields are what makes the stream queryable -- ``.pr``,
+    ``.reason``, ``.remaining`` -- rather than a string something downstream
+    has to re-parse.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "time": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "level": record.levelname.lower(),
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        payload.update({k: v for k, v in vars(record).items() if k not in _RESERVED})
+        if record.exc_info:
+            # One string, so a traceback stays one journal entry at one
+            # priority instead of splitting per line.
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str)
+
+
+class JournalPriority(logging.Formatter):
+    """Prefix a rendered record with the priority journald will strip.
+
+    journald gives every line a service writes the priority of
+    ``SyslogLevel=``, which defaults to ``info`` -- so without this a worker
+    crash is stored at ``PRIORITY=6`` and ``journalctl -p warning`` returns
+    nothing, ever. ``SyslogLevelPrefix=`` defaults to yes, so ``<4>`` sets
+    the priority and is removed before the message is stored, which is why
+    it does not corrupt the JSON.
+    """
+
+    def __init__(self, inner: logging.Formatter) -> None:
+        super().__init__()
+        self._inner = inner
+
+    def format(self, record: logging.LogRecord) -> str:
+        return f"<{PRIORITIES[record.levelno]}>{self._inner.format(record)}"
+
+
+def _formatter(fmt: str, stream: IO[str]) -> logging.Formatter:
+    """The formatter ``fmt`` names, with ``auto`` resolved against ``stream``.
+
+    Two separate decisions, resolved by two different tests and conflated at
+    the reader's peril: the shape follows ``isatty`` -- human-readable when
+    a human is watching -- and the prefix follows journald detection.
+    ``isatty`` is false for a file, a pipe, a container runtime *and* the
+    journal, so it cannot drive the prefix.
+    """
+    if fmt == "auto":
+        fmt = "text" if stream.isatty() else "json"
+    inner = JsonFormatter() if fmt == "json" else logging.Formatter(TEXT_FORMAT)
+    return JournalPriority(inner) if _on_journal(stream) else inner
+
+
+def configure(level: str, fmt: str = DEFAULT_FORMAT) -> None:
+    """Send this package's records to stderr at ``level``, shaped by ``fmt``.
 
     The root logger is left at ``WARNING`` rather than at ``level``: it is
     the parent of every third-party logger in the process, including ones
     not named here, and raising it is what would put ``httpx``'s request
     headers into the log.
+
+    Both format decisions are taken here, once, and neither is re-evaluated
+    per record.
     """
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.setFormatter(_formatter(fmt, sys.stderr))
 
     root = logging.getLogger()
     root.addHandler(handler)

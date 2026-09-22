@@ -10,9 +10,10 @@ Given the facts about one pull request, it produces a directory containing
 that pull request's code at an exact commit, plus the diff against the merge
 base, and removes the directory afterwards.
 
-It does nothing else. No review, no prompt, no publishing, and no tokens. It
-lands with **no caller**, exactly as the queue and the governor did: the
-worker that will use it does not exist yet.
+It does nothing else. No review, no prompt, no publishing, and no tokens.
+Its one caller is the [review worker](WORKER.md), which checks a pull request
+out between the governor's admission and the engine's run; it landed before
+that caller existed, exactly as the queue and the governor did.
 
 ## 🚫 Why a checkout rather than the API diff
 

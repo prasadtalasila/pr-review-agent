@@ -278,10 +278,17 @@ def test_only_daemon_start_can_reach_a_review_engine(run, tmp_path, monkeypatch)
 
 
 def _capture_level(monkeypatch, run, tmp_path, *args):
-    """Start the daemon far enough to settle the level, then stop."""
+    """Start the daemon far enough to settle level and format, then stop.
+
+    Both are captured, because both are resolved in the same place and a
+    change to either has to say what it did to the other.
+    """
     seen = []
     monkeypatch.setenv(TOKEN_ENV, "fake-token")
-    monkeypatch.setattr("pr_review_agent.logs.configure", seen.append)
+    monkeypatch.setattr(
+        "pr_review_agent.logs.configure",
+        lambda level, fmt: seen.append((level, fmt)),
+    )
     monkeypatch.setattr(
         "pr_review_agent.cli.cmd_daemon.asyncio.run", lambda coro: coro.close()
     )
@@ -293,7 +300,7 @@ def _capture_level(monkeypatch, run, tmp_path, *args):
 def test_the_log_level_flag_beats_the_environment(run, tmp_path, monkeypatch):
     monkeypatch.setenv("PR_REVIEW_AGENT_LOG_LEVEL", "WARNING")
     seen, _ = _capture_level(monkeypatch, run, tmp_path, "--log-level", "DEBUG")
-    assert seen == ["DEBUG"]
+    assert seen == [("DEBUG", "auto")]
 
 
 def test_the_environment_sets_the_level_with_no_flag(run, tmp_path, monkeypatch):
@@ -301,13 +308,13 @@ def test_the_environment_sets_the_level_with_no_flag(run, tmp_path, monkeypatch)
     that already carries GITHUB_TOKEN, without touching `ExecStart=`."""
     monkeypatch.setenv("PR_REVIEW_AGENT_LOG_LEVEL", "WARNING")
     seen, _ = _capture_level(monkeypatch, run, tmp_path)
-    assert seen == ["WARNING"]
+    assert seen == [("WARNING", "auto")]
 
 
 def test_the_default_level_is_info(run, tmp_path, monkeypatch):
     monkeypatch.delenv("PR_REVIEW_AGENT_LOG_LEVEL", raising=False)
     seen, _ = _capture_level(monkeypatch, run, tmp_path)
-    assert seen == ["INFO"]
+    assert seen == [("INFO", "auto")]
 
 
 def test_a_typo_in_the_environment_level_exits_three(run, tmp_path, monkeypatch):
@@ -322,6 +329,34 @@ def test_a_typo_in_the_environment_level_exits_three(run, tmp_path, monkeypatch)
 
 def test_a_bad_log_level_flag_is_a_usage_error(run, tmp_path, monkeypatch):
     seen, result = _capture_level(monkeypatch, run, tmp_path, "--log-level", "VERBOSE")
+    assert seen == []
+    assert result.exit_code == 2
+
+
+def test_the_log_format_flag_beats_the_environment(run, tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_REVIEW_AGENT_LOG_FORMAT", "text")
+    seen, _ = _capture_level(monkeypatch, run, tmp_path, "--log-format", "json")
+    assert seen == [("INFO", "json")]
+
+
+def test_the_environment_sets_the_format_with_no_flag(run, tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_REVIEW_AGENT_LOG_FORMAT", "text")
+    seen, _ = _capture_level(monkeypatch, run, tmp_path)
+    assert seen == [("INFO", "text")]
+
+
+def test_a_typo_in_the_environment_format_exits_three(run, tmp_path, monkeypatch):
+    """Same refusal as the level: a shape that quietly fell back to the
+    default is a stream something downstream cannot parse."""
+    monkeypatch.setenv("PR_REVIEW_AGENT_LOG_FORMAT", "jsonl")
+    seen, result = _capture_level(monkeypatch, run, tmp_path)
+    assert seen == []
+    assert result.exit_code == EXIT_STARTUP
+    assert "PR_REVIEW_AGENT_LOG_FORMAT" in result.output
+
+
+def test_a_bad_log_format_flag_is_a_usage_error(run, tmp_path, monkeypatch):
+    seen, result = _capture_level(monkeypatch, run, tmp_path, "--log-format", "jsonl")
     assert seen == []
     assert result.exit_code == 2
 

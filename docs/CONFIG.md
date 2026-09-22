@@ -289,24 +289,34 @@ Reloadable on `SIGHUP` — see [Reload](#-reload) — and described in full in
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
 | `level` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` | no (default `INFO`) | How much the daemon says. Case-insensitive; an unrecognised name is refused at startup. |
+| `format` | `auto` \| `text` \| `json` | no (default `auto`) | What a record looks like. `auto` is text when stderr is a terminal and JSON when it is anything else. |
 
-Optional, and the whole section. There are **no destinations** and **no
-per-logger map** — the daemon writes one stream to stderr and the supervisor
-owns where it goes. [LOGGING.md](LOGGING.md) has the reasoning for both
-omissions.
+Optional, and the whole section. Two scalars: there are **no destinations**
+and **no per-logger map** — the daemon writes one stream to stderr and the
+supervisor owns where it goes. [LOGGING.md](LOGGING.md) has the reasoning for
+both omissions.
 
-This is the *lowest* of three layers. Precedence is **flag > environment >
+Each is the *lowest* of three layers. Precedence is **flag > environment >
 this file**:
 
 ```bash
-pr-review-agent daemon start --log-level DEBUG   # highest
+pr-review-agent daemon start --log-level DEBUG --log-format json   # highest
 PR_REVIEW_AGENT_LOG_LEVEL=DEBUG                  # what a systemd unit uses
-# then logging.level in config.yaml, then the INFO default
+PR_REVIEW_AGENT_LOG_FORMAT=json
+# then logging.level and logging.format in config.yaml, then INFO and auto
 ```
 
 The environment layer is the one deployment uses. `GITHUB_TOKEN` already
-arrives that way, so a unit already has an `Environment=` block and the level
-lands beside it without touching `ExecStart=`.
+arrives that way, so a unit already has an `Environment=` block and both
+settings land beside it without touching `ExecStart=`.
+
+**`format` decides the shape, not the destination.** `json` emits one object
+per record, with the values the message interpolates promoted to real fields
+— so `jq -r 'select(.reason) | [.pr, .reason] | @tsv'` answers *why wasn't
+this reviewed* without re-parsing a string. Under systemd the daemon also
+prefixes each record with journald's `<N>` priority, which journald strips
+before storing; that is detected from `JOURNAL_STREAM`, not configured, and
+it is what makes `journalctl -u pr-review-agent -p warning` work.
 
 **The level is applied to the `pr_review_agent` logger, not to the root one.** That is what stops `--log-level DEBUG` turning on the HTTP transport:
 

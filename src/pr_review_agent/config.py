@@ -14,7 +14,14 @@ from typing import Any
 
 import yaml
 
-from .logs import DEFAULT_LEVEL, LevelError, parse_level
+from .logs import (
+    DEFAULT_FORMAT,
+    DEFAULT_LEVEL,
+    FormatError,
+    LevelError,
+    parse_format,
+    parse_level,
+)
 from .queue import DEFAULT_LEASE
 from .triggers.allowlist import Allowlist, AllowlistConfigError
 from .triggers.classifier import Classifier
@@ -408,28 +415,35 @@ class PublishConfig:
 
 @dataclass(frozen=True)
 class LoggingConfig:
-    """How verbose the daemon is.
+    """How verbose the daemon is, and what shape a record takes.
 
-    The lowest-precedence of the three layers: ``--log-level`` beats
-    ``PR_REVIEW_AGENT_LOG_LEVEL`` beats this. It exists so a level chosen
-    once survives in the same file as everything else about the deployment,
-    and a unit that wants to override it has the environment.
+    The lowest-precedence of the three layers for each: ``--log-level`` and
+    ``--log-format`` beat the environment, which beats this. It exists so a
+    choice made once survives in the same file as everything else about the
+    deployment, and a unit that wants to override it has the environment.
 
-    A level and nothing else. No destinations, and no per-logger map -- see
-    ``docs/LOGGING.md`` for why both were rejected.
+    Two scalars and nothing else. No destinations, and no per-logger map --
+    see ``docs/LOGGING.md`` for why both were rejected.
     """
 
     level: str = DEFAULT_LEVEL
+    format: str = DEFAULT_FORMAT
 
     @classmethod
     def parse(cls, data: dict) -> LoggingConfig:
         """Validate the ``logging`` section."""
-        value = data.get("level", DEFAULT_LEVEL)
-        if not isinstance(value, str):
-            raise ConfigError(f"logging.level must be a level name, got {value!r}")
+        level = data.get("level", DEFAULT_LEVEL)
+        if not isinstance(level, str):
+            raise ConfigError(f"logging.level must be a level name, got {level!r}")
+        fmt = data.get("format", DEFAULT_FORMAT)
+        if not isinstance(fmt, str):
+            raise ConfigError(f"logging.format must be a format name, got {fmt!r}")
         try:
-            return cls(level=parse_level(value, source="logging.level"))
-        except LevelError as exc:
+            return cls(
+                level=parse_level(level, source="logging.level"),
+                format=parse_format(fmt, source="logging.format"),
+            )
+        except (LevelError, FormatError) as exc:
             raise ConfigError(str(exc)) from exc
 
 
@@ -648,7 +662,9 @@ class Config:
             # Optional, like `store` and `workspace`, and for the same
             # reason: its default is a level, which cannot spend anything.
             logging=LoggingConfig.parse(
-                _section(data, "logging", {"level"}) if "logging" in data else {}
+                _section(data, "logging", {"level", "format"})
+                if "logging" in data
+                else {}
             ),
             # Required: there is no model an operator could be assumed to
             # have chosen, and every key here decides a cost.

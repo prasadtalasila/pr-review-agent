@@ -8,8 +8,9 @@ claims a trigger through the [budget governor](BUDGET.md), resolves the pull
 request, puts it [on disk](WORKSPACE.md), hands it to a [review
 engine](ENGINE.md), records what it cost, and closes the row.
 
-**It does not publish.** Findings are logged and dropped, because the
-publisher does not exist yet.
+**It does not decide what a comment says.** Rendering and posting belong to
+the [publisher](PUBLISHER.md), which the worker calls twice: once for the 👀
+the moment the lease is confirmed, and once with the recorded run.
 
 **It does spend.** The engine it runs is the configured `claude` CLI adapter,
 so a claim here is real money. Everything between the claim and the
@@ -23,6 +24,7 @@ daemon.
 
 ```text
 claim(admit=governor.admit)        the lease and the reservation, one commit
+  → publisher.acknowledge(...)     the 👀, before anything slow is attempted
   → GET /pulls/{n}                 head_sha for a mention, and the size counts
   → runs.history(repo, pr)         what the last round found, and its numbers
   → workspace.checkout(...)        the tree, the merge-base diff, exclusions
@@ -31,6 +33,8 @@ claim(admit=governor.admit)        the lease and the reservation, one commit
   → numbering.assign(...)          stable numbers, before anything is stored
   → runs.record(...)               the findings, so a failed publish is retryable
   → governor.settle(claim, usage)  release whatever was not spent
+  → governor.headroom(now)         what the review left, logged as event 6
+  → publisher.publish(run)         one comment per pull request, edited in place
   → complete / release / abandon   close the row
 ```
 
@@ -323,8 +327,12 @@ exists.
 
 ## 🚧 What lands next
 
-The budget pieces that still need a running engine: the circuit breaker,
-layer 3's per-run enforcement and the ladder's 60 % rung. Then the publisher,
-which turns `ReviewResult.findings` from something logged into something
-posted, and which owns the `head_sha` re-check — until it exists, a review of
-a commit that has since been superseded is simply discarded.
+The publisher landed, and with it the `head_sha` re-check: a review of a
+commit that has since been superseded is discarded there rather than posted.
+The [circuit breaker](BUDGET.md#-the-circuit-breaker) landed too.
+
+What still needs a running engine is layer 3's per-run token ceiling and the
+ladder's 60 % rung — both want an engine that reports tokens as it spends
+them, not only at the end. After that, the [retention
+sweep](STATUS.md#-known-gaps): `runs.record` is what accumulates review
+bodies, and nothing purges them yet.

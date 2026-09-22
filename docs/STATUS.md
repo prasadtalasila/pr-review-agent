@@ -25,6 +25,8 @@ they are reproduced here so they survive the issue being closed.
 | Publisher (👀, head re-check, one comment per PR) | implemented, unit tested |
 | Circuit breaker and calibration decay | implemented, unit tested |
 | `pr-review-agent <noun> <verb>` command tree, `config generate` | implemented, unit tested |
+| systemd user unit and `service install` | implemented, unit tested |
+| Logging: level, `auto`/`text`/`json` shape, journald priorities | implemented, unit tested |
 | Retention sweep | not started |
 
 The ordering is deliberate: the **budget governor lands before the review

@@ -165,4 +165,10 @@ class Classifier:
             repo,
             pr_number,
             decision.reason,
+            extra={
+                "kind": kind,
+                "repo": repo,
+                "pr": pr_number,
+                "reason": decision.reason,
+            },
         )

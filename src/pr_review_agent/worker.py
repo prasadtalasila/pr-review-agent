@@ -216,6 +216,11 @@ class ReviewWorker:
             claim.trigger.pr_number,
             claim.trigger.dedupe_key,
             mode,
+            extra={
+                "repo": claim.trigger.repo,
+                "pr": claim.trigger.pr_number,
+                "mode": mode,
+            },
         )
 
         usage = Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name)
@@ -295,6 +300,13 @@ class ReviewWorker:
                 result.outcome,
                 len(result.findings),
                 usage.tokens,
+                extra={
+                    "repo": claim.trigger.repo,
+                    "pr": claim.trigger.pr_number,
+                    "outcome": result.outcome,
+                    "findings": len(result.findings),
+                    "tokens": usage.tokens,
+                },
             )
         # PullRequestTooLarge subclasses WorkspaceError, so it is caught
         # first or it would be retried.
@@ -476,6 +488,11 @@ class ReviewWorker:
             headroom.remaining,
             headroom.tightest,
             headroom.mode,
+            extra={
+                "remaining": headroom.remaining,
+                "tightest": headroom.tightest,
+                "mode": headroom.mode,
+            },
         )
         if reviewed is not None:
             # This attempt *did* reach an engine, so a failed post counts
