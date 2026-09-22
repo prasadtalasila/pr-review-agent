@@ -35,8 +35,11 @@ GITHUB_TOKEN=xxxx pr-review-agent daemon start          # reads ./config.yaml
 GITHUB_TOKEN=xxxx pr-review-agent daemon start --config /etc/pr-review-agent/config.yaml
 ```
 
+To run it unattended instead of by hand, `pr-review-agent service install`
+writes a systemd user unit -- see [Running as a service](SERVICE.md).
+
 Installing the package puts `pr-review-agent` on the path. Commands follow a
 `pr-review-agent <noun> <verb>` grammar, grouped by the setup workflow:
-`config` → `host` → `daemon`. `--config` is optional: without it a command
-reads `config.yaml` from the directory it is started in, which is also where
-`state.db` is written.
+`config` → `host` → `daemon`, plus `service` for the systemd install.
+`--config` is optional: without it a command reads `config.yaml` from the
+directory it is started in, which is also where `state.db` is written.

@@ -47,9 +47,12 @@ packages = [{ include = "pr_review_agent", from = "src" }]
 # distribution on its own -- and for thirteen releases nothing did, leaving a
 # quickstart that told the operator to copy a file the wheel had never
 # contained. `config generate` reads them from here.
+# `service install` reads the unit from here for the same reason.
 include = [
     { path = "src/pr_review_agent/templates/*.yaml", format = "sdist" },
     { path = "src/pr_review_agent/templates/*.yaml", format = "wheel" },
+    { path = "src/pr_review_agent/templates/*.service", format = "sdist" },
+    { path = "src/pr_review_agent/templates/*.service", format = "wheel" },
 ]
 
 [tool.poetry.group.dev.dependencies]

@@ -1,10 +1,11 @@
 """The root ``pr-review-agent`` group, and the exit codes every verb shares.
 
 Every command follows one grammar -- ``pr-review-agent <noun> <verb>`` --
-with three nouns: ``config``, ``host``, ``daemon``. Each noun is a Click
-group in its own ``cmd_<noun>.py`` module, attached here in the order an
-operator meets them: write a config, check the host can reach what the
-daemon needs, then start it. The layout deliberately mirrors the DTaaS CLI,
+with four nouns: ``config``, ``host``, ``daemon``, ``service``. Each noun
+is a Click group in its own ``cmd_<noun>.py`` module, attached here in the
+order an operator meets them: write a config, check the host can reach what
+the daemon needs, then start it -- and, for an unattended install, hand it to
+systemd instead. The layout deliberately mirrors the DTaaS CLI,
 whose commands were reorganised to the same grammar; the two projects share
 maintainers and should not need two idioms for one shape.
 
@@ -34,11 +35,12 @@ import click
 from .cmd_config import config_group
 from .cmd_daemon import daemon_group
 from .cmd_host import host_group
+from .cmd_service import service_group
 
 #: What the operator does, in the order they do it. ``--help`` lists the
 #: nouns this way rather than alphabetically, so the help text doubles as
 #: the setup sequence.
-_WORKFLOW_ORDER = ("config", "host", "daemon")
+_WORKFLOW_ORDER = ("config", "host", "daemon", "service")
 
 
 class WorkflowGroup(click.Group):
@@ -57,7 +59,8 @@ def cli(ctx: click.Context) -> None:
     """Review pull requests with an LLM, under an enforced usage budget.
 
     Commands follow a 'pr-review-agent <noun> <verb>' grammar, grouped by
-    the setup workflow: config -> host -> daemon.
+    the setup workflow: config -> host -> daemon, plus 'service' to run it
+    under systemd instead of by hand.
 
     \b
     First-time setup:
@@ -66,6 +69,9 @@ def cli(ctx: click.Context) -> None:
       3.  pr-review-agent config validate      # check for errors
       4.  GITHUB_TOKEN=... pr-review-agent host check
       5.  GITHUB_TOKEN=... pr-review-agent daemon start
+
+    To run it unattended, 'pr-review-agent service install' writes a
+    systemd user unit instead of step 5.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -79,6 +85,7 @@ def cli(ctx: click.Context) -> None:
 cli.add_command(config_group)
 cli.add_command(host_group)
 cli.add_command(daemon_group)
+cli.add_command(service_group)
 
 #: The ``pr-review-agent`` console script. A Click group is already callable
 #: as one, so there is nothing for a wrapper to add.
