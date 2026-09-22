@@ -53,6 +53,7 @@ with every target made absolute and pinned to the tag being released.
 | Document | Answers |
 | :-- | :-- |
 | [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
+| [docs/SERVICE.md](docs/SERVICE.md) | How is it deployed? The systemd user unit, why a user unit and not a system one, the three paths that must be absolute, lingering, and what `systemctl reload` reloads |
 | [docs/DESIGN.md](docs/DESIGN.md) | Why does this exist and why is it shaped like this? The four constraints, every alternative considered and rejected, the billing-mode question that is still open, and how prompt injection is handled |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | What actually runs? The components, the path an event takes, the package layout, and which layer may import which |
 | [docs/TRIGGERS.md](docs/TRIGGERS.md) | What starts a review and what does not? Every reason code and its log level, what counts as a mention, the dedupe keys, and why identity is a number |

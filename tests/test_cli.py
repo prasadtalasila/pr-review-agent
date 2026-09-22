@@ -74,7 +74,7 @@ def _canned(results):
 # -- the grammar ---------------------------------------------------------
 
 
-def test_the_command_tree_is_exactly_three_nouns_and_four_verbs():
+def test_the_command_tree_is_exactly_four_nouns_and_five_verbs():
     """A new verb is a deliberate act, not something a refactor adds.
 
     The spend rule is that nothing reaches a review engine outside the
@@ -90,6 +90,7 @@ def test_the_command_tree_is_exactly_three_nouns_and_four_verbs():
         "config": ["generate", "validate"],
         "host": ["check"],
         "daemon": ["start"],
+        "service": ["install"],
     }
 
 
@@ -97,11 +98,11 @@ def test_the_nouns_are_listed_in_workflow_order():
     """``--help`` should read as the setup sequence, not alphabetically.
 
     Asserted on ``list_commands`` rather than on where each noun first
-    appears in the help text: the docstring names all three in the same
-    order, so a text search would pass with the ordering removed.
+    appears in the help text: the docstring names them in the same order,
+    so a text search would pass with the ordering removed.
     """
     ctx = cli.make_context("pr-review-agent", [], resilient_parsing=True)
-    assert cli.list_commands(ctx) == ["config", "host", "daemon"]
+    assert cli.list_commands(ctx) == ["config", "host", "daemon", "service"]
 
 
 def test_a_bare_invocation_fails_rather_than_printing_help(run):

@@ -146,10 +146,11 @@ jobs:
       # Same walk python-ci.yml's build job does: a wheel can import
       # cleanly while shipping no command, or ship the command while
       # missing the config templates the quickstart tells the operator to
-      # copy. Neither is visible to the unit suite, which reads the
-      # source tree, not an installed artefact -- and this is the wheel a
-      # release is about to ship under a version tag that cannot be
-      # reused if it turns out to be broken.
+      # copy -- or the systemd unit `service install` reads. None of the
+      # three is visible to the unit suite, which reads the source tree,
+      # not an installed artefact -- and this is the wheel a release is
+      # about to ship under a version tag that cannot be reused if it
+      # turns out to be broken.
       - name: Install the wheel and walk the documented first run
         run: |
           set -o pipefail
@@ -166,6 +167,18 @@ jobs:
           /tmp/wheel-check/bin/pr-review-agent config validate
 
           echo "OK: the installed wheel generates and validates a config."
+
+          export XDG_CONFIG_HOME=/tmp/unit-check/config
+          export XDG_STATE_HOME=/tmp/unit-check/state
+          export XDG_CACHE_HOME=/tmp/unit-check/cache
+          /tmp/wheel-check/bin/pr-review-agent service install
+
+          unit="$XDG_CONFIG_HOME/systemd/user/pr-review-agent.service"
+          test -s "$unit"
+          systemd-analyze --user verify "$unit" || {
+            echo "::error::the shipped unit does not parse"; exit 1; }
+
+          echo "OK: the installed wheel ships a unit systemd accepts."
 
       # No API token: Trusted Publishing (below) exchanges GitHub's OIDC
       # token for a short-lived PyPI one, so nothing here needs a

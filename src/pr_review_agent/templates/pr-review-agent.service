@@ -1,0 +1,62 @@
+# A systemd *user* unit: it runs as you, not as a system account.
+#
+# That is the whole reason this is a user unit. The review engine spawns the
+# `claude` binary, which finds its login under $HOME -- so running as the human
+# who ran `claude login` means there is no second credential to provision and
+# no ProtectHome= to fight. Nothing here needs root.
+#
+# Written by `pr-review-agent service install`, which substitutes the absolute
+# paths below. See docs/SERVICE.md for the whole procedure.
+
+[Unit]
+Description=pr-review-agent -- LLM pull request reviewer
+Documentation=https://prasad.talasila.in/pr-review-agent/SERVICE.html
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart={executable} daemon start --config {config}
+
+# daemon.py reloads the budget and publish sections on SIGHUP, so `systemctl
+# --user reload` re-reads them without dropping the queue or re-seeding the
+# poll watermarks, which a restart would.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# GITHUB_TOKEN, and nothing else. Mode 0600; never world-readable, and never
+# in ExecStart= where `systemctl show` and `ps` would both expose it.
+EnvironmentFile={token_env}
+
+# Uncomment once #52 lands -- the daemon's level is hardcoded to INFO today.
+# Kept here because this is the line `systemctl --user edit` is meant to
+# change, and changing it must not mean editing ExecStart=.
+# Environment=PR_REVIEW_AGENT_LOG_LEVEL=INFO
+
+# Gives rsyslog and `journalctl -t` a stable name to match. Without it the
+# identifier is derived from the executable, which is a venv path.
+SyslogIdentifier=pr-review-agent
+
+# StandardOutput= and StandardError= are deliberately unset. The defaults are
+# `journal` and `inherit`, which makes both descriptors the *same* journal
+# socket -- so JOURNAL_STREAM names it and the daemon can recognise it.
+# Setting StandardError=journal explicitly opens a second stream with a
+# different inode, JOURNAL_STREAM then names only one of the two
+# (systemd/systemd#6800), and the priority prefix is silently dropped.
+# Leave both alone.
+
+# No LogsDirectory=: the daemon never opens a log file. It writes one stream
+# to stderr and journald owns the destination. A file copy, if one is wanted,
+# is rsyslog's job -- see docs/LOGGING.md.
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+# Makes /usr, /boot, /efi and /etc read-only for the service. $HOME stays
+# writable, which is where the state database and the checkout cache live.
+# ProtectHome= is deliberately NOT set: it would hide all three of them and
+# the `claude` login besides.
+ProtectSystem=strict
+
+[Install]
+WantedBy=default.target

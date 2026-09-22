@@ -62,5 +62,6 @@ nav:
       - Report template: reporting/review-report.md
       - Review prompt: reporting/review-prompt.md
   - Configuration reference: CONFIG.md
+  - Running as a service: SERVICE.md
   - Roadmap and acceptance criteria: ROADMAP.md
   - Candidate features: FEATURE-ROADMAP.md

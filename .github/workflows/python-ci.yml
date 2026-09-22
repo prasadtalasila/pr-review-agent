@@ -206,6 +206,25 @@ jobs:
 
           echo "OK: the installed wheel generates and validates a config."
 
+      # Same failure mode one file over: the unit is data, so only a real
+      # install proves `service install` can read it. XDG_* keeps it out of
+      # the runner's own home.
+      - name: Install the wheel's systemd unit
+        run: |
+          set -o pipefail
+
+          export XDG_CONFIG_HOME=/tmp/unit-check/config
+          export XDG_STATE_HOME=/tmp/unit-check/state
+          export XDG_CACHE_HOME=/tmp/unit-check/cache
+          /tmp/wheel-check/bin/pr-review-agent service install
+
+          unit="$XDG_CONFIG_HOME/systemd/user/pr-review-agent.service"
+          test -s "$unit"
+          systemd-analyze --user verify "$unit" || {
+            echo "::error::the shipped unit does not parse"; exit 1; }
+
+          echo "OK: the installed wheel ships a unit systemd accepts."
+
       - name: Name the artefact after the version it contains
         id: dist
         run: |
