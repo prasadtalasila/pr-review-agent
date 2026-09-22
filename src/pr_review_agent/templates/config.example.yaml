@@ -231,12 +231,12 @@ publish:
   dry_run: false
 
 # ---------------------------------------------------------------------------
-# logging -- OPTIONAL. How much the daemon says.
+# logging -- OPTIONAL. How much the daemon says, and what a record looks like.
 # ---------------------------------------------------------------------------
 #
-# A level, and nothing else. No destinations: the daemon writes one stream to
-# stderr and the supervisor -- systemd, rsyslog, a log collector -- owns where
-# it goes. See docs/LOGGING.md for why a sink list was rejected.
+# Two scalars, and nothing else. No destinations: the daemon writes one stream
+# to stderr and the supervisor -- systemd, rsyslog, a log collector -- owns
+# where it goes. See docs/LOGGING.md for why a sink list was rejected.
 logging:
   # Optional (default INFO). DEBUG | INFO | WARNING | ERROR | CRITICAL,
   # case-insensitive. An unrecognised name is refused at startup rather than
@@ -262,6 +262,26 @@ logging:
   # (one record for the whole process). So INFO here leaves all three
   # silent, and ERROR silences their warnings as well.
   level: INFO
+
+  # Optional (default auto). auto | text | json, case-insensitive, and the
+  # same three layers as the level: --log-format beats
+  # PR_REVIEW_AGENT_LOG_FORMAT beats this file.
+  #
+  #   auto  text when stderr is a terminal, JSON when it is anything else --
+  #         a file, a pipe, a container runtime or journald. Human-readable
+  #         when a human is watching, structured when a collector is.
+  #   text  the timestamp-level-logger-message line, always.
+  #   json  one object per record, always. The values the message
+  #         interpolates are also real fields, so the log answers questions:
+  #
+  #             jq -r 'select(.reason) | [.pr, .reason] | @tsv' agent.jsonl
+  #
+  # Under systemd the daemon additionally prefixes each record with journald's
+  # <N> priority, which journald strips before storing -- that is what makes
+  # `journalctl -u pr-review-agent -p warning` work. It is detected from
+  # JOURNAL_STREAM rather than configured, because the two wrong answers are
+  # a log with no priorities and a JSON file where every line is invalid.
+  format: auto
 
 # ---------------------------------------------------------------------------
 # engine -- REQUIRED. Which coding agent reviews, and how it is run.

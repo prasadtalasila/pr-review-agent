@@ -194,19 +194,14 @@ Logs:
 ```bash
 journalctl --user -u pr-review-agent -f              # follow
 journalctl --user -u pr-review-agent -S today        # since midnight
-journalctl --user -u pr-review-agent -p warning      # see the caveat below
+journalctl --user -u pr-review-agent -p warning      # budget refusals, crashes
 ```
 
-!!! warning "Priority filtering does not work yet"
-
-    Every record the daemon emits is currently stored at `PRIORITY=6`,
-    including budget refusals and worker crashes, so `-p warning` returns
-    nothing, ever. journald assigns the priority from `SyslogLevel=` and
-    cannot read the application's own level. The fix — a `<N>` prefix the
-    daemon writes and journald strips — is tracked in
-    [#53](https://github.com/prasadtalasila/pr-review-agent/issues/53).
-    Until then, filter on the text, or turn the daemon's own level down with
-    `PR_REVIEW_AGENT_LOG_LEVEL` so that less is written in the first place.
+The priority is the daemon's own level, not `SyslogLevel=`: under a unit it
+writes each record behind a `<N>` prefix that journald reads and strips, so
+`-p warning` returns the warnings and errors and nothing else. journald
+cannot read an application's level by itself, which is why the daemon has to
+say so. [LOGGING.md](LOGGING.md#-the-n-priority-prefix) has the detail.
 
 ## 🔧 What the unit says, and why
 
@@ -253,6 +248,19 @@ re-read on `SIGHUP`. `--log-level` on `ExecStart=` would beat the
 environment, and the shipped unit sets none, so this line is the effective
 level. `logging.level` in `config.yaml` is the lowest layer of the three.
 [LOGGING.md](LOGGING.md) has what each level shows.
+
+**The format needs no knob under systemd.** `PR_REVIEW_AGENT_LOG_FORMAT`
+exists and takes the same three layers, but the default `auto` already
+resolves to JSON here, because stderr is the journal rather than a terminal
+— and the daemon detects the journal socket and prefixes each record with
+its `<N>` priority, so `journalctl -u pr-review-agent -p warning` returns
+the warnings and nothing else. Set `PR_REVIEW_AGENT_LOG_FORMAT=text` only if
+you would rather read the journal than query it:
+
+```bash
+journalctl --user -u pr-review-agent -f -o cat \
+  | jq -R --unbuffered -r 'fromjson? // empty | "\(.time[11:19]) \(.msg)"'
+```
 
 ## ⬆️ Upgrading
 

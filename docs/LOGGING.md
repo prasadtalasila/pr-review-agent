@@ -1,8 +1,7 @@
 # Logging design
 
-**What the operator sees is built; how it is formatted and where it goes are
-not.** This page records the whole agreed design and the reasoning behind
-each choice, and marks which parts have landed.
+**The whole design is built.** This page records it and the reasoning behind
+each choice; the table below is what landed where.
 
 | Part | State |
 | :-- | :-- |
@@ -10,13 +9,15 @@ each choice, and marks which parts have landed.
 | The level applied to `pr_review_agent` and never to root, with a floor per third-party logger | **built**, pinned by `tests/test_logs.py` |
 | All six events, each at its agreed level | **built**, see [the table](#-global-level-not-per-logger) |
 | The two call-site demotions | **built** |
-| `logging.format`, the JSON record, the `<N>` journald prefix | **not built** — see [Not built yet](#-not-built-yet) |
+| `logging.format` — `auto`, `text`, `json` | **built** (`logs.py`), see [Configuration](#-configuration) |
+| The JSON record, with the six events' contextual values as fields | **built**, see [the record](#-the-json-record) |
+| The `<N>` journald prefix and `_on_journal` | **built**, pinned by `tests/test_logs.py` |
 
 Tracked by [#51](https://github.com/prasadtalasila/pr-review-agent/issues/51)
 (the umbrella), [#52](https://github.com/prasadtalasila/pr-review-agent/issues/52)
 (level, **done**) and [#53](https://github.com/prasadtalasila/pr-review-agent/issues/53)
-(destination and format). The separate issue for the two missing log records
-is **done** too: both are emitted, as events 3 and 6 below.
+(destination and format, **done**). The separate issue for the two missing
+log records is **done** too: both are emitted, as events 3 and 6 below.
 
 ## 🎯 What the operator asked for
 
@@ -73,22 +74,18 @@ Two scalars, and no destinations:
 
 ```yaml
 logging:
-  level: INFO      # DEBUG | INFO | WARNING | ERROR | CRITICAL  -- built
-  format: auto     # auto | text | json                        -- #53, not built
+  level: INFO      # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  format: auto     # auto | text | json
 ```
 
-`format` is not accepted by the loader yet. Unknown keys are rejected rather
-than ignored, so it will raise until #53 lands — which is the intended
-behaviour, not an oversight: a setting that quietly does nothing is the
-failure that rule exists to prevent.
-
 Precedence is **flag > environment > config file**, per clig.dev's
-configuration order:
+configuration order, and the same three layers for each of the two:
 
 ```bash
-pr-review-agent daemon start --log-level DEBUG      # highest
+pr-review-agent daemon start --log-level DEBUG --log-format json   # highest
 PR_REVIEW_AGENT_LOG_LEVEL=DEBUG                     # what a systemd unit uses
-# then config.yaml, then the INFO default (`auto` format is #53)
+PR_REVIEW_AGENT_LOG_FORMAT=json
+# then config.yaml, then the INFO and auto defaults
 ```
 
 The environment layer is the one that matters for deployment: `GITHUB_TOKEN`
@@ -235,10 +232,10 @@ a discriminator field:
 The contextual keys — `repo`, `pr`, `reason`, `findings`, `tokens`,
 `remaining`, `tightest` — are passed as `extra=` at roughly five call sites,
 which are the six events. They are *content*, not routing markers: every one
-of them is a value already interpolated into the message text, and #53
-requires the classifier's `kind`, `repo`, `pr` and `reason` to be real fields
-rather than an interpolated string. No `event` tag is added to any call site,
-because `logger` already carries the component.
+of them is a value already interpolated into the message text, and the
+classifier's `kind`, `repo`, `pr` and `reason` are real fields rather than an
+interpolated string. No `event` tag is added to any call site, because
+`logger` already carries the component.
 
 ## 🔍 How the daemon knows journald is listening
 
@@ -380,72 +377,33 @@ Speaking syslog directly is the road not taken:
 `<PRI>` as `facility * 8 + severity`. That is a second endpoint with its own
 socket, framing and failure modes.
 
-## 🛠 Implementation sketch
+## 🛠 How it is wired
 
-```python
-_PRIORITY = {
-    logging.CRITICAL: 2, logging.ERROR: 3, logging.WARNING: 4,
-    logging.INFO: 6, logging.DEBUG: 7,
-}
-
-_RESERVED = frozenset(
-    vars(logging.LogRecord("", 0, "", 0, "", (), None))
-) | {"message", "asctime", "taskName"}
-
-
-def _on_journal(stream: IO[str]) -> bool:
-    """Whether ``stream`` is the journal socket systemd handed us."""
-    spec = os.environ.get("JOURNAL_STREAM")
-    if not spec:
-        return False
-    device, _, inode = spec.partition(":")
-    st = os.fstat(stream.fileno())
-    return (str(st.st_dev), str(st.st_ino)) == (device, inode)
-
-
-class JsonFormatter(logging.Formatter):
-    """One JSON object per record, with ``extra=`` fields promoted."""
-
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "time": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
-            "level": record.levelname.lower(),
-            "logger": record.name,
-            "msg": record.getMessage(),
-        }
-        payload.update({k: v for k, v in vars(record).items() if k not in _RESERVED})
-        if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
-
-
-class JournalPriority(logging.Formatter):
-    """Prefix the rendered record with the priority journald will strip."""
-
-    def __init__(self, inner: logging.Formatter) -> None:
-        self._inner = inner
-
-    def format(self, record: logging.LogRecord) -> str:
-        return f"<{_PRIORITY[record.levelno]}>{self._inner.format(record)}"
-```
-
-Wired once, when the daemon starts:
+`logs.py` holds all of it: `JsonFormatter`, which promotes `extra=` fields
+onto the object; `JournalPriority`, which prefixes a rendered record; and
+`_on_journal`, which compares `JOURNAL_STREAM` against `os.fstat(2)`. They
+are joined in `configure`, once, when the daemon starts:
 
 ```python
 handler = logging.StreamHandler(sys.stderr)
-inner = JsonFormatter() if use_json else logging.Formatter(TEXT_FORMAT)
-handler.setFormatter(JournalPriority(inner) if _on_journal(sys.stderr) else inner)
+handler.setFormatter(_formatter(fmt, sys.stderr))   # shape, then prefix
 
 root = logging.getLogger()
 root.addHandler(handler)
 root.setLevel(logging.WARNING)
-logging.getLogger("pr_review_agent").setLevel(level)
-for noisy, floor in FLOORS.items():        # httpx WARNING, httpcore INFO, asyncio DEBUG
-    logging.getLogger(noisy).setLevel(max(level, floor))
+logging.getLogger(PACKAGE_LOGGER).setLevel(level)
+for name in THIRD_PARTY_FLOORS:                     # httpx, httpcore, asyncio
+    logging.getLogger(name).setLevel(_third_party_level(name, level))
 ```
 
-Both decisions are resolved here, at handler construction, and neither is
-re-evaluated per record.
+Both format decisions are resolved there, at handler construction, and
+neither is re-evaluated per record.
+
+The contextual keys the six events carry — `repo`, `pr`, `reason`, `kind`,
+`findings`, `tokens`, `remaining`, `tightest` — are passed as `extra=`
+*beside* the interpolated message, not instead of it. Text mode is therefore
+the line it always was, and JSON mode carries both a legible `msg` and the
+fields the queries below select on.
 
 JSON also settles a multi-line problem. journald applies the prefix per
 line, so a traceback logged with `exc_info=True` — which the worker does in
@@ -638,39 +596,41 @@ both redirect stderr to a file; the Event Log analogue,
 - The reason codes in [Triggers](TRIGGERS.md) still describe reality, and
   every decision is DEBUG.
 
-Still to write, with #53:
+And, with #53:
 
+- `auto` resolves to text on a terminal and to JSON on anything else, both
+  branches; a named format is not second-guessed by either.
 - `_on_journal` is true when `JOURNAL_STREAM` matches a real `os.fstat` and
   false when it does not or is unset. Built from a temporary file's own
   device and inode, this runs unmodified on all three CI platforms, because
   `st_dev` and `st_ino` are populated on Windows too.
 - A warning record starts `<4>` when journald is detected, starts `{` when it
-  is not, and round-trips through `json.loads` in both cases.
+  is not, and round-trips through `json.loads` in both cases; every level
+  maps to its syslog digit.
+- A real classifier decision, rendered as JSON, carries `reason`, `pr`,
+  `repo` and `kind` as fields — the acceptance criterion of #53 — and the
+  keys this page's queries name are attached where each event is emitted.
 
-## 🕳 Not built yet
+## ✅ What #53 changed
 
-Everything left is #53 — how a record is *formatted* and how it reaches
-journald. Nothing here changes which events are emitted or at what level.
+Nothing about which events are emitted or at what level. Three things about
+their shape and their priority:
 
-**`logging.format`.** The key is designed above (`auto | text | json`) and
-the loader does not accept it yet. Unknown keys are rejected rather than
-ignored, so writing it today raises at startup. That is the intended
-behaviour and not an oversight: a setting that quietly does nothing is the
-failure that rule exists to prevent.
+**`logging.format`.** Accepted by the loader, with `--log-format` and
+`PR_REVIEW_AGENT_LOG_FORMAT` above it. An unrecognised name is refused at
+startup rather than falling back, like the level: a format that quietly
+became something else is a stream the collector downstream cannot parse.
 
-**The JSON record.** `JsonFormatter`, the promoted `extra=` fields, and with
-them the per-component slice at query time — `jq 'select(.logger == …)'`.
-The contextual keys the six events would carry (`repo`, `pr`, `reason`,
-`findings`, `tokens`, `remaining`, `tightest`) are values already
-interpolated into the message text today, so this is a change of shape
-rather than of content.
+**The JSON record.** `JsonFormatter` and the promoted `extra=` fields, and
+with them the per-component slice at query time — `jq 'select(.logger == …)'`.
+The contextual keys the six events carry were already interpolated into the
+message text, so this was a change of shape rather than of content.
 
-**The `<N>` priority prefix and `_on_journal`.** Until it lands, every record
-the daemon emits is stored by journald at `PRIORITY=6` — budget refusals and
-worker crashes included — so `journalctl -u pr-review-agent -p warning`
-returns nothing, ever. This is a live defect rather than a missing luxury,
-and it is the reason event 6 sits at ERROR in the application's own level
-while priority filtering cannot yet see the difference.
+**The `<N>` priority prefix.** Before it, every record the daemon emitted was
+stored by journald at `PRIORITY=6` — budget refusals and worker crashes
+included — so `journalctl -u pr-review-agent -p warning` returned nothing,
+ever. That was a live defect rather than a missing luxury, and it is fixed:
+the priority now follows the application's own level.
 
 ### Already built, recorded here because earlier drafts listed them
 

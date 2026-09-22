@@ -628,7 +628,7 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
         "publish",
         "logging",
     }
-    assert set(data["logging"]) == {"level"}
+    assert set(data["logging"]) == {"level", "format"}
     assert set(data["github"]) == {"repo", "agent_user_id"}
     assert set(data["triggers"]) == {"allowlist", "handle"}
     assert set(data["budget"]) == {

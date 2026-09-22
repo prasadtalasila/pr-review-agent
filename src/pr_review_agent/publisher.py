@@ -203,6 +203,7 @@ class Publisher:
             run.repo,
             run.pr_number,
             comment_id,
+            extra={"repo": run.repo, "pr": run.pr_number, "comment": comment_id},
         )
         return self._stamp(run, comment_id=comment_id)
 
