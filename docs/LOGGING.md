@@ -1,26 +1,27 @@
 # Logging design
 
-**The level is built; the format and the destination are not.** This page
-records the whole agreed design and the reasoning behind each choice, and
-marks which parts have landed.
+**What the operator sees is built; how it is formatted and where it goes are
+not.** This page records the whole agreed design and the reasoning behind
+each choice, and marks which parts have landed.
 
 | Part | State |
 | :-- | :-- |
 | The level — `--log-level`, `PR_REVIEW_AGENT_LOG_LEVEL`, `logging.level` | **built** (`logs.py`), see [Configuration](#-configuration) |
-| The level applied to `pr_review_agent` and never to root | **built**, pinned by `tests/test_logs.py` |
+| The level applied to `pr_review_agent` and never to root, with a floor per third-party logger | **built**, pinned by `tests/test_logs.py` |
+| All six events, each at its agreed level | **built**, see [the table](#-global-level-not-per-logger) |
 | The two call-site demotions | **built** |
-| `logging.format`, the JSON record, the `<N>` journald prefix | not built |
-| The review-start and remaining-budget records | not built, see [Not built yet](#-not-built-yet) |
+| `logging.format`, the JSON record, the `<N>` journald prefix | **not built** — see [Not built yet](#-not-built-yet) |
 
 Tracked by [#51](https://github.com/prasadtalasila/pr-review-agent/issues/51)
 (the umbrella), [#52](https://github.com/prasadtalasila/pr-review-agent/issues/52)
 (level, **done**) and [#53](https://github.com/prasadtalasila/pr-review-agent/issues/53)
-(destination and format), plus one issue for the two log records that do not
-exist yet.
+(destination and format). The separate issue for the two missing log records
+is **done** too: both are emitted, as events 3 and 6 below.
 
 ## 🎯 What the operator asked for
 
-Six things visible while the daemon runs, and nothing else:
+Six things visible while the daemon runs, and nothing else. All six are now
+emitted; the level each carries is [below](#-global-level-not-per-logger):
 
 - the poll cycle querying for pull requests;
 - the pull request number, and why it was or was not taken;
@@ -87,7 +88,7 @@ configuration order:
 ```bash
 pr-review-agent daemon start --log-level DEBUG      # highest
 PR_REVIEW_AGENT_LOG_LEVEL=DEBUG                     # what a systemd unit uses
-# then config.yaml, then the INFO / auto defaults
+# then config.yaml, then the INFO default (`auto` format is #53)
 ```
 
 The environment layer is the one that matters for deployment: `GITHUB_TOKEN`
@@ -183,16 +184,20 @@ buys is that the remaining allowance — the number that decides whether the
 agent can still work at all — answers at every level an operator might set,
 including the one they drop to precisely when they want the log quiet.
 
-Two demotions and two additions besides. The demoted pair are the only INFO records
-that do not belong in an operator's view: the engine adapter's argv and
-prompt digest fire once per review and are also the **F4** log-hygiene
-surface, and the dry-run branch dumps an entire rendered review body into the
-log on every review.
+Besides the six, two records were demoted. They are the only INFO records
+that did not belong in an operator's view: the engine adapter's argv and
+prompt digest fires once per review and is also the **F4** log-hygiene
+surface, and the dry-run branch dumped an entire rendered review body into
+the log on every review. The dry-run branch keeps a one-line INFO summary,
+because an operator does need to know the brake is on.
 
 This is the vertical cut #51 asks for, expressed in code rather than in
 configuration — which is where the level policy already lives in this
-codebase. `triggers/classifier.py:159-160` does precisely this today, and
-[Triggers](TRIGGERS.md) documents the reason-to-level table as a contract.
+codebase. `triggers/classifier.py` is the clearest case: it used to split its
+own decisions between INFO and DEBUG by reason, and now puts the whole record
+at DEBUG, because a decision fires for every pull request and every comment
+on every cycle. [Triggers](TRIGGERS.md) documents the reason codes; the level
+is no longer per-reason.
 
 The cost is real and is accepted: if a component becomes noisy, muting it
 needs a code change and a restart. That has happened once — the v0.12.0 run
@@ -619,39 +624,64 @@ both redirect stderr to a file; the Event Log analogue,
   `DEBUG` leaves `httpx` at WARNING and `httpcore` at INFO, so neither the
   per-request line nor the transport's fourteen-record trace is reachable by
   asking the agent for DEBUG; `ERROR` and `CRITICAL` do lower all three.
-- At INFO the six events are emitted and the engine adapter's argv line is
-  not.
+- Each of the six events is emitted at its agreed level, read back out of
+  the four modules that emit them, so the table and the code cannot drift.
+- At INFO events 3 to 6 are visible and events 1, 2 and the engine adapter's
+  argv line are not.
+- The reason codes in [Triggers](TRIGGERS.md) still describe reality, and
+  every decision is DEBUG.
+
+Still to write, with #53:
+
 - `_on_journal` is true when `JOURNAL_STREAM` matches a real `os.fstat` and
   false when it does not or is unset. Built from a temporary file's own
   device and inode, this runs unmodified on all three CI platforms, because
   `st_dev` and `st_ino` are populated on Windows too.
 - A warning record starts `<4>` when journald is detected, starts `{` when it
   is not, and round-trips through `json.loads` in both cases.
-- The reason-to-level table in [Triggers](TRIGGERS.md) still describes
-  reality.
 
 ## 🕳 Not built yet
 
-Two of the six events have no log record at all, so no level, format or
-destination change can surface them. Both are additions rather than routing.
+Everything left is #53 — how a record is *formatted* and how it reaches
+journald. Nothing here changes which events are emitted or at what level.
 
-**Start of review.** The nearest record is `engine/cli.py:155`, which fires
-inside the engine adapter — reached only after the pull request facts and the
-workspace checkout have both succeeded, and the checkout is the slow part. A
-run that is admitted and then stalls during a cold clone never reaches that
-line, so *started and still going* cannot be told from *never started*. It
-also names the engine and the prompt digest rather than the pull request.
-The record belongs in `worker.py` immediately after
-`await self.publisher.acknowledge(claim.trigger)`: after the lease is
-confirmed held, before anything slow.
+**`logging.format`.** The key is designed above (`auto | text | json`) and
+the loader does not accept it yet. Unknown keys are rejected rather than
+ignored, so writing it today raises at startup. That is the intended
+behaviour and not an oversight: a setting that quietly does nothing is the
+failure that rule exists to prevent.
 
-**Remaining budget.** `Headroom.remaining` is logged only on the refusal
-paths, so an operator's first sight of the allowance is the message saying it
-has run out. `Governor.headroom(now)` is already public, already
-actor-agnostic, and its docstring already names this use — *"for an operator
-or a status readout"*. It belongs on the existing `reviewed …` record rather
-than on one of its own, which pins the read at one per review instead of one
-per poll cycle.
+**The JSON record.** `JsonFormatter`, the promoted `extra=` fields, and with
+them the per-component slice at query time — `jq 'select(.logger == …)'`.
+The contextual keys the six events would carry (`repo`, `pr`, `reason`,
+`findings`, `tokens`, `remaining`, `tightest`) are values already
+interpolated into the message text today, so this is a change of shape
+rather than of content.
+
+**The `<N>` priority prefix and `_on_journal`.** Until it lands, every record
+the daemon emits is stored by journald at `PRIORITY=6` — budget refusals and
+worker crashes included — so `journalctl -u pr-review-agent -p warning`
+returns nothing, ever. This is a live defect rather than a missing luxury,
+and it is the reason event 6 sits at ERROR in the application's own level
+while priority filtering cannot yet see the difference.
+
+### Already built, recorded here because earlier drafts listed them
+
+The two events that once had no record at all now have one, and both landed
+with the level work:
+
+**Start of review** is in `worker.py`, immediately after
+`await self.publisher.acknowledge(claim.trigger)` — after the lease is
+confirmed held, before anything slow. Not in the engine adapter, whose line
+fires only once the pull request facts and the checkout have both succeeded;
+a cold clone is the slow part, so a run that stalled there was
+indistinguishable from one that never started.
+
+**Remaining budget** is read from `Governor.headroom(now)` once per review,
+*after* the settle rather than on the `reviewed …` record as the design
+originally proposed. Until the settle the ledger still holds the run's
+reservation at `max_run_tokens`, so the number would understate what is left
+by whatever the run did not spend.
 
 Neither addition calls a review engine, removes a cap, or widens what
 triggers a review.

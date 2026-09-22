@@ -203,13 +203,14 @@ journalctl --user -u pr-review-agent -p warning      # see the caveat below
     including budget refusals and worker crashes, so `-p warning` returns
     nothing, ever. journald assigns the priority from `SyslogLevel=` and
     cannot read the application's own level. The fix — a `<N>` prefix the
-    daemon writes and journald strips — is part of the logging work tracked
-    in [#51](https://github.com/prasadtalasila/pr-review-agent/issues/51).
-    Until then, filter on the text.
+    daemon writes and journald strips — is tracked in
+    [#53](https://github.com/prasadtalasila/pr-review-agent/issues/53).
+    Until then, filter on the text, or turn the daemon's own level down with
+    `PR_REVIEW_AGENT_LOG_LEVEL` so that less is written in the first place.
 
 ## 🔧 What the unit says, and why
 
-`systemctl --user cat pr-review-agent` shows the installed file. Four
+`systemctl --user cat pr-review-agent` shows the installed file. Five
 choices in it are load-bearing and would not be obvious from the outside.
 
 **`StandardOutput=` and `StandardError=` are not set.** This looks like an
@@ -238,11 +239,20 @@ namespace error in `systemctl --user status`. If you hit that, comment it
 out in an override and report it — the rest of the hardening does not
 depend on it.
 
-`Environment=PR_REVIEW_AGENT_LOG_LEVEL=` is present but commented out. The
-daemon's log level is hardcoded to `INFO` today; the line is there because
-it is what `systemctl --user edit` is meant to change once
-[#52](https://github.com/prasadtalasila/pr-review-agent/issues/52) lands,
-and changing verbosity should never mean editing `ExecStart=`.
+**`Environment=PR_REVIEW_AGENT_LOG_LEVEL=INFO` is the verbosity knob.** It
+is what `systemctl --user edit` is meant to change, because changing
+verbosity should never mean editing `ExecStart=`:
+
+```bash
+systemctl --user edit pr-review-agent     # Environment=PR_REVIEW_AGENT_LOG_LEVEL=DEBUG
+systemctl --user restart pr-review-agent
+```
+
+A restart, not a reload: only the `budget` and `publish` sections are
+re-read on `SIGHUP`. `--log-level` on `ExecStart=` would beat the
+environment, and the shipped unit sets none, so this line is the effective
+level. `logging.level` in `config.yaml` is the lowest layer of the three.
+[LOGGING.md](LOGGING.md) has what each level shows.
 
 ## ⬆️ Upgrading
 

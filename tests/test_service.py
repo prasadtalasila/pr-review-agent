@@ -23,6 +23,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
+from pr_review_agent import logs
 from pr_review_agent.cli import cli
 from pr_review_agent.cli._common import EXIT_STARTUP
 from pr_review_agent.cli.cmd_service import UNIT_TEMPLATE, executable, unit_text
@@ -94,6 +95,23 @@ def test_the_unit_sets_neither_standard_stream():
     service = parsed(unit_text())["Service"]
     assert "StandardOutput" not in service
     assert "StandardError" not in service
+
+
+def test_the_unit_sets_the_log_level_by_environment_not_by_execstart():
+    """The line `systemctl --user edit` is meant to change.
+
+    Verbosity must not mean editing ExecStart=, and a `--log-level` flag
+    there would silently beat the override an operator just wrote.
+    """
+    service = parsed(unit_text())["Service"]
+    assert service["Environment"] == f"{logs.LEVEL_ENV_VAR}={logs.DEFAULT_LEVEL}"
+    assert "--log-level" not in service["ExecStart"]
+
+
+def test_the_units_log_level_is_one_the_daemon_accepts():
+    """A level the loader would refuse leaves a unit that cannot start."""
+    _, _, level = parsed(unit_text())["Service"]["Environment"].partition("=")
+    assert logs.parse_level(level, source="the unit") == level
 
 
 def test_the_unit_does_not_protect_home():
