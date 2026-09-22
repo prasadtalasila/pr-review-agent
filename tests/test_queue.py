@@ -10,7 +10,7 @@ from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import CommentSource, Trigger, TriggerKind
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-REPO = "INTO-CPS-Association/DTaaS"
+REPO = "prasadtalasila/pr-review-agent"
 
 
 def opened(pr=7, head_sha="abc123"):

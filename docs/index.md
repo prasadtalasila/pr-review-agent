@@ -22,7 +22,9 @@ Download [latest release](https://github.com/prasadtalasila/pr-review-agent/rele
 python -m venv .venv
 source .venv/bin/activate
 
-# download the latest release
+# install from pypi
+pip install pr-review-agent
+# or download the latest release
 pip install pr_review_agent-<version>-py3-none-any.whl
 
 pr-review-agent config generate      # writes ./config.yaml

@@ -36,7 +36,7 @@ def classifier():
 
 def make_pr(author=ALICE, created_at=LATER, is_draft=False, head_sha="abc123"):
     return PullRequest(
-        repo="INTO-CPS-Association/DTaaS",
+        repo="prasadtalasila/pr-review-agent",
         number=7,
         head_sha=head_sha,
         author=author,
@@ -47,7 +47,7 @@ def make_pr(author=ALICE, created_at=LATER, is_draft=False, head_sha="abc123"):
 
 def make_comment(author=ALICE, body="@claude review", comment_id=99, updated_at=LATER):
     return Comment(
-        repo="INTO-CPS-Association/DTaaS",
+        repo="prasadtalasila/pr-review-agent",
         pr_number=7,
         comment_id=comment_id,
         author=author,

@@ -73,10 +73,8 @@ The agent supports **Python 3.10 through 3.14** and uses:
   Its `MockTransport` is what lets the poller tests run with no network.
 - [Click](https://click.palletsprojects.com/) — the `pr-review-agent <noun>
   <verb>` command tree. Chosen over `argparse`, which the two entry points
-  used before 0.14, for consistency with the
-  [DTaaS CLI](https://github.com/INTO-CPS-Association/DTaaS/tree/feature/distributed-demo/cli):
-  same association, same language, same grammar, and a reviewer moving
-  between the two should not meet two idioms for it.
+  used before 0.14, because a noun-verb grammar with grouped help is what
+  Click gives for free and `argparse` only gives by hand.
 - [Poetry](https://python-poetry.org/docs/) — manages dependencies and builds
   the package. The configuration is _pyproject.toml_; new dependencies are
   added there and locked into _poetry.lock_.

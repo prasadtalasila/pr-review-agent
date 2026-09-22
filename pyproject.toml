@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10,<3.15"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "The INTO-CPS Association" }]
+authors = [{ name = "Prasad Talasila" }]
 classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

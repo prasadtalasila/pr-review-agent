@@ -317,7 +317,7 @@ default.
 
 **C4. Inline, line-anchored comments.**
 `Finding` already carries `path` and `line`; the acceptance criterion in
-[ROADMAP.md](ROADMAP.md) was reworded away from "line-anchored" because
+[STATUS.md](STATUS.md) was reworded away from "line-anchored" because
 inline comments need the reviews endpoint and with it an `event` field.
 `pr-agent` does this and is MIT, so its handling can be read and borrowed.
 What must be preserved is the thing `publisher.py` is built around: today the

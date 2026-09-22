@@ -1,7 +1,5 @@
 # Coding Assistant Guidelines
 
-Adapted from the INTO-CPS Association's
-[DTaaS](https://github.com/INTO-CPS-Association/DTaaS) assistant guidelines.
 See `CLAUDE.md` for the behavioural rules that govern *how* a change is made,
 and `DEVELOPER.md` for the commands that verify it.
 

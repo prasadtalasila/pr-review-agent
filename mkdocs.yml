@@ -45,8 +45,12 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Why this exists: DESIGN.md
-  - Architecture: ARCHITECTURE.md
+  - Users:
+      - Configuration: CONFIG.md
+      - Running as a service: SERVICE.md
+      - Review output:
+          - Report template: reporting/review-report.md
+          - Review prompt: reporting/review-prompt.md
   - How it works:
       - Triggers: TRIGGERS.md
       - Poller: POLLER.md
@@ -58,10 +62,9 @@ nav:
       - Review worker: WORKER.md
       - Engine seam: ENGINE.md
       - Publisher: PUBLISHER.md
-  - Review output:
-      - Report template: reporting/review-report.md
-      - Review prompt: reporting/review-prompt.md
-  - Configuration reference: CONFIG.md
-  - Running as a service: SERVICE.md
-  - Roadmap and acceptance criteria: ROADMAP.md
-  - Candidate features: FEATURE-ROADMAP.md
+  - Developers:
+      - Why this exists: DESIGN.md
+      - Feature roadmap: FEATURE-ROADMAP.md
+      - Architecture: ARCHITECTURE.md
+      - Logging design: LOGGING.md
+      - Status: STATUS.md

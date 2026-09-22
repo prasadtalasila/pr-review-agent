@@ -5,9 +5,7 @@ with four nouns: ``config``, ``host``, ``daemon``, ``service``. Each noun
 is a Click group in its own ``cmd_<noun>.py`` module, attached here in the
 order an operator meets them: write a config, check the host can reach what
 the daemon needs, then start it -- and, for an unattended install, hand it to
-systemd instead. The layout deliberately mirrors the DTaaS CLI,
-whose commands were reorganised to the same grammar; the two projects share
-maintainers and should not need two idioms for one shape.
+systemd instead.
 
 ``host`` carries a single verb, which the grammar would normally argue
 against. It stays a noun of its own because the checks are about the

@@ -1,4 +1,4 @@
-# Roadmap and acceptance criteria
+# Status and acceptance criteria
 
 What is built, what is next, and the checklist the finished agent has to
 satisfy. The criteria come from the feature issue that opened the project;
