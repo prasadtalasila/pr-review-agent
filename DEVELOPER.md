@@ -298,13 +298,16 @@ poetry run pylint tests --rcfile=.pylintrc --fail-under=9.0 \
   --disable=missing-function-docstring,missing-module-docstring
 ```
 
-`src` currently scores 9.99/10. The single deduction is an `R0801`
-(`duplicate-code`) on the five-line "load the config, print why not, exit 2"
-preamble that `bootstrap.main` and `daemon.main` share. The substance of that
-step already lives in `_startup.py`; what remains is the idiom of turning a
-`StartupError` into an exit status, and removing it would mean either a union
-return type or raising `SystemExit` — which would cost `main` the
-returns-an-exit-code contract its tests rely on.
+`src` currently scores 9.95/10 and `tests` 9.36/10, both well above the 9.0
+gate. Every deduction in `src` is a size heuristic — `R0902`
+(too-many-instance-attributes) on the config and the two trigger models,
+`R0913`/`R0914`/`R0915` on the worker's one run and the governor's claim,
+`R0911` on the classifier's seven reason codes — plus one `R0801`
+(`duplicate-code`) on the terminate-then-kill helper that `engine/cli.py` and
+`workspace/gitcmd.py` each spell out for their own subprocess. None is worth
+the indirection that would silence it: a dataclass with seven fields instead
+of nine, or one shared process-killer imported into two modules that
+otherwise share nothing.
 
 The test pass disables the docstring checks because a test's name is its
 description; every other check still applies.
