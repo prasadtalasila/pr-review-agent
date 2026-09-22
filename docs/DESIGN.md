@@ -59,7 +59,7 @@ spend.
 | **PostgreSQL instead of SQLite** | The topology is one writer on one host, so Postgres's multi-client concurrency is capability paid for and never used — while SQLite's write serialisation actively simplifies the hardest invariant in the system ([reserve-then-settle](BUDGET.md#-reserve-then-settle)). SQLite needs no daemon, no port and no DBA on a locked-down host, and `sqlite3` is in the standard library. Revisit only if the agent becomes multi-host. |
 | **RabbitMQ as the queue** | Reasonable if already operational, but the budget reservation must be atomic with the dequeue — trivial in one database, awkward across a broker plus a separate store. |
 | **Celery** | The same rejection as RabbitMQ, plus a framework on top: Celery dequeues in a broker while the ledger lives in SQLite, so no transaction spans both. See [Why not Celery](#-why-not-celery). |
-| **Engine code inside DTaaS at `review-agents/`** | The reviewer's CI would run on every DTaaS change unless paths were filtered, its Python dependency tree would join the DTaaS supply chain, and reuse for a second repository would need vendoring or a monorepo-subdirectory dependency. |
+| **Engine code inside the reviewed repository at `review-agents/`** | The reviewer's CI would run on every change to that repository unless paths were filtered, its Python dependency tree would join that repository's supply chain, and reuse for a second repository would need vendoring or a monorepo-subdirectory dependency. |
 | **API-key billing instead of the subscription** | Not rejected — see [Billing mode](#-billing-mode-unresolved) below. A live option that requires no redesign. |
 | **Human review only (status quo)** | No new infrastructure or cost, but leaves the bottleneck unaddressed. |
 
@@ -114,7 +114,7 @@ an explicit row lock.
 The engine lives in its own repository, along a split that already exists in
 the problem: **the engine is generic; the standards are per-repository.**
 
-- The **engine** has no knowledge of DTaaS, has its own release cadence and
+- The **engine** has no knowledge of the reviewed repository, has its own release cadence and
   dependency tree, and holds the GitHub App private key and the agent
   credential. That is a real security boundary, not tidiness. Adding a second
   repository to its scope later is a config change rather than a fork.

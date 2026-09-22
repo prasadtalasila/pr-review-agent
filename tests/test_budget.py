@@ -32,7 +32,7 @@ from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-REPO = "INTO-CPS-Association/DTaaS"
+REPO = "prasadtalasila/pr-review-agent"
 
 # 1000-token runs against a 10 000-token weekly share, so a percentage of the
 # tightest window is a whole number of runs and the ladder lands on exact

@@ -389,7 +389,7 @@ class Workspace:
             )
             await self._drop_ref(ref)
         except WorkspaceError:
-            logger.warning(
+            logger.error(
                 "could not tear down %s; it is leaking disk until the next sweep",
                 run_path,
                 exc_info=True,

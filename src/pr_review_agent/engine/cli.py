@@ -152,7 +152,11 @@ class CliEngine(ABC):
         # prompt is largely attacker-controlled and is logged as a digest:
         # a posted review stays traceable to the run that produced it
         # without copying the diff into the agent's own logs.
-        logger.info(
+        #
+        # DEBUG, not INFO: this is the log-hygiene surface, and an operator
+        # watching the daemon wants the six events of `docs/LOGGING.md`, not
+        # one argv line per review. Turning it back on is `--log-level DEBUG`.
+        logger.debug(
             "running %s over %s: argv=%s prompt=sha256:%s",
             self.name,
             request.checkout.head_sha[:12],

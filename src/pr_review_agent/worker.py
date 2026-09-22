@@ -203,6 +203,20 @@ class ReviewWorker:
         # beat a review that takes minutes, and it is what makes an adaptive
         # poll interval feel like an answer rather than a silence.
         await self.publisher.acknowledge(claim.trigger)
+        # The start of a review, here rather than in the engine adapter. The
+        # adapter's line fires only once the pull request facts and the
+        # checkout have both succeeded, and a cold clone is the slow part --
+        # so a run that stalls there would be indistinguishable from one that
+        # never started. Held to the moment the lease is confirmed and
+        # nothing slow has been attempted, this is the record that makes
+        # *started and still going* a different thing from *never started*.
+        logger.info(
+            "reviewing %s#%d as %s (mode=%s)",
+            claim.trigger.repo,
+            claim.trigger.pr_number,
+            claim.trigger.dedupe_key,
+            mode,
+        )
 
         usage = Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name)
         # Everything that can fail before the engine starts is infrastructure,
@@ -285,7 +299,7 @@ class ReviewWorker:
         # PullRequestTooLarge subclasses WorkspaceError, so it is caught
         # first or it would be retried.
         except (PullRequestTooLarge, PayloadError):
-            logger.warning(
+            logger.error(
                 "giving up on %s permanently", claim.trigger.dedupe_key, exc_info=True
             )
             finish = self.queue.abandon
@@ -293,7 +307,7 @@ class ReviewWorker:
             # The wall is the account's, not this run's, so retrying reaches
             # it again having spent to get there. The breaker refuses every
             # claim instead, and the row waits behind it.
-            logger.warning("%s hit the account's usage limit", claim.trigger.dedupe_key)
+            logger.error("%s hit the account's usage limit", claim.trigger.dedupe_key)
             self.governor.trip(_now())
             # Knowable, in both of its shapes: measured if the engine printed
             # an envelope, zero if it was refused before doing any work. So
@@ -305,7 +319,7 @@ class ReviewWorker:
             # drained nothing -- the account was already out when it arrived.
             finish = self.queue.release_unattempted
         except EngineUnavailable:
-            logger.warning(
+            logger.error(
                 "%s could not start %s and will be retried",
                 claim.trigger.dedupe_key,
                 self.engine.name,
@@ -324,7 +338,7 @@ class ReviewWorker:
             # misconfigured host retrying every trigger forever.
             finish = self.queue.release
         except EngineError as exc:
-            logger.warning(
+            logger.error(
                 "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
             )
             # The only handler that narrows the reason: the adapter already
@@ -332,7 +346,7 @@ class ReviewWorker:
             reason = exc.reason
             finish = self.queue.release
         except (GitHubClientError, WorkspaceError):
-            logger.warning(
+            logger.error(
                 "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
             )
             finish = self.queue.release
@@ -449,6 +463,20 @@ class ReviewWorker:
                 claim.trigger.dedupe_key,
             )
             return
+        # The remaining allowance, once per review rather than once per poll
+        # cycle. Read *after* the settle on purpose: until then the ledger
+        # still holds this run's reservation at `max_run_tokens`, so the
+        # number would understate what is left by whatever the run did not
+        # spend. `headroom` is already public and already actor-agnostic --
+        # its docstring names this use.
+        headroom = self.governor.headroom(_now())
+        logger.info(
+            "budget after %s: %d tokens left in the %s window, mode=%s",
+            claim.trigger.dedupe_key,
+            headroom.remaining,
+            headroom.tightest,
+            headroom.mode,
+        )
         if reviewed is not None:
             # This attempt *did* reach an engine, so a failed post counts
             # against the bound like any other retry -- unlike the
@@ -480,7 +508,7 @@ class ReviewWorker:
         try:
             published = await self.publisher.publish(run)
         except (GitHubClientError, PayloadError):
-            logger.warning(
+            logger.error(
                 "could not publish %s; the review is kept and will be "
                 "posted without being run again",
                 key,

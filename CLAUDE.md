@@ -1,9 +1,8 @@
 # CLAUDE.md
 
 Behavioural guidelines to reduce common LLM coding errors in this repository.
-They are adapted from the INTO-CPS Association's
-[DTaaS](https://github.com/INTO-CPS-Association/DTaaS) guidelines and combined
-with instructions specific to the PR review agent.
+They combine a set of general coding-assistant guidelines with instructions
+specific to the PR review agent.
 
 **Trade-off:** These guidelines prioritise caution over speed.
 For trivial tasks, use judgment.

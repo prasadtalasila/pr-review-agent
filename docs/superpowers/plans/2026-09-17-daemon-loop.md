@@ -47,7 +47,7 @@ In `tests/test_classifier.py`, add `updated_at` to the comment factory and add t
 ```python
 def make_comment(author=ALICE, body="@claude review", comment_id=99, updated_at=LATER):
     return Comment(
-        repo="INTO-CPS-Association/DTaaS",
+        repo="prasadtalasila/pr-review-agent",
         pr_number=7,
         comment_id=comment_id,
         author=author,

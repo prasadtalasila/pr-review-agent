@@ -22,7 +22,9 @@ Download [latest release](https://github.com/prasadtalasila/pr-review-agent/rele
 python -m venv .venv
 source .venv/bin/activate
 
-# download the latest release
+# install from pypi
+pip install pr-review-agent
+# or download the latest release
 pip install pr_review_agent-<version>-py3-none-any.whl
 
 pr-review-agent config generate      # writes ./config.yaml
@@ -66,7 +68,8 @@ with every target made absolute and pinned to the tag being released.
 | [docs/WORKER.md](docs/WORKER.md) | What drains the queue? The claim-run-settle loop, what a failed run settles at and why, which failures retry and which are permanent, what a run leaves behind, the supervisor, and why not a process per review |
 | [docs/PUBLISHER.md](docs/PUBLISHER.md) | How does a review become visible, and what stops the agent approving anything? The 👀 at claim time, the live `head_sha` re-check, one comment per pull request, `publish.dry_run`, and why a failed publish never costs a second review |
 | [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | What is built, what is next, the acceptance checklist, and the known gaps |
+| [docs/STATUS.md](docs/STATUS.md) | What is built, what is next, the acceptance checklist, and the known gaps |
+| [docs/LOGGING.md](docs/LOGGING.md) | What the daemon logs, where it goes, and how the level is set? The single stderr stream, the global level and why it never moves `httpx`, and the journald detection |
 | [docs/FEATURE-ROADMAP.md](docs/FEATURE-ROADMAP.md) | What could be built next, drawn from five neighbouring projects and a hardening review, each candidate with its cost |
 | [DEVELOPER.md](DEVELOPER.md) | How do I set up, test, lint and build this? |
 | [DOCKER.md](DOCKER.md) | How do I get all of that without installing any of it? The development container, what it carries, and the two things about it that are not obvious |

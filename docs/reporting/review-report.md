@@ -1,8 +1,7 @@
 # Review report template
 
-The shape `publisher.render` produces. Derived from
-[INTO-CPS-Association/DTaaS#1769](https://github.com/INTO-CPS-Association/DTaaS/pull/1769#issuecomment-5666562712),
-which is the reference report. See issue #45.
+The shape `publisher.render` produces. Derived from the hand-written
+reference report. See issue #45.
 
 This is a *rendering* contract, not a prompt. The reviewer supplies `title`, `body`,
 `severity`, `path`, `line` and an optional carried-forward `number`; everything below —

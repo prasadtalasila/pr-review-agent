@@ -191,7 +191,7 @@ class Daemon:
         # request opened in this very cycle is still matched.
         pulls = self._pull_requests(changed.get(Endpoint.OPEN_PULLS), now=now)
         summary = pulls + self._comments(changed, now=now)
-        logger.info("cycle seen=%d enqueued=%d", summary.seen, summary.enqueued)
+        logger.debug("cycle seen=%d enqueued=%d", summary.seen, summary.enqueued)
         return summary
 
     def _pull_requests(

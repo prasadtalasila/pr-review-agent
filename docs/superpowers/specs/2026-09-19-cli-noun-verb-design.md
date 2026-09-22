@@ -3,8 +3,7 @@
 Design for the 0.14 release. It fixes a shipped-and-broken quickstart and,
 in the same breaking change, replaces the two `argparse` entry points with a
 single `click` command tree following the
-`pr-review-agent <noun> <verb>` grammar that the DTaaS CLI adopted in
-[INTO-CPS-Association/DTaaS#1714](https://github.com/INTO-CPS-Association/DTaaS/issues/1714).
+`pr-review-agent <noun> <verb>` grammar.
 
 ## The bug this starts from
 
@@ -61,9 +60,9 @@ pr-review-agent daemon start    [--config PATH]
 Three nouns, listed in workflow order — `config`, `host`, `daemon` — via a
 `WorkflowGroup` subclass of `click.Group` that overrides `list_commands`.
 `--help` should read as the setup sequence rather than alphabetically, which
-is the same reason DTaaS's root group does it.
+is the same reason a noun-verb root group usually does it.
 
-`host` is a noun carrying one verb, and DTaaS's own rationale would question
+`host` is a noun carrying one verb, and the grammar's own rationale would question
 that. It stays because the checks are about the *machine*: egress to
 `api.github.com`, to `github.com`, to `api.anthropic.com`, and a git version
 at or above 2.32. Folding them into `daemon check` would misdescribe what
@@ -109,7 +108,7 @@ spellings.
 
 Both templates are copied to `src/pr_review_agent/templates/` and added to
 `[tool.poetry]` as `include` entries for both `sdist` and `wheel` formats,
-mirroring the `src/templates/**/*` block in the DTaaS CLI's `pyproject.toml`.
+using a `src/templates/**/*` block in `pyproject.toml`.
 
 The root-level copies **stay**. Removing them would churn the two GitHub
 blob links in `docs/CONFIG.md` and break the copy-this-file instruction in
@@ -234,6 +233,6 @@ version), `src/pr_review_agent/_startup.py` (the split),
 `argparse`), `tests/test_daemon.py` and `tests/test_bootstrap.py`
 (`CliRunner`), and the documentation listed above.
 
-The per-noun module naming mirrors the DTaaS CLI's `cmd_<noun>.py` layout
+The per-noun module naming uses a `cmd_<noun>.py` layout
 deliberately: the two projects share maintainers, and a reviewer moving
 between them should not meet two idioms for the same grammar.

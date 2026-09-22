@@ -32,7 +32,7 @@ PACKAGED = ROOT / "src" / "pr_review_agent" / "templates"
 
 CONFIG_YAML = """
 github:
-  repo: INTO-CPS-Association/DTaaS
+  repo: prasadtalasila/pr-review-agent
   agent_user_id: 42
 triggers:
   allowlist: [114395272]
@@ -165,7 +165,7 @@ def test_the_generated_config_loads(run, tmp_path):
     """The regression test for the bug this release exists to fix."""
     assert run("config", "generate").exit_code == 0
     config = Config.load(tmp_path / "config.yaml")
-    assert config.github.repo == "INTO-CPS-Association/DTaaS"
+    assert config.github.repo == "prasadtalasila/pr-review-agent"
 
 
 def test_the_generated_full_config_loads(run, tmp_path):
@@ -184,7 +184,7 @@ def test_validate_needs_no_token(run, tmp_path, monkeypatch):
     result = run("config", "validate")
     assert result.exit_code == 0
     assert "is valid" in result.output
-    assert "INTO-CPS-Association/DTaaS" in result.output
+    assert "prasadtalasila/pr-review-agent" in result.output
 
 
 def test_validate_reports_a_broken_file(run, tmp_path):
@@ -275,6 +275,55 @@ def test_only_daemon_start_can_reach_a_review_engine(run, tmp_path, monkeypatch)
     run("host", "check")
 
     assert built == []
+
+
+def _capture_level(monkeypatch, run, tmp_path, *args):
+    """Start the daemon far enough to settle the level, then stop."""
+    seen = []
+    monkeypatch.setenv(TOKEN_ENV, "fake-token")
+    monkeypatch.setattr("pr_review_agent.logs.configure", seen.append)
+    monkeypatch.setattr(
+        "pr_review_agent.cli.cmd_daemon.asyncio.run", lambda coro: coro.close()
+    )
+    write_config(tmp_path)
+    result = run("daemon", "start", *args)
+    return seen, result
+
+
+def test_the_log_level_flag_beats_the_environment(run, tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_REVIEW_AGENT_LOG_LEVEL", "WARNING")
+    seen, _ = _capture_level(monkeypatch, run, tmp_path, "--log-level", "DEBUG")
+    assert seen == ["DEBUG"]
+
+
+def test_the_environment_sets_the_level_with_no_flag(run, tmp_path, monkeypatch):
+    """What a systemd unit uses: the level lands in the `Environment=` block
+    that already carries GITHUB_TOKEN, without touching `ExecStart=`."""
+    monkeypatch.setenv("PR_REVIEW_AGENT_LOG_LEVEL", "WARNING")
+    seen, _ = _capture_level(monkeypatch, run, tmp_path)
+    assert seen == ["WARNING"]
+
+
+def test_the_default_level_is_info(run, tmp_path, monkeypatch):
+    monkeypatch.delenv("PR_REVIEW_AGENT_LOG_LEVEL", raising=False)
+    seen, _ = _capture_level(monkeypatch, run, tmp_path)
+    assert seen == ["INFO"]
+
+
+def test_a_typo_in_the_environment_level_exits_three(run, tmp_path, monkeypatch):
+    """Not a silent fall-back to INFO: an operator who asked for DEBUG during
+    an incident has to learn that they did not get it."""
+    monkeypatch.setenv("PR_REVIEW_AGENT_LOG_LEVEL", "VERBOSE")
+    seen, result = _capture_level(monkeypatch, run, tmp_path)
+    assert seen == []
+    assert result.exit_code == EXIT_STARTUP
+    assert "PR_REVIEW_AGENT_LOG_LEVEL" in result.output
+
+
+def test_a_bad_log_level_flag_is_a_usage_error(run, tmp_path, monkeypatch):
+    seen, result = _capture_level(monkeypatch, run, tmp_path, "--log-level", "VERBOSE")
+    assert seen == []
+    assert result.exit_code == 2
 
 
 # -- the two copies of each template -------------------------------------

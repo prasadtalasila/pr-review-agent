@@ -219,4 +219,4 @@ the cold-start watermark) with links out, and the breaker moves from
 Then [CONFIG.md](../../CONFIG.md)'s "until the breaker lands" advice,
 [STORAGE.md](../../STORAGE.md)'s schema, [WORKER.md](../../WORKER.md)'s
 failure taxonomy, [ENGINE.md](../../ENGINE.md)'s "what lands next", and
-[ROADMAP.md](../../ROADMAP.md)'s known gaps and acceptance lines.
+[STATUS.md](../../STATUS.md)'s known gaps and acceptance lines.

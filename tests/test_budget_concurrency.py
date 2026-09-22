@@ -23,7 +23,7 @@ from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-REPO = "INTO-CPS-Association/DTaaS"
+REPO = "prasadtalasila/pr-review-agent"
 
 WORKERS = 8
 RUN_TOKENS = 1_000

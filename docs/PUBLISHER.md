@@ -37,7 +37,7 @@ watching one still wants a contributor to see.
 
 ### About the 15 second criterion
 
-[ROADMAP.md](ROADMAP.md) asks for an acknowledgement within 15 s **of the
+[STATUS.md](STATUS.md) asks for an acknowledgement within 15 s **of the
 trigger being seen**, not of it being written. The poll interval is adaptive
 10–600 s ([POLLER.md](POLLER.md)), so nothing here can beat the polling
 latency — the acknowledgement is what makes that latency *feel* short, which

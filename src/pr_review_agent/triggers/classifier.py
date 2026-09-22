@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 #: per comment on every pull request the repository has ever closed. They
 #: stay at ``DEBUG`` so the operator-relevant rejections are readable at
 #: ``INFO``.
-NOISY_REASONS = frozenset({"not_fresh", "no_mention", "pr_not_open"})
 
 
 @dataclass(frozen=True)
@@ -152,14 +151,15 @@ class Classifier:
         """Surface every decision, not just accepted ones -- this is the only
         observability the daemon has into "why wasn't this reviewed".
 
-        Rejections that an operator would ask about are logged at ``INFO``,
-        where the default level shows them. Only the two that fire on every
-        poll are held back to ``DEBUG``.
+        Every decision at ``DEBUG``, accepted ones included. The per-reason
+        split this used to make -- operator-relevant rejections at ``INFO``,
+        the three firehose reasons at ``DEBUG`` -- is gone: a decision fires
+        for every pull request and every comment on every poll, so the whole
+        record belongs on the level an operator turns *on* to ask "why
+        wasn't this reviewed", not on the one they read by default. What a
+        review actually did is events 3 to 6, and those are louder.
         """
-        noisy = decision.reason in NOISY_REASONS
-        level = logging.DEBUG if noisy and not decision.accepted else logging.INFO
-        logger.log(
-            level,
+        logger.debug(
             "trigger decision kind=%s repo=%s pr=%s reason=%s",
             kind,
             repo,

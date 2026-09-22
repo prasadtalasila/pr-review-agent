@@ -27,10 +27,11 @@ ExecReload=/bin/kill -HUP $MAINPID
 # in ExecStart= where `systemctl show` and `ps` would both expose it.
 EnvironmentFile={token_env}
 
-# Uncomment once #52 lands -- the daemon's level is hardcoded to INFO today.
-# Kept here because this is the line `systemctl --user edit` is meant to
-# change, and changing it must not mean editing ExecStart=.
-# Environment=PR_REVIEW_AGENT_LOG_LEVEL=INFO
+# How much the daemon says. DEBUG | INFO | WARNING | ERROR | CRITICAL.
+# This is the line `systemctl --user edit` is meant to change: changing
+# verbosity must not mean editing ExecStart=. `--log-level` on ExecStart=
+# would beat it; nothing here sets one, so this is the effective level.
+Environment=PR_REVIEW_AGENT_LOG_LEVEL=INFO
 
 # Gives rsyslog and `journalctl -t` a stable name to match. Without it the
 # identifier is derived from the executable, which is a venv path.

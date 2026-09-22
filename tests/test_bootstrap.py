@@ -16,7 +16,7 @@ from pr_review_agent.config import Config
 from pr_review_agent.poller.client import GitHubClient
 from pr_review_agent.poller.endpoints import RepoEndpoints
 
-ENDPOINTS = RepoEndpoints("INTO-CPS-Association", "DTaaS")
+ENDPOINTS = RepoEndpoints("prasadtalasila", "pr-review-agent")
 HEALTHY = {"etag": '"v1"', "x-ratelimit-remaining": "4987", "x-ratelimit-limit": "5000"}
 
 
@@ -30,7 +30,7 @@ def by_name(results) -> dict:
 
 CONFIG_YAML = """
 github:
-  repo: INTO-CPS-Association/DTaaS
+  repo: prasadtalasila/pr-review-agent
   agent_user_id: 42
 triggers:
   allowlist: [114395272]
@@ -286,12 +286,12 @@ async def test_a_reachable_remote_passes(git_remote, monkeypatch):
 
 def repo_serving(permissions):
     """Answer the repository read with ``permissions``, everything else 200."""
-    body = {"name": "DTaaS"}
+    body = {"name": "pr-review-agent"}
     if permissions is not None:
         body["permissions"] = permissions
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/repos/INTO-CPS-Association/DTaaS":
+        if request.url.path == "/repos/prasadtalasila/pr-review-agent":
             return httpx.Response(200, json=body, headers=HEALTHY)
         return httpx.Response(200, json=[], headers=HEALTHY)
 
@@ -321,7 +321,7 @@ async def test_an_unreported_permission_warns_rather_than_fails():
 
 async def test_an_unreadable_repository_fails_the_write_check():
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/repos/INTO-CPS-Association/DTaaS":
+        if request.url.path == "/repos/prasadtalasila/pr-review-agent":
             return httpx.Response(404, text="Not Found")
         return httpx.Response(200, json=[], headers=HEALTHY)
 

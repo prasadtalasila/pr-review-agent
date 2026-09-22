@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the agent's review comment as detailed as
-[INTO-CPS-Association/DTaaS#1769](https://github.com/INTO-CPS-Association/DTaaS/pull/1769#issuecomment-5666562712)
+the hand-written reference report
 — sectioned, numbered, round-aware, and covering the diff's blast radius rather than only
 the lines it touches.
 
@@ -128,7 +128,7 @@ git add docs/reporting/review-report.md docs/reporting/review-prompt.md mkdocs.y
 git commit -m "docs: land the approved review report template and prompt
 
 The rendering contract and the prompt text for issue #45, drafted against
-INTO-CPS-Association/DTaaS#1769. Spec only; no behaviour changes yet."
+the hand-written reference report. Spec only; no behaviour changes yet."
 ```
 
 ---
@@ -1641,7 +1641,7 @@ against the reference needs a review of a large pull request, which has no harne
 spends real budget — see the Task 9 note below before running anything.
 
 Then compare the output against
-`https://github.com/INTO-CPS-Association/DTaaS/pull/1769#issuecomment-5666562712`. The
+the hand-written reference report. The
 question is not "is it identical" — it will not be — but:
 
 - Does it find at least one finding in a file the diff does not touch?

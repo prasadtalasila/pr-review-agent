@@ -1,7 +1,6 @@
 # Review prompt
 
-The text a reviewer is given, drafted against
-[INTO-CPS-Association/DTaaS#1769](https://github.com/INTO-CPS-Association/DTaaS/pull/1769#issuecomment-5666562712)
+The text a reviewer is given, drafted against a hand-written review used
 as the target quality. See issue #45 and `review-report.md` for the rendering contract.
 
 The prompt asks for *content*: a headline, an argument, evidence, a remedy. It never asks

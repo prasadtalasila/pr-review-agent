@@ -235,8 +235,8 @@ git commit -m "Add the diff-size caps and the workspace section"
 
 ```python
 def test_single_pull_request_path():
-    endpoints = RepoEndpoints(owner="INTO-CPS-Association", name="DTaaS")
-    assert endpoints.pull(7) == "/repos/INTO-CPS-Association/DTaaS/pulls/7"
+    endpoints = RepoEndpoints(owner="prasadtalasila", name="pr-review-agent")
+    assert endpoints.pull(7) == "/repos/prasadtalasila/pr-review-agent/pulls/7"
 ```
 
 New `tests/test_pulls.py`:

@@ -397,7 +397,8 @@ all.
 
 Rejected because it contradicts the split `DESIGN.md` already commits to —
 the engine is generic, the standards are per-repository. Host-side standards
-would mean the agent's own repository has to be edited to change how DTaaS is
+would mean the agent's own repository has to be edited to change how the
+reviewed repository is
 reviewed, which puts the wrong people in charge of the wrong file. Reading at
 the merge base buys most of the safety for none of that cost.
 

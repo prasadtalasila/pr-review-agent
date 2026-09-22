@@ -3,7 +3,7 @@
 from pr_review_agent.poller.endpoints import Endpoint, RepoEndpoints
 from pr_review_agent.triggers.models import CommentSource
 
-REPO = RepoEndpoints(owner="INTO-CPS-Association", name="DTaaS")
+REPO = RepoEndpoints(owner="prasadtalasila", name="pr-review-agent")
 
 #: A short owner/name, so the publisher's paths read as paths.
 ENDPOINTS = RepoEndpoints(owner="o", name="r")
@@ -15,19 +15,19 @@ def test_exactly_three_endpoints():
 
 def test_open_pulls_is_repo_scoped_not_per_pr():
     path = REPO.path(Endpoint.OPEN_PULLS)
-    expected = "/repos/INTO-CPS-Association/DTaaS/pulls"
+    expected = "/repos/prasadtalasila/pr-review-agent/pulls"
     assert path.startswith(expected)
     assert "state=open" in path
 
 
 def test_issue_comments_is_repo_scoped():
     path = REPO.path(Endpoint.ISSUE_COMMENTS)
-    assert path.startswith("/repos/INTO-CPS-Association/DTaaS/issues/comments")
+    assert path.startswith("/repos/prasadtalasila/pr-review-agent/issues/comments")
 
 
 def test_review_comments_is_repo_scoped():
     path = REPO.path(Endpoint.REVIEW_COMMENTS)
-    assert path.startswith("/repos/INTO-CPS-Association/DTaaS/pulls/comments")
+    assert path.startswith("/repos/prasadtalasila/pr-review-agent/pulls/comments")
 
 
 def test_all_paths_are_distinct():
@@ -36,7 +36,7 @@ def test_all_paths_are_distinct():
 
 
 def test_the_single_pull_request_path():
-    assert REPO.pull(7) == "/repos/INTO-CPS-Association/DTaaS/pulls/7"
+    assert REPO.pull(7) == "/repos/prasadtalasila/pr-review-agent/pulls/7"
 
 
 def test_the_single_pull_request_path_is_not_watched():
