@@ -344,21 +344,21 @@ The six events `docs/LOGGING.md` names are split by how often they fire:
 
 | Level | What becomes visible |
 | :-- | :-- |
-| `ERROR` | The remaining token budget after each review |
-| `WARNING` | …plus every budget refusal, lapsed lease, retry and crash |
-| `INFO` *(default)* | …plus each review starting, its outcome and it being posted; startup, cold-start watermarks, `SIGHUP` reloads and resumed runs |
+| `ERROR` | Every caught exception: the engine failing to start, a review or a publish failing, the account's usage limit, a crashed worker |
+| `WARNING` | …plus every budget refusal, lapsed lease and `SIGHUP` that needs a restart, and the banner saying the agent is about to spend |
+| `INFO` *(default)* | …plus each review starting, its outcome, it being posted and what it left in the budget; startup, cold-start watermarks, `SIGHUP` reloads and resumed runs |
 | `DEBUG` | …plus every poll cycle and every trigger decision, the engine's argv and the `dry_run` review body |
 
 Events 1 and 2 — the poll cycle and the trigger decisions — fire for every
 pull request and every comment on every cycle, which is what made the v0.12.0
-log unreadable, so they are `DEBUG`. Events 3 to 5 fire once per review and
-are visible by default.
+log unreadable, so they are `DEBUG`. Events 3 to 6 fire once per review and
+are all visible by default, so the default level is the review lifecycle and
+nothing else.
 
-Event 6 is at `ERROR` on purpose, and it is the one place severity is used
-for importance rather than for badness: the remaining allowance decides
-whether the agent can work at all, so it answers even at the level an
-operator drops to when they want the log quiet. The cost, stated plainly, is
-that `journalctl -p err` shows one line per review on a healthy daemon.
+The `ERROR` row is a rule, not a list: a record emitted from inside an
+`except` block is `ERROR`, and the test suite fails if one is not. That is
+what makes `journalctl -p err` mean *something went wrong* rather than
+*something was written*.
 
 Not reloadable on `SIGHUP`: only `budget` and `publish` are, and both are
 brakes. Changing the level needs a restart.

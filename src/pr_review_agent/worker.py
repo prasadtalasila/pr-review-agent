@@ -299,7 +299,7 @@ class ReviewWorker:
         # PullRequestTooLarge subclasses WorkspaceError, so it is caught
         # first or it would be retried.
         except (PullRequestTooLarge, PayloadError):
-            logger.warning(
+            logger.error(
                 "giving up on %s permanently", claim.trigger.dedupe_key, exc_info=True
             )
             finish = self.queue.abandon
@@ -307,7 +307,7 @@ class ReviewWorker:
             # The wall is the account's, not this run's, so retrying reaches
             # it again having spent to get there. The breaker refuses every
             # claim instead, and the row waits behind it.
-            logger.warning("%s hit the account's usage limit", claim.trigger.dedupe_key)
+            logger.error("%s hit the account's usage limit", claim.trigger.dedupe_key)
             self.governor.trip(_now())
             # Knowable, in both of its shapes: measured if the engine printed
             # an envelope, zero if it was refused before doing any work. So
@@ -319,7 +319,7 @@ class ReviewWorker:
             # drained nothing -- the account was already out when it arrived.
             finish = self.queue.release_unattempted
         except EngineUnavailable:
-            logger.warning(
+            logger.error(
                 "%s could not start %s and will be retried",
                 claim.trigger.dedupe_key,
                 self.engine.name,
@@ -338,7 +338,7 @@ class ReviewWorker:
             # misconfigured host retrying every trigger forever.
             finish = self.queue.release
         except EngineError as exc:
-            logger.warning(
+            logger.error(
                 "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
             )
             # The only handler that narrows the reason: the adapter already
@@ -346,7 +346,7 @@ class ReviewWorker:
             reason = exc.reason
             finish = self.queue.release
         except (GitHubClientError, WorkspaceError):
-            logger.warning(
+            logger.error(
                 "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
             )
             finish = self.queue.release
@@ -470,7 +470,7 @@ class ReviewWorker:
         # spend. `headroom` is already public and already actor-agnostic --
         # its docstring names this use.
         headroom = self.governor.headroom(_now())
-        logger.error(
+        logger.info(
             "budget after %s: %d tokens left in the %s window, mode=%s",
             claim.trigger.dedupe_key,
             headroom.remaining,
@@ -508,7 +508,7 @@ class ReviewWorker:
         try:
             published = await self.publisher.publish(run)
         except (GitHubClientError, PayloadError):
-            logger.warning(
+            logger.error(
                 "could not publish %s; the review is kept and will be "
                 "posted without being run again",
                 key,

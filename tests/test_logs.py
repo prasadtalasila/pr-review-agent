@@ -240,7 +240,7 @@ SIX_EVENTS = [
         "6 remaining budget",
         "worker.py",
         '"budget after %s: %d tokens left in the %s window, mode=%s"',
-        "error",
+        "info",
     ),
 ]
 
@@ -273,10 +273,77 @@ def test_the_first_two_events_are_hidden_at_the_default_level(clean_logging):
     assert package.isEnabledFor(logging.INFO)
 
 
-def test_the_budget_readout_survives_the_quietest_useful_level(clean_logging):
-    """Event 6 alone sits at ERROR, so `--log-level ERROR` still answers
-    "what is left to spend" after every review."""
-    logs.configure("ERROR")
-    package = logging.getLogger(logs.PACKAGE_LOGGER)
-    assert package.isEnabledFor(logging.ERROR)
-    assert not package.isEnabledFor(logging.WARNING)
+def test_all_four_per_review_events_are_visible_by_default(clean_logging):
+    """Events 3 to 6 fire once per review and are all INFO, so the whole
+    lifecycle -- start, outcome, posting, remaining allowance -- is what an
+    operator sees without asking for anything."""
+    logs.configure(logs.DEFAULT_LEVEL)
+    assert {level for _, _, _, level in SIX_EVENTS[2:]} == {"info"}
+
+
+# --------------------------------------------------------------------------
+# Failures are ERROR, and the rule is mechanical
+# --------------------------------------------------------------------------
+
+#: The one record inside an ``except`` block that is deliberately below
+#: ERROR, because the exception there is control flow rather than a failure:
+#: ``engine/standards.py`` asks git for an optional file at the merge base
+#: and reads ``GitCommandError`` as "not there". A configured path that does
+#: not exist is documented as skipped, so this would fire on every review of
+#: every repository that does not carry all of them.
+_CONTROL_FLOW_HANDLERS = frozenset({"no %s at %s"})
+
+_EXCEPT = re.compile(r"^(\s*)except\b")
+_LOGGER_CALL = re.compile(r"^(\s*)logger\.(\w+)\(")
+
+
+def _records_inside_except_blocks(source: str):
+    """Every ``logger.<level>`` call lexically inside an ``except`` block.
+
+    Indentation-based, which is enough: the codebase is formatted by ruff,
+    so a handler's body is always indented past its ``except``.
+    """
+    handler_indent = None
+    for line in source.splitlines():
+        if not line.strip():
+            continue
+        opened = _EXCEPT.match(line)
+        if opened:
+            handler_indent = len(opened.group(1))
+            continue
+        call = _LOGGER_CALL.match(line)
+        indent = len(line) - len(line.lstrip())
+        if handler_indent is not None and indent <= handler_indent and not call:
+            handler_indent = None
+        if call and handler_indent is not None and indent > handler_indent:
+            # The message is the first string argument, on this line for a
+            # one-liner and on the next for a wrapped call.
+            quoted = re.search(r'"([^"]*)"', line)
+            yield line.strip(), call.group(2), quoted.group(1) if quoted else ""
+
+
+@pytest.mark.parametrize(
+    "module",
+    sorted(str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py")),
+)
+def test_a_caught_exception_is_never_logged_below_error(module):
+    """The rule, applied mechanically rather than remembered.
+
+    A handler that reports its exception at WARNING is invisible to
+    `journalctl -p err` and to anything alerting on severity, which is
+    exactly the audience for "the engine would not start".
+    """
+    source = (_SRC / module).read_text(encoding="utf-8")
+    too_quiet = [
+        call
+        for call, level, message in _records_inside_except_blocks(source)
+        if level in {"debug", "info", "warning"}
+        and message not in _CONTROL_FLOW_HANDLERS
+    ]
+    assert too_quiet == [], f"{module}: caught exceptions logged below ERROR"
+
+
+def test_the_exemption_is_not_stale():
+    """The exempted record still exists, so the list cannot rot quietly."""
+    sources = "".join(f.read_text(encoding="utf-8") for f in _SRC.rglob("*.py"))
+    assert all(message in sources for message in _CONTROL_FLOW_HANDLERS)

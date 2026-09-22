@@ -146,9 +146,7 @@ class Publisher:
             # governor has already reserved allowance for; a bug in this
             # module is, and swallowing every exception would hide one
             # behind a missing emoji.
-            logger.warning(
-                "could not acknowledge %s", trigger.dedupe_key, exc_info=True
-            )
+            logger.error("could not acknowledge %s", trigger.dedupe_key, exc_info=True)
 
     async def publish(self, run: RecordedRun) -> Published:
         """Post ``run``'s review, unless the head moved under it.
