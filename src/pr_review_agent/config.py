@@ -65,16 +65,19 @@ def _section(data: dict, name: str, allowed: set[str]) -> dict:
 
 @dataclass(frozen=True)
 class GitHubConfig:
-    """The repository to poll and the agent's own identity.
+    """The repository to poll.
 
-    Both are required. Without ``agent_user_id`` the agent cannot recognise
-    its own comments, so a posted review can re-trigger a review of the same
-    pull request -- a loop that spends real tokens and is only visible after
-    it has run. A field whose absence costs money is not optional.
+    ``agent_user_id`` used to live here, naming the account the agent posts
+    as so the classifier could reject its own events. It is gone: the loop it
+    guarded is closed in ``publisher.render``, which neutralises the handle
+    in every body it posts, and an identity check also rejected a deployment
+    that shares one account between the reviewer and the reviewed. A file
+    that still carries the key is refused by name -- ``github`` takes no
+    unknown keys -- which is the loud failure the operator needs, since the
+    fix is to delete one line.
     """
 
     repo: str
-    agent_user_id: int
 
     @property
     def owner(self) -> str:
@@ -94,13 +97,7 @@ class GitHubConfig:
             raise ConfigError(f"github.repo must be 'owner/name', got {repo!r}")
         if not all(part.strip() for part in repo.split("/")):
             raise ConfigError(f"github.repo must be 'owner/name', got {repo!r}")
-        agent_id = data.get("agent_user_id")
-        # `bool` is excluded for the same reason the token counts exclude it:
-        # it is a subclass of `int`, so `agent_user_id: true` would validate
-        # as user 1 -- a real account, and not the agent's.
-        if isinstance(agent_id, bool) or not isinstance(agent_id, int):
-            raise ConfigError("github.agent_user_id must be a numeric user id")
-        return cls(repo=repo, agent_user_id=agent_id)
+        return cls(repo=repo)
 
 
 @dataclass(frozen=True)
@@ -604,9 +601,7 @@ class Config:
         if unknown:
             raise ConfigError(f"unknown top-level sections: {unknown}")
         return cls(
-            github=GitHubConfig.parse(
-                _section(data, "github", {"repo", "agent_user_id"})
-            ),
+            github=GitHubConfig.parse(_section(data, "github", {"repo"})),
             triggers=TriggerConfig.parse(
                 _section(data, "triggers", {"allowlist", "handle"})
             ),
@@ -703,7 +698,6 @@ class Config:
         return Classifier(
             allowlist=self.triggers.allowlist,
             since=since,
-            agent_user_id=self.github.agent_user_id,
             handle=self.triggers.handle,
             open_pull_requests=open_pull_requests,
         )

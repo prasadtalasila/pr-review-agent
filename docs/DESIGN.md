@@ -287,10 +287,13 @@ deletion guarantee.
    error*, so the control that neutralises the host's own gitconfig would be
    absent while appearing to be in force. Bootstrap checks the version
    before it checks the route, for that reason.
-3. **The reviewer account** the agent posts as. Its numeric id goes in
-   `github.agent_user_id`, which is required: without it the agent cannot
-   recognise and skip its own comments, so the loader refuses to start
-   rather than let it answer itself.
+3. **The reviewer account** the agent posts as. Nothing needs to be
+   configured for it. It used to: `github.agent_user_id` named it so the
+   classifier could skip its own comments, and that key is gone — the loop
+   is closed in the publisher instead, which neutralises the handle in every
+   body it posts. See
+   [TRIGGERS.md](TRIGGERS.md#-the-agent-cannot-summon-itself). If that
+   account is also a contributor, list it like any other.
 4. **The remaining allowlist members.**
 5. **A GitHub token.** Read-only access to the three endpoints is enough for
    polling, but the publisher exists now, so **write scope is required** --

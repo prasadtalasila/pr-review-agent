@@ -20,6 +20,7 @@ from pr_review_agent.poller.endpoints import RepoEndpoints
 from pr_review_agent.publisher import TRAILER, Publisher, PublishOutcome, render
 from pr_review_agent.runs import RecordedRun, RunStore
 from pr_review_agent.store import SqliteStore
+from pr_review_agent.triggers.mention import has_mention
 from pr_review_agent.triggers.models import CommentSource, Trigger, TriggerKind
 
 NOON = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
@@ -173,6 +174,7 @@ def make_publisher(runs, transport, dry_run=False) -> Publisher:
         endpoints=ENDPOINTS,
         runs=runs,
         config=PublishConfig(dry_run=dry_run),
+        handle="claude",
     )
 
 
@@ -345,9 +347,14 @@ async def test_the_comment_names_the_commit_it_reviewed(runs):
 # -- the rendered report -------------------------------------------------
 
 
-def rendered(findings=NUMBERED, round_number=3, commits=3):
+def rendered(findings=NUMBERED, round_number=3, commits=3, handle="claude"):
     return render(
-        HEAD, findings, pr_number=1765, round_number=round_number, commits=commits
+        HEAD,
+        findings,
+        pr_number=1765,
+        round_number=round_number,
+        commits=commits,
+        handle=handle,
     )
 
 
@@ -363,13 +370,15 @@ def test_findings_are_grouped_under_their_section_headings():
 
 def test_a_major_finding_is_not_printed_as_blocking():
     major = (replace(NUMBERED[0], severity=Severity.MAJOR),)
-    body = render(HEAD, major, pr_number=1, round_number=1, commits=1)
+    body = render(HEAD, major, pr_number=1, round_number=1, commits=1, handle="claude")
     assert "## Blocking" not in body
     assert "## Should fix" in body
 
 
 def test_an_empty_section_is_omitted():
-    body = render(HEAD, NUMBERED[:1], pr_number=1, round_number=1, commits=1)
+    body = render(
+        HEAD, NUMBERED[:1], pr_number=1, round_number=1, commits=1, handle="claude"
+    )
     assert "## Should fix" not in body
     assert "## Nits" not in body
 
@@ -395,7 +404,7 @@ def test_nits_render_as_prose_without_numbering():
 
 
 def test_an_empty_review_still_names_the_round():
-    body = render(HEAD, (), pr_number=1765, round_number=3, commits=3)
+    body = render(HEAD, (), pr_number=1765, round_number=3, commits=3, handle="claude")
     assert body.startswith("## Review: PR #1765 — round 3 (`deadbee`, 3 commits)")
     assert "No issues found." in body
     assert TRAILER in body
@@ -412,7 +421,12 @@ def test_the_same_findings_render_byte_identically():
 
 def test_input_order_does_not_change_the_output():
     reversed_ = render(
-        HEAD, tuple(reversed(NUMBERED)), pr_number=1765, round_number=3, commits=3
+        HEAD,
+        tuple(reversed(NUMBERED)),
+        pr_number=1765,
+        round_number=3,
+        commits=3,
+        handle="claude",
     )
     assert reversed_ == rendered()
 
@@ -525,6 +539,74 @@ def test_the_publisher_cannot_name_an_approving_event():
     source = inspect.getsource(publisher_module)
     for forbidden in ("APPROVE", "REQUEST_CHANGES", "/reviews"):
         assert forbidden not in source
+
+
+# -- nothing it posts can summon another review ---------------------------
+#
+# The classifier has no notion of who the agent is; the loop it used to guard
+# against is closed here instead. A review of *this* repository is the case
+# that matters -- its findings quote the handle by name.
+
+
+#: A review whose title and body both name the handle in prose, which is what
+#: reviewing a repository whose trigger is `@claude` produces.
+MENTIONS_THE_HANDLE = (
+    Finding(
+        path="src/pr_review_agent/triggers/mention.py",
+        line=12,
+        severity=Severity.MAJOR,
+        title="`@claude` is matched case-insensitively but documented as lower case.",
+        body="Either fold the case in the docs or say @claude is case-sensitive.",
+        number=1,
+    ),
+)
+
+
+def test_a_rendered_review_that_names_the_handle_is_not_a_mention():
+    """The regression this whole change turns on.
+
+    Without it the agent posts a comment, the poller reads it back as fresh
+    -- the comment is edited in place, so `updated_at` moves every round --
+    and the classifier accepts it. One extra paid review per pull request,
+    bounded only by the dedupe key.
+    """
+    body = rendered(findings=MENTIONS_THE_HANDLE)
+    assert "claude" in body
+    assert not has_mention(body)
+
+
+def test_a_rendered_review_with_no_findings_is_not_a_mention():
+    """The empty path returns early, so it is neutralised separately."""
+    assert not has_mention(rendered(findings=()))
+
+
+def test_only_the_handle_in_prose_is_escaped():
+    """A reader must see no difference: GitHub renders `&#64;` as `@`.
+
+    And only where it counts. The finding's title names the handle inside a
+    code span, which the detector already ignores -- escaping it there would
+    show the reader `&#64;claude` in what is meant to be code, because
+    GitHub renders no entity inside a span.
+    """
+    body = rendered(findings=MENTIONS_THE_HANDLE)
+    assert "say &#64;claude is case-sensitive" in body
+    assert "`@claude` is matched case-insensitively" in body
+
+
+def test_a_custom_handle_is_what_gets_neutralised():
+    """The publisher neutralises `triggers.handle`, not the word "claude"."""
+    body = rendered(findings=MENTIONS_THE_HANDLE, handle="aider")
+    assert "@claude" in body
+    assert not has_mention(body, "aider")
+
+
+async def test_the_body_actually_posted_carries_no_mention(runs):
+    """End to end, on the bytes that reach GitHub rather than on `render`."""
+    transport = Transport()
+    await make_publisher(runs, transport).publish(
+        recorded(runs, findings=MENTIONS_THE_HANDLE)
+    )
+    assert not has_mention(json.loads(transport.writes[0].content)["body"])
 
 
 # -- helpers -------------------------------------------------------------

@@ -51,6 +51,11 @@ fixtures, needing no network and spending no tokens:
 - `config` builds a `Classifier`; it knows nothing about HTTP.
 - `poller/payloads.py` imports `triggers/models.py`, never the reverse.
 - Nothing in `triggers/` imports `poller/`.
+- `publisher.py` imports `triggers/mention.py`, never the reverse. The
+  publisher must not post a body the classifier would read as a mention, so
+  it neutralises the handle using the same module that detects one — the two
+  halves of that rule cannot be allowed to drift apart. See
+  [PUBLISHER.md](PUBLISHER.md#-nothing-it-posts-can-summon-another-review).
 - `poller/pulls.py` imports `workspace`, never the reverse. `workspace/` is
   pure git and filesystem, so its suite runs with no HTTP at all.
 - `engine/` imports `workspace`, `triggers` and `budget`. Only `worker.py`

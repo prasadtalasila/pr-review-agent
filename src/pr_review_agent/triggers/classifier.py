@@ -3,6 +3,16 @@
 Exactly two events qualify: a freshly opened pull request by an allowlisted
 author, and a comment mentioning the agent from an allowlisted commenter.
 Pushes to an existing pull request are deliberately ignored.
+
+**There is no check on who the agent is.** The loop this module used to
+defend against -- the agent answering its own review comment forever -- is
+closed upstream instead: ``publisher.render`` runs every body it posts
+through ``mention.neutralise``, so the agent's own comment cannot satisfy
+``has_mention`` whichever account posted it. That is the stronger place for
+it. An identity check rejected an *account*, which made a deployment sharing
+one account between the reviewer and the reviewed unable to trigger anything
+at all; neutralising the output rejects the *text*, which is what the loop
+was ever made of.
 """
 
 from __future__ import annotations
@@ -13,7 +23,7 @@ from datetime import datetime
 
 from .allowlist import Allowlist
 from .mention import has_mention
-from .models import Actor, Comment, Decision, PullRequest, Trigger, TriggerKind
+from .models import Comment, Decision, PullRequest, Trigger, TriggerKind
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +54,6 @@ class Classifier:
 
     allowlist: Allowlist
     since: datetime
-    agent_user_id: int | None = None
     handle: str = "claude"
     open_pull_requests: frozenset[int] | None = None
 
@@ -58,9 +67,6 @@ class Classifier:
         if self.since.tzinfo is None or self.since.utcoffset() is None:
             raise ValueError("Classifier.since must be timezone-aware (UTC)")
 
-    def _is_self(self, actor: Actor) -> bool:
-        return self.agent_user_id is not None and actor.user_id == self.agent_user_id
-
     def classify_pull_request(self, pr: PullRequest) -> Decision:
         """Accept a freshly opened pull request from an allowlisted author."""
         decision = self._decide_pull_request(pr)
@@ -70,8 +76,6 @@ class Classifier:
     def _decide_pull_request(self, pr: PullRequest) -> Decision:
         if pr.created_at <= self.since:
             return Decision(None, "not_fresh")
-        if self._is_self(pr.author):
-            return Decision(None, "self_author")
         if pr.author.is_bot:
             return Decision(None, "bot_author")
         if pr.is_draft:
@@ -124,8 +128,6 @@ class Classifier:
             and comment.pr_number not in self.open_pull_requests
         ):
             return Decision(None, "pr_not_open")
-        if self._is_self(comment.author):
-            return Decision(None, "self_commenter")
         if comment.author.is_bot:
             return Decision(None, "bot_commenter")
         if not has_mention(comment.body, self.handle):

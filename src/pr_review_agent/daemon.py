@@ -411,6 +411,7 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
                     endpoints=endpoints,
                     runs=RunStore(store),
                     config=config.publish,
+                    handle=config.triggers.handle,
                 ),
                 config_path=config_path,
             )

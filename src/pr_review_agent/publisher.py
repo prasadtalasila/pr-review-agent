@@ -23,6 +23,16 @@ stops a thread filling with superseded machine opinion. The history lives in
 ``runs`` and the ledger, where it can be queried and purged, rather than in
 a comment thread where it can only be scrolled past.
 
+**Nothing it posts can summon another review.** A review body is engine
+prose over an untrusted tree, and when the tree is this repository that prose
+readily contains ``@claude``. The comment is also edited in place on
+re-review, which bumps ``updated_at`` and makes it fresh again to the poller.
+So ``render`` runs every body through ``triggers.mention.neutralise``, which
+rewrites exactly the mentions the classifier would find into ``&#64;`` -- a
+reader still sees ``@claude``, and the raw body a later poll reads back has
+no ``@`` for ``has_mention`` to match. This is where the loop is closed, and
+it is why the classifier needs no notion of who the agent is.
+
 **This module cannot approve anything.** ``DESIGN.md`` names three
 prompt-injection mitigations and this is the third: whatever a review
 concludes, the agent takes no approval action and no merge action. That is
@@ -47,6 +57,7 @@ from .engine import Finding, Severity
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
 from .runs import RecordedRun, RunStore
+from .triggers.mention import neutralise
 from .triggers.models import PayloadError, Trigger
 
 logger = logging.getLogger(__name__)
@@ -116,6 +127,12 @@ class Publisher:
     endpoints: RepoEndpoints
     runs: RunStore
     config: PublishConfig
+    #: The handle ``render`` must not leave in anything it posts. Set once at
+    #: construction rather than through ``reload``: ``Daemon.reload_config``
+    #: reloads only ``budget`` and ``publish``, and warns that a change to
+    #: ``triggers`` needs a restart -- so the handle cannot move under a
+    #: running process.
+    handle: str
 
     def reload(self, config: PublishConfig) -> None:
         """Adopt ``config``, so ``SIGHUP`` needs no restart to take effect."""
@@ -171,6 +188,7 @@ class Publisher:
             pr_number=run.pr_number,
             round_number=self.runs.round_of(run.repo, run.pr_number, run.dedupe_key),
             commits=commits,
+            handle=self.handle,
         )
         if self.config.dry_run:
             # The whole rendered review body on every run is a DEBUG-sized
@@ -252,6 +270,7 @@ def render(
     pr_number: int,
     round_number: int,
     commits: int,
+    handle: str,
 ) -> str:
     """The comment body for a review of ``head_sha``.
 
@@ -269,11 +288,16 @@ def render(
     The location is still on the stored ``Finding``, where a future
     line-anchored comment would need it.
 
+    ``handle`` is required rather than defaulted. ``"claude"`` is already
+    spelled as the default of ``TriggerConfig.handle``, and a second copy
+    here is a copy that can drift -- in the one direction where drift means
+    the agent summons itself.
+
     Finding titles and bodies are engine output over an untrusted tree, and
-    are written through verbatim. They are rendered as Markdown by GitHub
-    inside the agent's own comment, which is the same trust boundary any
-    human comment has -- what keeps them harmless is that this module can
-    take no action they could ask for. See
+    are written through verbatim, save for the handle itself. They are
+    rendered as Markdown by GitHub inside the agent's own comment, which is
+    the same trust boundary any human comment has -- what keeps them harmless
+    is that this module can take no action they could ask for. See
     ``docs/reporting/review-report.md`` for the contract this implements.
     """
     header = (
@@ -281,7 +305,7 @@ def render(
         f"(`{head_sha[:7]}`, {commits} commits)"
     )
     if not findings:
-        return f"{header}\n\nNo issues found.\n\n{TRAILER}"
+        return neutralise(f"{header}\n\nNo issues found.\n\n{TRAILER}", handle)
     ordered = sorted(findings, key=_order)
     parts = [header]
     for heading, severities in SECTIONS:
@@ -291,7 +315,7 @@ def render(
         parts.append(f"## {heading}")
         parts.append(_prose(section) if heading == "Nits" else _items(section))
     parts.append(TRAILER)
-    return "\n\n".join(parts)
+    return neutralise("\n\n".join(parts), handle)
 
 
 def _items(findings: list[Finding]) -> str:

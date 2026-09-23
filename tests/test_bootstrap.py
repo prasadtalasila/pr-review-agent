@@ -31,7 +31,6 @@ def by_name(results) -> dict:
 CONFIG_YAML = """
 github:
   repo: prasadtalasila/pr-review-agent
-  agent_user_id: 42
 triggers:
   allowlist: [114395272]
 budget:

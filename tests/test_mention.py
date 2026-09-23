@@ -2,7 +2,7 @@
 
 import pytest
 
-from pr_review_agent.triggers.mention import has_mention, strip_non_prose
+from pr_review_agent.triggers.mention import has_mention, neutralise, strip_non_prose
 
 
 @pytest.mark.parametrize(
@@ -111,3 +111,64 @@ def test_strip_preserves_line_count(body):
 def test_custom_handle():
     assert has_mention("@aider review", handle="aider")
     assert not has_mention("@claude review", handle="aider")
+
+
+# -- neutralise: the publisher's half of the loop -------------------------
+#
+# `neutralise` and `has_mention` are two halves of one rule. These tests
+# assert the relationship between them rather than the escape it happens to
+# use, so a change to either that is not matched in the other fails here
+# rather than in production, where it is a review that pays for itself.
+
+#: Bodies a review comment could plausibly carry. Each is a way the detector
+#: or the offset arithmetic could be got wrong, not a way a reviewer writes.
+NEUTRALISE_CASES = [
+    "@claude",
+    "@claude at the very start",
+    "trailing mention @claude",
+    "ping @CLAUDE about this",
+    "two @claude and @claude again",
+    # An unmatched backtick from engine output: this is why the escape is an
+    # entity and not a pair of backticks, which this would re-pair with.
+    "a ` b @claude",
+    "@claude\n```\n@claude\n```\n@claude",
+    "> @claude\n\n@claude",
+    "    @claude\n@claude",
+    # GitHub returns comment bodies with CRLF, so offsets must survive it.
+    "line\r\n@claude\r\nmore",
+    "nothing to do here",
+]
+
+
+@pytest.mark.parametrize("body", NEUTRALISE_CASES)
+def test_a_neutralised_body_is_never_a_mention(body):
+    assert not has_mention(neutralise(body, "claude"))
+
+
+@pytest.mark.parametrize("body", NEUTRALISE_CASES)
+def test_strip_preserves_every_offset(body):
+    """What `neutralise` rests on: it finds a mention in the stripped text
+    and edits that same index of the original."""
+    assert len(strip_non_prose(body)) == len(body)
+
+
+def test_neutralise_leaves_a_body_without_a_mention_alone():
+    body = "No issues found.\n\n```\nemail@example.com\n```"
+    assert neutralise(body, "claude") == body
+
+
+def test_neutralise_does_not_reach_into_fenced_code():
+    """GitHub renders no entity inside a fence, so an escape there would be
+    visible to the reader -- and the detector ignores fenced code anyway."""
+    body = "```\n@claude\n```"
+    assert neutralise(body, "claude") == body
+
+
+def test_a_neutralised_mention_still_reads_as_the_handle():
+    # The reader must see no difference; only the raw body changes.
+    assert neutralise("ask @claude", "claude") == "ask &#64;claude"
+
+
+def test_neutralise_follows_a_custom_handle():
+    assert neutralise("@aider look", "aider") == "&#64;aider look"
+    assert neutralise("@claude look", "aider") == "@claude look"
