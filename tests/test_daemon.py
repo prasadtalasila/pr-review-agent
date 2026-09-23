@@ -46,7 +46,7 @@ BUDGET = {
 
 CONFIG = Config.from_mapping(
     {
-        "github": {"repo": "o/r", "agent_user_id": 42},
+        "github": {"repo": "o/r"},
         "triggers": {"allowlist": [ALICE_ID], "handle": "claude"},
         "budget": BUDGET,
         "engine": {
@@ -133,6 +133,7 @@ def make_daemon(tmp_path, handler) -> Daemon:
             endpoints=endpoints,
             runs=RunStore(store),
             config=CONFIG.publish,
+            handle=CONFIG.triggers.handle,
         ),
     )
 
@@ -391,7 +392,7 @@ async def test_an_already_set_stop_runs_no_cycle(tmp_path):
 
 def config_yaml(enabled="true", repo="o/r", dry_run="false"):
     return (
-        f"github:\n  repo: {repo}\n  agent_user_id: 42\n"
+        f"github:\n  repo: {repo}\n"
         f"triggers:\n  handle: claude\n  allowlist:\n    - {ALICE_ID}\n"
         f"publish:\n  dry_run: {dry_run}\n"
         f"budget:\n  enabled: {enabled}\n"

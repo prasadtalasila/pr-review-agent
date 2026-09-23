@@ -303,6 +303,7 @@ def wired_fixture(tmp_path, workspace, git_remote):
                 endpoints=endpoints,
                 runs=runs,
                 config=PublishConfig(dry_run=dry_run),
+                handle="claude",
             ),
             runs=runs,
             owner="worker-1",

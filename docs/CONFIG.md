@@ -54,15 +54,35 @@ is gitignored regardless, because it names real accounts.
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
 | `repo` | `owner/name` | yes | The repository to poll. Reviews are posted here. |
-| `agent_user_id` | integer | yes | The numeric id of the account the agent posts as. Its own comments are then ignored, so a posted review can never re-trigger a review. |
 
 `repo` must contain exactly one `/`, with both halves non-empty.
 
-`agent_user_id` has no default and the loader refuses a file that omits it.
-Without it the `self_author` / `self_commenter` rejections never fire, so the
-agent can answer its own review — a loop that spends real tokens and is only
-visible after it has run. Like the allowlist it is a **numeric id, never a
-login**: a login can be renamed and the freed name registered by a stranger.
+#### `agent_user_id` was removed — delete the line
+
+**This is a breaking change to `config.yaml`.** The key named the account the
+agent posts as, so the classifier could reject its own events as
+`self_author` / `self_commenter`. Both rejections are gone: the loop they
+guarded is closed in the publisher, which neutralises the handle in every
+body it posts — see [TRIGGERS.md](TRIGGERS.md#-the-agent-cannot-summon-itself).
+
+As an identity check it also had a failure mode that could not be
+configured around. On a single-maintainer repository the agent posts as the
+maintainer, so `self_*` rejected every event from the only human who used it
+— before freshness, draft state, mention detection or the allowlist were ever
+consulted — and the allowlist entry for that account was dead. That is
+[issue #36](https://github.com/prasadtalasila/pr-review-agent/issues/36).
+
+A file that still sets it is **refused by name**, because `github` accepts no
+unknown keys:
+
+```text
+unknown keys in 'github': ['agent_user_id']
+```
+
+Delete the line. That id belongs in `triggers.allowlist`, where it now
+decides something. `SIGHUP` is unaffected — a reload that cannot parse the
+file logs the error and keeps the running configuration — but a restart will
+not come up until the line is gone.
 
 ### `triggers`
 
@@ -381,16 +401,14 @@ Every key below is required; everything else has a default. This is
 no comments: it is meant to be copied and edited, and the reasoning belongs
 on this page rather than in a file that becomes somebody's `config.yaml`.
 
-The agent's own id appears twice: once as `agent_user_id`, and once in the
-allowlist. The second is belt and braces — the `self_author` /
-`self_commenter` checks run *before* the allowlist is consulted, so that
-entry is never reached — and it is there so the list reads as the complete
-set of accounts the deployment knows about.
+`9206466` is the maintainer's account, and it appears once — in the
+allowlist, where it decides whether that account may start a review. It is
+also the account this deployment's agent posts as, which is no longer a
+contradiction: nothing keys on the agent's identity any more.
 
 ```yaml
 github:
   repo: prasadtalasila/pr-review-agent
-  agent_user_id: 9206466
 
 triggers:
   allowlist:

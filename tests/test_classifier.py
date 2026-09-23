@@ -13,6 +13,7 @@ from pr_review_agent.triggers import (
     CommentSource,
     PullRequest,
     TriggerKind,
+    neutralise,
 )
 
 SINCE = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -22,6 +23,9 @@ EARLIER = SINCE - timedelta(hours=1)
 ALICE = Actor(user_id=1234, login="alice")
 OUTSIDER = Actor(user_id=5555, login="outsider")
 BOT = Actor(user_id=7777, login="dependabot[bot]", is_bot=True)
+#: The account the agent posts from. On a single-maintainer repository it
+#: is also the account that opens the pull requests and types the handle,
+#: which is the deployment issue #36 was raised against.
 AGENT = Actor(user_id=42, login="dtaas-reviewer")
 
 
@@ -30,7 +34,6 @@ def classifier():
     return Classifier(
         allowlist=Allowlist.from_config([ALICE.user_id]),
         since=SINCE,
-        agent_user_id=AGENT.user_id,
     )
 
 
@@ -68,7 +71,6 @@ def test_fresh_pr_from_allowlisted_author_is_accepted(classifier):
     [
         (make_pr(author=OUTSIDER), "author_not_allowlisted"),
         (make_pr(author=BOT), "bot_author"),
-        (make_pr(author=AGENT), "self_author"),
         (make_pr(is_draft=True), "draft"),
         (make_pr(created_at=EARLIER), "not_fresh"),
         (make_pr(created_at=SINCE), "not_fresh"),
@@ -80,24 +82,37 @@ def test_ineligible_pull_requests_are_rejected(classifier, pr, reason):
     assert decision.reason == reason
 
 
-def test_an_allowlisted_agent_still_cannot_trigger_itself():
-    """The shipped config lists the agent's own id, so this ordering matters.
+def test_the_account_the_agent_posts_from_can_still_trigger_a_review():
+    """Issue #36: this file used to assert the opposite, and that was the bug.
 
-    `config.example.yaml` puts the reviewer account in the allowlist as belt
-    and braces. That is only harmless because the self checks run *before*
-    the allowlist is consulted -- reverse them and the agent's own review
-    comment would summon another review, indefinitely.
+    A `self_author` / `self_commenter` check ran *before* the allowlist was
+    consulted, so on a deployment where one account is both the reviewer and
+    the reviewed -- which is what `config.example.yaml` describes -- the
+    agent could never be triggered by the only human who used it, and the
+    allowlist entry for that account was dead.
+
+    This is the widening the change makes, stated as a test.
     """
     classifier = Classifier(
         allowlist=Allowlist.from_config([ALICE.user_id, AGENT.user_id]),
         since=SINCE,
-        agent_user_id=AGENT.user_id,
     )
+    assert classifier.classify_pull_request(make_pr(author=AGENT)).accepted
+    assert classifier.classify_comment(make_comment(author=AGENT)).accepted
+
+
+def test_the_allowlist_is_the_only_thing_that_was_loosened(classifier):
+    """The other half of the bound: that account is gated, just not on identity.
+
+    The fixture allowlists ALICE and nobody else, so the same two events the
+    test above accepts are rejected here -- on the allowlist, which is where
+    this decision now lives, and nowhere earlier.
+    """
     assert classifier.classify_pull_request(make_pr(author=AGENT)).reason == (
-        "self_author"
+        "author_not_allowlisted"
     )
     assert classifier.classify_comment(make_comment(author=AGENT)).reason == (
-        "self_commenter"
+        "commenter_not_allowlisted"
     )
 
 
@@ -118,7 +133,6 @@ def test_maintainer_can_summon_review_of_an_outsider_pr(classifier):
     [
         (make_comment(author=OUTSIDER), "commenter_not_allowlisted"),
         (make_comment(author=BOT), "bot_commenter"),
-        (make_comment(author=AGENT), "self_commenter"),
         (make_comment(body="looks good to me"), "no_mention"),
         (make_comment(body="```\n@claude\n```"), "no_mention"),
         (make_comment(body="> @claude review"), "no_mention"),
@@ -141,10 +155,23 @@ def test_a_comment_edited_after_the_watermark_is_accepted(classifier):
     assert decision.trigger.kind is TriggerKind.MENTION
 
 
-def test_agents_own_comment_never_loops(classifier):
-    # The agent posts "no issues found" — that must not re-trigger it.
-    own = make_comment(author=AGENT, body="No issues found for @claude review")
-    assert not classifier.classify_comment(own).accepted
+def test_a_body_the_publisher_neutralised_never_loops():
+    """The loop the deleted self checks guarded, closed at the other end.
+
+    A review body is engine prose and can contain the handle -- reviewing
+    *this* repository all but guarantees it -- and the comment is edited in
+    place on re-review, so it comes back fresh. What stops it summoning
+    another review is that `publisher.render` ran it through `neutralise`
+    first. The raw body is asserted too, because without it this test would
+    pass on any body at all and prove nothing.
+    """
+    classifier = Classifier(
+        allowlist=Allowlist.from_config([AGENT.user_id]), since=SINCE
+    )
+    raw = "No issues found. See @claude in triggers/mention.py."
+    assert classifier.classify_comment(make_comment(author=AGENT, body=raw)).accepted
+    posted = make_comment(author=AGENT, body=neutralise(raw, "claude"))
+    assert classifier.classify_comment(posted).reason == "no_mention"
 
 
 def test_pr_dedupe_key_is_stable_for_unchanged_head_sha(classifier):
@@ -202,7 +229,6 @@ def test_a_naive_watermark_is_rejected_at_construction():
     [
         make_pr(author=OUTSIDER),
         make_pr(author=BOT),
-        make_pr(author=AGENT),
         make_pr(is_draft=True),
         make_pr(created_at=EARLIER),
     ],

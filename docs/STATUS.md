@@ -138,10 +138,6 @@ criterion, are met today by `tests/test_mention.py`,
 Small things that are known and not yet done, so they are not rediscovered as
 bugs:
 
-- `strip_non_prose` normalises CRLF and drops a trailing newline, because it
-  round-trips through `str.splitlines()`. Cosmetic for mention detection, which
-  is its only caller today; it would matter if the function were reused for
-  anything position-sensitive.
 - The primary GitHub rate limit carries `x-ratelimit-reset` but no
   `Retry-After`, so the client raises rather than sleeping to the reset. See
   [POLLER.md](POLLER.md#-rate-limits-and-retries).

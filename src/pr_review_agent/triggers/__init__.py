@@ -2,7 +2,7 @@
 
 from .allowlist import Allowlist, AllowlistConfigError
 from .classifier import Classifier
-from .mention import has_mention, strip_non_prose
+from .mention import has_mention, neutralise, strip_non_prose
 from .models import (
     Actor,
     Comment,
@@ -27,5 +27,6 @@ __all__ = [
     "Trigger",
     "TriggerKind",
     "has_mention",
+    "neutralise",
     "strip_non_prose",
 ]

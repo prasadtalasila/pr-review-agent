@@ -30,7 +30,7 @@ outside contributions still get reviewed when we want them to".
                   │                   ──no──► pr_not_open
                   │                                  │yes
                   ▼                                  ▼
-                  bot, or the agent's own account? ──yes──► bot_* / self_*
+                  a bot account? ──yes──► bot_author / bot_commenter
                   │no                                 │no
                   ▼                                   ▼
           a draft? ──yes──► draft      mentions @handle outside a
@@ -64,7 +64,6 @@ Every row below is logged at `DEBUG`, accepted decisions included.
 | Pull request from an unlisted author | `author_not_allowlisted` |
 | Comment from an unlisted account | `commenter_not_allowlisted` |
 | Any bot account | `bot_author` / `bot_commenter` |
-| The agent's own account | `self_author` / `self_commenter` |
 | `@claude` in a fence, code span or blockquote | `no_mention` |
 | Already-open pull request seen below the watermark | `not_fresh` |
 | Comment last updated at or below the watermark | `not_fresh` |
@@ -114,17 +113,53 @@ before the next cycle is dropped.** That is a behaviour change rather than
 only a quieter log, and it is the intended reading — the agent has nothing
 useful to say about a closed pull request.
 
-The agent's own events are separated from third-party bots
-(`self_author` rather than `bot_author`) because the strings are
-operator-facing: "the reviewer skipped its own comment" and "the reviewer
-skipped Dependabot" are different facts.
-
 ### Drafts and mentions
 
 The draft check applies to **fresh pull requests only**. `draft` exists to stop
 the agent auto-reviewing work in progress nobody asked about; an allowlisted
 human typing `@claude` on a draft *is* the ask, and refusing it would make the
 handle unreliable exactly when a contributor wants early feedback.
+
+## 🔁 The agent cannot summon itself
+
+There is **no check on which account the agent posts as**. There used to be:
+`self_author` and `self_commenter` rejected any event whose actor id matched
+`github.agent_user_id`, and that key is gone with them.
+
+The loop they guarded is real. A review body is engine prose over the tree
+being reviewed, and when that tree is *this* repository the prose names
+`@claude` readily. The comment is also edited in place on re-review, which
+bumps `updated_at`, so it comes back to the poller as fresh. Left alone, the
+agent answers itself — bounded by the dedupe key to one extra paid review per
+pull request, which is one more than nobody asked for.
+
+It is closed in the publisher instead. `publisher.render` runs every body it
+posts through `mention.neutralise`, which rewrites exactly the mentions
+`has_mention` would find — and only those, so a handle inside a code span is
+left as the reader wrote it — into `&#64;`. GitHub renders the entity as `@`,
+so a reader sees no difference; the raw body a later poll reads back has no
+`@` for the detector to match.
+
+That is the stronger place for the check, and issue #36 is why. An identity
+check rejects an **account**: on a deployment where one account is both the
+reviewer and the reviewed — a single-maintainer repository, which is what
+`config.example.yaml` describes — it rejected every event from the only human
+who used the agent, before the allowlist was ever consulted. Neutralising the
+output rejects the **text**, which is what the loop was ever made of.
+
+This is also how [pr-agent](https://github.com/qodo-ai/pr-agent) closes the
+same loop: its trigger is a `/review` command at the head of a comment, and
+its own output is prose under a heading, so it cannot match. It needs no
+notion of its own identity either. The difference is only that `@claude` is
+an ordinary word in prose where `/review` is not, so the exclusion has to be
+made rather than inherited.
+
+**What it widens.** Events from the account the agent posts from are no
+longer rejected on identity. The allowlist is now the only thing gating that
+account — and it already was, for every other account.
+`tests/test_classifier.py::test_the_account_the_agent_posts_from_can_still_trigger_a_review`
+and `::test_the_allowlist_is_the_only_thing_that_was_loosened` pin both
+halves of that bound.
 
 ## 🆔 Allowlisting is on the numeric user id
 

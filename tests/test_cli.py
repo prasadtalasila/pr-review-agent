@@ -33,7 +33,6 @@ PACKAGED = ROOT / "src" / "pr_review_agent" / "templates"
 CONFIG_YAML = """
 github:
   repo: prasadtalasila/pr-review-agent
-  agent_user_id: 42
 triggers:
   allowlist: [114395272]
 budget:
@@ -149,7 +148,7 @@ def test_generate_refuses_to_overwrite(run, tmp_path):
 def test_force_overwrites(run, tmp_path):
     write_config(tmp_path, "github:\n  repo: mine/own\n")
     assert run("config", "generate", "--force").exit_code == 0
-    assert "agent_user_id" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "allowlist" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
 
 
 def test_generate_reports_an_unwritable_destination(run, tmp_path):

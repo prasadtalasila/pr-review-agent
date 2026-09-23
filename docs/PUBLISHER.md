@@ -1,7 +1,8 @@
 # Publisher
 
 The last step between a computed review and a visible one. It does two
-things, minutes apart, and the gap between them is most of the design.
+things, minutes apart, and the gap between them is most of the design. It is
+also where the agent is kept from summoning itself.
 
 Source: `src/pr_review_agent/publisher.py`, `src/pr_review_agent/runs.py`.
 
@@ -139,6 +140,42 @@ mean the reviews endpoint, which would mean an `event` field, which would
 mean the guarantee became "we always set it to `COMMENT`" — a promise about
 code rather than a property of it.
 
+## 🔁 Nothing it posts can summon another review
+
+A review body is engine prose over the tree being reviewed. When that tree is
+*this* repository, the prose names `@claude` readily — the handle is what the
+whole trigger pipeline is about, so a finding about that pipeline quotes it.
+The comment is also edited in place on re-review, which bumps `updated_at`,
+so the poller sees it as fresh every round.
+
+Left alone that is a loop: the agent posts, the classifier accepts what it
+posted, and the agent reviews the pull request again. The dedupe key bounds it
+to one extra paid review per pull request, because the comment id does not
+change — one more than anybody asked for.
+
+So `render` returns `triggers.mention.neutralise(body, handle)`. It rewrites
+the `@` of exactly the mentions `has_mention` would find into `&#64;`, which
+GitHub renders as `@`: the reader sees no difference, and the raw body a later
+poll reads back has no `@` for the detector to match.
+
+Two details are deliberate:
+
+- **Only mentions in prose are touched.** A handle inside a code span or a
+  fence is left exactly as it was written. The detector already ignores those
+  regions, so there is nothing there to neutralise — and GitHub renders no
+  entity inside them, so an escape would show the reader `&#64;claude` in what
+  is meant to be code.
+- **The escape is an entity, not backticks.** Wrapping the handle in a code
+  span was the cheaper way to reach the same detector rule, and it is not
+  safe: the body is engine output over an untrusted tree, so it can carry an
+  unmatched backtick that pairs with the opening one and leaves the handle in
+  prose after all.
+
+This is where the loop is closed, which is why the classifier needs no notion
+of who the agent is — see
+[TRIGGERS.md](TRIGGERS.md#-the-agent-cannot-summon-itself) for what that
+bought and what it widened.
+
 ## 💾 A paid review is kept until it can be posted
 
 The engine is the only irreversible step, so the order after it is fixed:
@@ -243,6 +280,7 @@ existed; it exists. `pr-review-agent host check` checks it, because
 the failure mode otherwise is a review that is polled for, claimed, paid for
 and computed, and then 403s on the last call.
 
-`github.agent_user_id` must be set — it already is, required since #24 — so
-the agent's own comment is classified `self_commenter` and a posted review
-cannot re-trigger a review.
+Nothing else. `github.agent_user_id` used to be a prerequisite here, so the
+agent's own comment would be classified `self_commenter`; that key is gone,
+and [this module is what replaced
+it](#-nothing-it-posts-can-summon-another-review).

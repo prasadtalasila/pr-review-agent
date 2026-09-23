@@ -1,6 +1,5 @@
 github:
   repo: prasadtalasila/pr-review-agent
-  agent_user_id: 9206466
 
 triggers:
   allowlist:

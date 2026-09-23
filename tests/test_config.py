@@ -24,10 +24,7 @@ BUDGET = {
     "max_run_tokens": 60_000,
 }
 
-# Required for the same reason: without it the agent cannot recognise its own
-# comments, so a posted review can re-trigger a review of the same pull
-# request. Every fixture below therefore carries it.
-GITHUB = {"repo": "a/b", "agent_user_id": 42}
+GITHUB = {"repo": "a/b"}
 
 # Required since the worker started calling it: a daemon that claims work
 # with no engine to run would reserve allowance and then fail every review.
@@ -38,7 +35,7 @@ ENGINE = {
 }
 
 VALID = {
-    "github": {"repo": "prasadtalasila/pr-review-agent", "agent_user_id": 42},
+    "github": {"repo": "prasadtalasila/pr-review-agent"},
     "triggers": {"handle": "claude", "allowlist": [114395272]},
     "budget": BUDGET,
     "engine": ENGINE,
@@ -83,23 +80,17 @@ def test_handle_accepts_leading_at():
     assert Config.from_mapping(data).triggers.handle == "aider"
 
 
-def test_agent_user_id_is_required():
-    """Without it the agent can answer its own review, which spends tokens.
+def test_a_config_still_carrying_agent_user_id_is_refused_by_name():
+    """The upgrade an operator meets, and the only breaking change here.
 
-    A field whose absence costs money is not optional, so the loader refuses
-    rather than defaulting to "recognises nobody".
+    The key named the account the agent posts as, so the classifier could
+    reject its own events. It is gone -- the loop is closed in
+    `publisher.render` instead -- and a file that still sets it is refused
+    rather than silently ignored, because the fix is to delete one line and
+    an ignored key is how an operator comes to believe it still does
+    something.
     """
-    data = {"github": {"repo": "a/b"}, "triggers": {"allowlist": []}, "budget": BUDGET}
-    with pytest.raises(ConfigError, match="agent_user_id"):
-        Config.from_mapping(data)
-
-
-@pytest.mark.parametrize("value", [None, "42", 1.5, True, "8ohamed"])
-def test_an_unusable_agent_user_id_is_rejected(value):
-    # True is here for the same reason as in the token limits: bool
-    # subclasses int, so "agent_user_id: true" would otherwise parse as user
-    # 1 -- a real account, and not the agent's.
-    data = {**VALID, "github": {"repo": "a/b", "agent_user_id": value}}
+    data = {**VALID, "github": {"repo": "a/b", "agent_user_id": 42}}
     with pytest.raises(ConfigError, match="agent_user_id"):
         Config.from_mapping(data)
 
@@ -174,7 +165,7 @@ def test_allowlist_must_be_a_list():
 def test_load_reads_yaml_file(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
-        "github:\n  repo: prasadtalasila/pr-review-agent\n  agent_user_id: 42\n"
+        "github:\n  repo: prasadtalasila/pr-review-agent\n"
         "triggers:\n  allowlist:\n    - 114395272\n" + BUDGET_YAML,
         encoding="utf-8",
     )
@@ -229,7 +220,6 @@ def test_classifier_is_built_from_config():
     classifier = Config.from_mapping(VALID).classifier(
         since=datetime(2026, 1, 1, tzinfo=timezone.utc)
     )
-    assert classifier.agent_user_id == 42
     assert classifier.handle == "claude"
     assert classifier.allowlist.allows(Actor(114395272, "8ohamed"))
 
@@ -588,7 +578,7 @@ def test_the_minimal_example_carries_only_required_keys():
     """Minimal has to mean minimal: every key in it must be load-bearing."""
     data = yaml.safe_load((EXAMPLES / "config.minimal.example.yaml").read_text())
     assert set(data) == {"github", "triggers", "budget", "engine"}
-    assert set(data["github"]) == {"repo", "agent_user_id"}
+    assert set(data["github"]) == {"repo"}
     assert set(data["triggers"]) == {"allowlist"}
     assert set(data["budget"]) == {
         "session_tokens",
@@ -629,7 +619,7 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
         "logging",
     }
     assert set(data["logging"]) == {"level", "format"}
-    assert set(data["github"]) == {"repo", "agent_user_id"}
+    assert set(data["github"]) == {"repo"}
     assert set(data["triggers"]) == {"allowlist", "handle"}
     assert set(data["budget"]) == {
         "enabled",

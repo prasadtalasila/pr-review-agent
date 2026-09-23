@@ -28,7 +28,7 @@ from pr_review_agent.triggers import Actor, Allowlist, Classifier, PullRequest
 #: The smallest document the loader accepts. `logging` is absent from it,
 #: which is itself the assertion that the section is optional.
 BASE = {
-    "github": {"repo": "prasadtalasila/pr-review-agent", "agent_user_id": 42},
+    "github": {"repo": "prasadtalasila/pr-review-agent"},
     "triggers": {"allowlist": [114395272]},
     "budget": {
         "session_tokens": 88000,
@@ -576,7 +576,6 @@ def test_a_trigger_decision_is_queryable_by_reason_and_pull_request(caplog):
     classifier = Classifier(
         allowlist=Allowlist.from_config([1234]),
         since=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        agent_user_id=42,
     )
     pull = PullRequest(
         repo="prasadtalasila/pr-review-agent",
