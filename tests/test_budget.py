@@ -28,7 +28,7 @@ from pr_review_agent.budget import (
 )
 from pr_review_agent.config import BudgetConfig
 from pr_review_agent.queue import QueueStatus, ReviewQueue
-from pr_review_agent.store import SqliteStore
+from pr_review_agent.store import BudgetPolicy, SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
@@ -759,3 +759,68 @@ def test_the_calibration_survives_a_restart(store):
     assert Governor(store, budget()).breaker().calibrated_pct == round(
         100 * DECAY_FACTOR
     )
+
+
+# -- the shared budget policy -------------------------------------------
+
+
+def publish(store, config, repo=REPO, now=NOON):
+    """Stand in for an authority daemon publishing its pool arithmetic."""
+    store.publish_budget_policy(BudgetPolicy(repo, config.shared()), now=now)
+
+
+def test_a_complier_measures_against_the_authoritys_limits(store):
+    """One store is one pool, so one file governs it -- not each daemon's own.
+
+    Without this every process would police the shared allowance using its
+    own numbers, and two files that disagree do not split the pool: the most
+    permissive keeps admitting after the others have correctly stopped.
+    """
+    authority = budget(weekly_tokens=100_000)
+    publish(store, authority)
+    governor = Governor(store, budget(), comply=True)
+
+    admitted = admit_all(store, governor, [opened(pr=n) for n in range(60)])
+
+    assert len(admitted) == authority.daily_limit // 1_000
+    # The local file would have allowed far fewer, which is what makes this
+    # test able to tell the two apart at all.
+    assert authority.daily_limit > budget().daily_limit
+
+
+def test_the_kill_switch_stays_local_to_one_repository(store):
+    """``enabled`` is the emergency brake, so it is never adopted.
+
+    A brake that could only be pulled fleet-wide could not stop one
+    misbehaving repository without stopping every other one with it.
+    """
+    publish(store, budget())
+
+    governor = Governor(store, budget(enabled=False), comply=True)
+
+    assert admit_all(store, governor, [opened(pr=1)]) == []
+
+
+def test_a_republished_policy_binds_the_next_claim(store):
+    """An authority's SIGHUP reaches a running complier with no signal to it.
+
+    The policy is read inside the transaction the reservation is written in,
+    so the next claim simply measures against the new numbers.
+    """
+    publish(store, budget(weekly_tokens=100_000))
+    governor = Governor(store, budget(), comply=True)
+    assert admit_all(store, governor, [opened(pr=1)]) != []
+
+    publish(store, budget(weekly_tokens=7_000))
+
+    assert admit_all(store, governor, [opened(pr=2)]) == []
+
+
+def test_a_governor_that_does_not_comply_ignores_the_policy(store):
+    """The escape hatch: ``comply: false`` governs with this file alone."""
+    publish(store, budget(weekly_tokens=100_000))
+
+    governor = Governor(store, budget())
+
+    admitted = admit_all(store, governor, [opened(pr=n) for n in range(60)])
+    assert len(admitted) == budget().daily_limit // 1_000

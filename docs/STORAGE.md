@@ -148,7 +148,20 @@ CREATE TABLE budget_state (
     key   TEXT PRIMARY KEY,           -- calibrated_pct|tripped_until|last_trip_at
     value TEXT NOT NULL
 );
+CREATE TABLE budget_policy (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),   -- one row, enforced
+    authority_repo TEXT NOT NULL,     -- who published it
+    policy         TEXT NOT NULL,     -- JSON: the five shared budget fields
+    written_at     TEXT NOT NULL
+);
 ```
+
+`budget_policy` is what lets several daemons share one file and therefore one
+token budget — see [BUDGET.md](BUDGET.md#-several-repositories-one-allowance).
+The `CHECK` holds it to one row because a second row would be a second opinion
+about one allowance. It is kept apart from `budget_state` even though both are
+small and scalar: that one is what the circuit breaker *learned*, this is what
+an operator *declared*, and resetting either must not disturb the other.
 
 `runs` is the **only** table holding review content, and therefore the only
 one the retention sweep purges. It is written before the publisher is asked,
@@ -215,7 +228,7 @@ budget window; version 5 adds `ledger.reviewed_lines`; version 6 adds
 `ledger.stop_reason`; version 7 adds `queue.comment_id` and
 `queue.comment_source`, which is what lets the publisher acknowledge the
 comment a mention was written in; version 8 adds `runs`; version 9 adds
-`budget_state`.
+`budget_state`; version 10 adds `budget_policy`.
 
 **Each migration and its version bump commit together**, in one transaction.
 That is what lets versions 5, 6 and 7 be `ALTER TABLE ADD COLUMN`, which

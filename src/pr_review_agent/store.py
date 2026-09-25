@@ -37,9 +37,11 @@ depends on.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -146,6 +148,23 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS budget_state (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
+    );
+    """,
+    # The shared budget policy: whose configuration governs the pool when
+    # several daemons share this file. One row, held there by the CHECK,
+    # because a second row would be a second opinion about one allowance --
+    # and two daemons that disagree do not split the pool between them, they
+    # hand it to whichever was configured most permissively.
+    #
+    # Separate from `budget_state` even though both are one-row-ish scalars:
+    # that one is what the breaker *learned*, this is what an operator
+    # *declared*, and a reset of either must not touch the other.
+    """
+    CREATE TABLE IF NOT EXISTS budget_policy (
+        id             INTEGER PRIMARY KEY CHECK (id = 1),
+        authority_repo TEXT NOT NULL,
+        policy         TEXT NOT NULL,
+        written_at     TEXT NOT NULL
     );
     """,
 )
@@ -272,6 +291,52 @@ class SqliteStore:
             (name, at.isoformat()),
         )
         return at
+
+    # -- Shared budget policy ---------------------------------------------
+
+    def budget_policy(self) -> BudgetPolicy | None:
+        """The published policy, or ``None`` if no authority has run yet."""
+        return read_budget_policy(self._conn)
+
+    def publish_budget_policy(self, policy: BudgetPolicy, *, now: datetime) -> None:
+        """Replace the published policy with ``policy``.
+
+        Unconditional, so an authority restarting or reloading republishes
+        rather than having to reconcile: its file is the declared truth, and
+        the row is only ever a copy of it.
+        """
+        self._conn.execute(
+            "INSERT INTO budget_policy (id, authority_repo, policy, written_at) "
+            "VALUES (1, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET authority_repo = excluded.authority_repo, "
+            "policy = excluded.policy, written_at = excluded.written_at",
+            (
+                policy.authority_repo,
+                json.dumps(policy.fields, sort_keys=True),
+                to_utc(now, "written_at").isoformat(),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class BudgetPolicy:
+    """The pool arithmetic one daemon published for the others to adopt."""
+
+    authority_repo: str
+    fields: dict[str, int | None]
+
+
+def read_budget_policy(conn: sqlite3.Connection) -> BudgetPolicy | None:
+    """The published policy, read on a caller's connection.
+
+    Takes a connection rather than a store so the governor can read it inside
+    the transaction its reservation is already being written in, which is what
+    lets an authority's change reach a running complier with no signal to it.
+    """
+    row = conn.execute(
+        "SELECT authority_repo, policy FROM budget_policy WHERE id = 1"
+    ).fetchone()
+    return None if row is None else BudgetPolicy(row[0], json.loads(row[1]))
 
 
 def to_utc(value: datetime, what: str) -> datetime:

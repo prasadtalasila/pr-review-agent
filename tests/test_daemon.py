@@ -1,6 +1,7 @@
 """Daemon loop: what one cycle enqueues, and what it must never enqueue."""
 
 import asyncio
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import cast
@@ -8,6 +9,7 @@ from typing import cast
 import httpx
 import pytest
 
+from pr_review_agent._startup import StartupError
 from pr_review_agent.budget import Governor
 from pr_review_agent.config import Config, GitHubConfig, WorkerConfig
 from pr_review_agent.daemon import (
@@ -17,6 +19,7 @@ from pr_review_agent.daemon import (
     Daemon,
     build_engine,
     build_workers,
+    resolve_budget,
     supervise,
 )
 from pr_review_agent.engine.claude import ClaudeCliEngine
@@ -450,14 +453,17 @@ async def test_an_already_set_stop_runs_no_cycle(tmp_path):
 # -- SIGHUP: the kill switch must not need a restart ---------------------
 
 
-def config_yaml(enabled="true", repo="o/r", dry_run="false"):
+def config_yaml(
+    enabled="true", repo="o/r", dry_run="false", authority="true", weekly="1500000"
+):
     return (
         f"github:\n  repo: {repo}\n"
         f"triggers:\n  handle: claude\n  allowlist:\n    - {ALICE_ID}\n"
         f"publish:\n  dry_run: {dry_run}\n"
         f"budget:\n  enabled: {enabled}\n"
+        f"  authority: {authority}\n"
         "  session_tokens: 88000\n"
-        "  weekly_tokens: 1500000\n"
+        f"  weekly_tokens: {weekly}\n"
         "  max_run_tokens: 60000\n"
         "engine:\n"
         "  model: claude-sonnet-5\n"
@@ -717,3 +723,103 @@ def test_no_fake_engine_reaches_a_running_daemon(tmp_path):
     """FakeEngine is a test double; a daemon running one would review nothing."""
     workers = make_workers(tmp_path, 2)
     assert all(isinstance(w.engine, ClaudeCliEngine) for w in workers)
+
+
+# -- the shared budget policy: whose numbers govern one store ------------
+
+
+def with_budget(config=CONFIG, **overrides):
+    return replace(config, budget=replace(config.budget, **overrides))
+
+
+def test_an_authority_publishes_the_pool_arithmetic(tmp_path):
+    with SqliteStore(tmp_path / "state.db") as store:
+        comply = resolve_budget(store, with_budget(authority=True), now=NOW)
+        published = store.budget_policy()
+
+    assert comply is False
+    assert published is not None
+    assert published.authority_repo == "o/r"
+    assert published.fields == CONFIG.budget.shared()
+
+
+def test_a_lone_daemon_publishes_without_being_told_to(tmp_path):
+    """Both keys default true, so a single deployment needs neither."""
+    with SqliteStore(tmp_path / "state.db") as store:
+        assert resolve_budget(store, CONFIG, now=NOW) is False
+        assert store.budget_policy() is not None
+
+
+def test_a_complier_refuses_to_start_before_any_authority(tmp_path):
+    # Retryable by design: the unit restarts on failure, so a complier
+    # started before its authority waits rather than needing a start order.
+    with (
+        SqliteStore(tmp_path / "state.db") as store,
+        pytest.raises(StartupError, match="no authority has published"),
+    ):
+        resolve_budget(store, with_budget(authority=False), now=NOW)
+
+
+def test_a_complier_starts_once_the_authority_has_published(tmp_path):
+    with SqliteStore(tmp_path / "state.db") as store:
+        resolve_budget(store, OTHER, now=NOW)
+
+        assert resolve_budget(store, with_budget(authority=False), now=NOW) is True
+
+
+def test_a_second_authority_refuses_to_start(tmp_path):
+    """Two authorities are two opinions about one allowance."""
+    with SqliteStore(tmp_path / "state.db") as store:
+        resolve_budget(store, with_budget(OTHER, authority=True), now=NOW)
+
+        with pytest.raises(StartupError, match="already the budget authority"):
+            resolve_budget(store, with_budget(authority=True), now=NOW)
+
+
+def test_an_authority_republishes_on_restart(tmp_path):
+    """Its file is the declared truth; the row is only ever a copy of it."""
+    with SqliteStore(tmp_path / "state.db") as store:
+        resolve_budget(store, with_budget(authority=True), now=NOW)
+
+        resolve_budget(
+            store, with_budget(authority=True, weekly_tokens=3_000_000), now=NOW
+        )
+
+        published = store.budget_policy()
+        assert published is not None
+        assert published.fields["weekly_tokens"] == 3_000_000
+
+
+def test_declining_to_comply_beside_an_authority_warns(tmp_path, caplog):
+    """The one remaining way to overspend a shared pool, so it is said loudly."""
+    with SqliteStore(tmp_path / "state.db") as store:
+        resolve_budget(store, with_budget(OTHER, authority=True), now=NOW)
+
+        declined = with_budget(authority=False, comply=False)
+        assert resolve_budget(store, declined, now=NOW) is False
+
+    assert "budget.comply is false" in caplog.text
+
+
+def test_sighup_republishes_an_authoritys_policy(tmp_path):
+    """An authority's reload is how a shared limit changes for everyone."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml(authority="true"))
+    path.write_text(config_yaml(authority="true", weekly="3000000"), encoding="utf-8")
+
+    daemon.reload_config()
+
+    published = daemon.store.budget_policy()
+    assert published is not None
+    assert published.fields["weekly_tokens"] == 3_000_000
+
+
+def test_sighup_does_not_claim_a_compliers_limits_changed(tmp_path, caplog):
+    """A complier's own token counts are inert, so the log must not imply
+    a reload applied them."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml(authority="false"))
+    path.write_text(config_yaml(authority="false", weekly="3000000"), encoding="utf-8")
+
+    with caplog.at_level(logging.INFO):
+        daemon.reload_config()
+
+    assert "the limits in force remain the authority's" in caplog.text

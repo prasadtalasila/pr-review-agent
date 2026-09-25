@@ -119,6 +119,8 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 | `weekly_tokens` | integer | yes | Your estimate of the plan's rolling 7-day allowance. |
 | `max_run_tokens` | integer | yes | Reserved up front for one review, released down to actual usage when it settles. |
 | `enabled` | boolean | no (default `true`) | `false` **stops reviewing**. It does not turn the budget checks off. |
+| `authority` | boolean | no (default `true`) | This file publishes the pool arithmetic every daemon sharing the store governs by. Exactly one config per store may have it. |
+| `comply` | boolean | no (default `true`) | Adopt what the authority published rather than this file's own limits. Consulted only when `authority` is `false`. |
 | `reviewer_share_pct` | integer 1–100 | no (default `40`) | The share of each plan window the agent may use, never the whole allowance. |
 | `per_contributor_pct` | integer 1–100 | no (default: **no cap**) | The share of the agent's weekly allowance any one contributor may spend, over the same rolling week. |
 | `max_changed_files` | integer | no (default `100`) | A pull request touching more *reviewable* files is refused before a worktree exists. |
@@ -137,6 +139,42 @@ Set them **conservatively low** anyway. The
 and decays the effective limits toward the real one, but it only learns by
 hitting the wall: every trip is a lockout the operator could have avoided by
 guessing lower to begin with.
+
+#### Several repositories, one allowance
+
+Running a daemon per repository against **one `store.path`** is how they come
+to share one token budget: the ledger and the circuit breaker are global to
+the file, so the pool is shared by construction.
+
+Whose numbers govern that pool is not. Each process would otherwise police it
+using its own file, and two files that disagree do not split the allowance —
+every window is measured against one usage total, so the most permissive file
+keeps admitting runs after the others have correctly stopped.
+
+So exactly one config keeps `authority: true` and publishes `session_tokens`,
+`weekly_tokens`, `max_run_tokens`, `reviewer_share_pct` and
+`per_contributor_pct`; every other config sets `authority: false` and adopts
+them. **Forgetting one is loud rather than silent**: a second authority on the
+same store refuses to start and names the first.
+
+Everything else in `budget` stays local. `enabled` does, because a brake that
+could only be pulled fleet-wide could not stop one misbehaving repository;
+`max_changed_files`, `max_changed_lines` and `excluded_paths` do, because they
+describe a repository rather than the allowance.
+
+Every config still carries a complete `budget` section, valid on its own. A
+complier's token counts are inert while an authority governs, and the daemon
+says so at startup rather than leaving the file to imply otherwise.
+
+**Start order does not matter.** A complier that finds no published policy
+exits 3, and the shipped unit restarts it, so it simply waits for its
+authority. `comply: false` is the escape hatch — it governs with this file's
+own limits, and is logged at `WARNING` when another config is the authority,
+because it is the one remaining way to overspend a shared pool.
+
+**A single daemon needs none of this.** Both keys default to `true`, and
+`comply` is consulted only when `authority` is `false`, so a lone daemon
+governs its own store with nothing added to the file.
 
 `max_run_tokens` must fit inside the daily allowance — a seventh of the
 weekly limit, after `reviewer_share_pct` — or the file is refused. A run

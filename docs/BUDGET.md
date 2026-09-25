@@ -309,6 +309,54 @@ people can trigger reviews and one monopolising the week is a real outcome.
 so this stayed possible: the ledger is append-only, and attribution is the one
 field that cannot be backfilled.
 
+## 🤝 Several repositories, one allowance
+
+A daemon serves one repository, with its own GitHub token and its own
+allowlist. Several of them share one budget by sharing one `store.path`: the
+ledger carries no repository column and the circuit breaker is global to the
+file, so every window already sums across whoever wrote it, and a trip in one
+repository refuses claims in all of them. **The pool is shared by
+construction.** Reserve-then-settle below is what makes that safe across
+processes and not merely across threads — SQLite's single write lock is
+per-file.
+
+Whose *numbers* govern that pool is a separate question, and the one thing
+that does not fall out for free. Each process would otherwise police the shared
+allowance using its own `config.yaml`, and two files that disagree do not split
+the budget between them: there is one usage total, so the most permissive file
+keeps admitting runs after every other has correctly stopped.
+
+So exactly one configuration is the **authority**. It publishes five keys —
+`session_tokens`, `weekly_tokens`, `max_run_tokens`, `reviewer_share_pct`,
+`per_contributor_pct` — to a one-row `budget_policy` table, and every other
+daemon adopts them. Both `budget.authority` and `budget.comply` default to
+`true`, and `comply` is read only when `authority` is `false`, so a lone daemon
+governs its own store with nothing added to its file.
+
+Three properties are worth stating, because each is a failure mode that was
+available and is now closed:
+
+- **A second authority refuses to start**, naming the first. Getting the fleet
+  wrong is loud rather than a silent race for who writes the row last.
+- **Start order does not matter.** A daemon with `authority: false` that finds
+  no policy exits 3, and the shipped unit restarts it, so it waits for its
+  authority rather than requiring a sequence.
+- **An authority's `SIGHUP` reaches a running complier with no signal to it.**
+  The policy is read inside the very transaction the reservation is written
+  in, so the next claim simply measures against the new numbers.
+
+`enabled` is deliberately **not** published: a brake that could only be pulled
+fleet-wide could not stop one misbehaving repository. Neither are the
+[size caps](#-path-exclusions) or `excluded_paths`, which describe a repository
+rather than an allowance. `comply: false` is the escape hatch, and the one
+remaining way to overspend a shared pool, so it is logged at `WARNING` when
+another configuration is the authority.
+
+The per-contributor window becomes **cross-repository** under a shared store,
+because it keys on the global GitHub `actor_id`. That is tighter than before,
+not looser: one person's weekly share is now measured across every repository
+they can trigger.
+
 ## 🔒 Reserve-then-settle
 
 Checking the remaining allowance is not sufficient under concurrency. Three
