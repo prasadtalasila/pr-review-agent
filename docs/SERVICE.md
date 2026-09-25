@@ -166,6 +166,67 @@ names which of the four things is unreachable — `api.github.com`,
 `GIT_CONFIG_GLOBAL`. From inside the unit the same failure is just a
 non-zero exit and a restart.
 
+## 👥 Several repositories, one budget
+
+A daemon watches one repository. To watch several — each with its own GitHub
+token and its own allowlist — run one instance per repository from a systemd
+**template** unit, and point them all at one `state.db`. That shared file is
+what makes them share a token budget: the ledger carries no repository
+column, so every window already sums across whoever wrote it. How the limits
+themselves are agreed is
+[BUDGET.md](BUDGET.md#-several-repositories-one-allowance).
+
+```bash
+pr-review-agent service install --instance web
+pr-review-agent service install --instance api
+```
+
+That writes `~/.config/systemd/user/pr-review-agent@.service` once — one file
+serves every instance — plus a directory per instance:
+
+| What | Path | Shared? |
+| :-- | :-- | :-- |
+| the unit | `~/.config/systemd/user/pr-review-agent@.service` | one file, all instances |
+| `config.yaml` | `~/.config/pr-review-agent/<instance>/config.yaml` | never |
+| `GITHUB_TOKEN` | `~/.config/pr-review-agent/<instance>/token.env` | **never** |
+| `state.db` | `~/.local/state/pr-review-agent/state.db` | **always** |
+| checkout cache | `~/.cache/pr-review-agent/<instance>/repos` | **never** |
+
+Three rules, each of which fails silently if broken:
+
+1. **`store.path` must name the same file in every instance.** One store is
+   one ledger, and one ledger is one budget. Two files means two independent
+   budgets that each believe they own the whole plan.
+2. **`workspace.cache_dir` must differ in every instance.** The daemon clears
+   `<cache_dir>/runs` at startup to remove what a crash left behind, which is
+   safe only while no checkout of its own is live. Pointed at a shared cache,
+   a restarting instance would delete another instance's running review.
+3. **`budget.authority: true` on exactly one instance**, `false` on the rest.
+   This one is *not* silent — a second authority refuses to start and names
+   the first — but it is the one to get right first.
+
+Start order does not matter. An instance that is not the authority exits 3
+while no policy has been published, and `Restart=on-failure` brings it back
+until one has.
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now pr-review-agent@web
+systemctl --user enable --now pr-review-agent@api
+
+systemctl --user status 'pr-review-agent@*'
+journalctl --user -u pr-review-agent@web -f
+```
+
+!!! warning "The token is the trust boundary"
+
+    Each instance reads only its own `token.env`, and that is the reason to
+    run a process per repository rather than one process holding every
+    token. No bug in the instance watching `web` can post as the account
+    that watches `api`, because it never holds that credential. Keep the
+    files one-per-instance at mode 0600; do not point two units at one
+    `EnvironmentFile`.
+
 ## 🎛 Operating it
 
 ```bash

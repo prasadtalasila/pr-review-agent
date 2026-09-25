@@ -26,7 +26,15 @@ from click.testing import CliRunner
 from pr_review_agent import logs
 from pr_review_agent.cli import cli
 from pr_review_agent.cli._common import EXIT_STARTUP
-from pr_review_agent.cli.cmd_service import UNIT_TEMPLATE, executable, unit_text
+from pr_review_agent.cli.cmd_service import (
+    INSTANCE_UNIT_TEMPLATE as INSTANCE_UNIT,
+)
+from pr_review_agent.cli.cmd_service import (
+    UNIT_TEMPLATE,
+    executable,
+    paths,
+    unit_text,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGED = ROOT / "src" / "pr_review_agent" / "templates" / UNIT_TEMPLATE
@@ -243,4 +251,123 @@ def test_systemd_accepts_the_installed_unit(home):
         text=True,
         check=False,
     )
+    assert result.returncode == 0, result.stderr
+
+
+# --- one instance per repository, one shared budget --------------------
+
+
+def instance_unit_at(home_dir):
+    return home_dir / ".config" / "systemd" / "user" / "pr-review-agent@.service"
+
+
+def test_the_instance_unit_template_is_on_disk():
+    assert (ROOT / "src" / "pr_review_agent" / "templates" / INSTANCE_UNIT).is_file()
+
+
+def test_an_instance_install_writes_the_template_unit(home):
+    assert install("--instance", "web").exit_code == 0
+
+    service = parsed(instance_unit_at(home).read_text(encoding="utf-8"))["Service"]
+    # `%i` must survive .format(): it is systemd's to expand, per instance,
+    # long after this command has exited.
+    assert service["ExecStart"].endswith("/pr-review-agent/%i/config.yaml")
+    assert service["EnvironmentFile"].endswith("/pr-review-agent/%i/token.env")
+
+
+def test_the_instance_unit_leaves_no_placeholder_behind(home):
+    """The same trap as the plain unit: an unsubstituted {} starts and fails."""
+    assert install("--instance", "web").exit_code == 0
+
+    assert "{" not in instance_unit_at(home).read_text(encoding="utf-8")
+
+
+def test_an_instance_gets_its_own_config_and_token(home):
+    assert install("--instance", "web").exit_code == 0
+
+    base = home / ".config" / "pr-review-agent" / "web"
+    assert base.is_dir()
+    assert (base / "token.env").read_text(encoding="utf-8") == "GITHUB_TOKEN=\n"
+    # The point of a process per repository: this instance never holds
+    # another repository's token, so no bug in it can post as one.
+    assert stat.S_IMODE((base / "token.env").stat().st_mode) == 0o600
+
+
+def test_instances_share_a_store_but_never_a_checkout_cache(home):
+    """The two directories go opposite ways, and both matter.
+
+    One store is one ledger and therefore one budget. A shared cache would
+    let one instance's startup sweep delete another's running review.
+    """
+    first = paths("web")
+    second = paths("api")
+
+    assert first["state_dir"] == second["state_dir"]
+    assert first["cache_dir"] != second["cache_dir"]
+
+
+@pytest.mark.parametrize("name", ["..", "../../etc", "a/b", ".hidden", "", "we b"])
+def test_an_unusable_instance_name_is_refused(home, name):
+    """It becomes a directory and half a unit name, so it is refused, not escaped."""
+    result = install("--instance", name)
+
+    assert result.exit_code == EXIT_STARTUP
+    assert not instance_unit_at(home).exists()
+
+
+def test_a_second_instance_does_not_need_force(home):
+    """One template file serves every instance, so this is not a collision."""
+    assert install("--instance", "web").exit_code == 0
+
+    result = install("--instance", "api")
+
+    assert result.exit_code == 0
+    assert (home / ".config" / "pr-review-agent" / "api").is_dir()
+
+
+def test_a_plain_unit_still_needs_force_to_be_overwritten(home):
+    """The idempotent rewrite is for template units only."""
+    assert install().exit_code == 0
+
+    result = install()
+
+    assert result.exit_code == EXIT_STARTUP
+    assert "--force" in result.output
+
+
+def test_an_instance_install_states_the_three_fleet_rules(home):
+    """Each is a silent failure, so it is said where it is acted on."""
+    output = install("--instance", "web").output
+
+    assert "store.path must be THE SAME file" in output
+    assert "workspace.cache_dir must DIFFER" in output
+    assert "budget.authority: true on EXACTLY ONE" in output
+
+
+def test_a_single_install_does_not_mention_instances(home):
+    """A lone deployment needs none of it, so it is not told any of it."""
+    assert "EXACTLY ONE" not in install().output
+
+
+@pytest.mark.skipif(
+    shutil.which("systemd-analyze") is None, reason="systemd-analyze not installed"
+)
+def test_systemd_accepts_the_installed_template_unit(home):
+    """Verified as an instance, so `%i` resolves the way it will in service."""
+    assert install("--instance", "web").exit_code == 0
+    # A file named `<template>@<instance>.service` is an instantiated unit, so
+    # systemd expands %i to "web" rather than leaving it empty.
+    instantiated = instance_unit_at(home).with_name("pr-review-agent@web.service")
+    text = instance_unit_at(home).read_text(encoding="utf-8")
+    instantiated.write_text(
+        text.replace(str(executable()), sys.executable), encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        ["systemd-analyze", "--user", "verify", str(instantiated)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
     assert result.returncode == 0, result.stderr

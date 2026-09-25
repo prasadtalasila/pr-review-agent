@@ -246,6 +246,13 @@ Prefer an absolute path under a service account's data directory in
 production — pointing at the wrong file costs the queue's memory of what has
 already been reviewed.
 
+**Several daemons sharing this file share a token budget**, which is the
+whole mechanism behind
+[the section above](#several-repositories-one-allowance). Make the path
+absolute and identical in every one of them: the default is relative, so two
+units started from different working directories would silently get two
+stores and two independent budgets.
+
 ### `workspace`
 
 | Key | Type | Required | Meaning |
@@ -259,6 +266,14 @@ spending cap. Unknown keys inside `workspace` are still rejected.
 
 A relative path is resolved against the working directory the daemon starts
 in, and logged absolute at `INFO`, exactly as `store.path` is.
+
+!!! warning "Never share a `cache_dir` between daemons"
+
+    Where `store.path` must be *shared* to share a budget, this must not be.
+    The daemon deletes `<cache_dir>/runs` at startup to clear what a crash
+    left behind — safe only because no checkout of its own is live at that
+    moment. Pointed at a cache another daemon is using, a restart would
+    delete that daemon's running review out from under it.
 
 ### `worker`
 
