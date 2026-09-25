@@ -57,9 +57,15 @@ logger = logging.getLogger(__name__)
 
 TOKEN_ENV = "GITHUB_TOKEN"
 
-#: The two watermark names STORAGE.md declares. Both comment endpoints feed
+#: The two watermark stems STORAGE.md declares. Both comment endpoints feed
 #: ``COMMENTS``: GitHub's ``updated`` only ever moves forward, so a single
 #: high-water mark cannot hide a comment that surfaces later on the other.
+#:
+#: A stem is never a key on its own. Several daemons may share one store so
+#: that they share one budget, and a bare ``pull_requests`` row would then be
+#: written by whichever repository polled last -- every other repository
+#: silently skipping everything before that write. ``_watermark_name``
+#: qualifies each stem with the repository it belongs to.
 PULL_REQUESTS = "pull_requests"
 COMMENTS = "comments"
 
@@ -160,8 +166,47 @@ class Daemon:
         first-successful-poll -- which would drift later every time an early
         poll failed, widening the window of backlog treated as new.
         """
-        for name in (PULL_REQUESTS, COMMENTS):
-            self._since(name, now=now)
+        self._adopt_unqualified_watermarks()
+        for stem in (PULL_REQUESTS, COMMENTS):
+            self._since(stem, now=now)
+
+    def _adopt_unqualified_watermarks(self) -> None:
+        """Carry a pre-multi-repo watermark forward onto its qualified name.
+
+        A database written before watermarks were qualified holds bare
+        ``pull_requests`` and ``comments`` rows. They cannot be renamed by a
+        schema migration, because the repository they belong to is named in
+        ``config.yaml`` and is not in the database at all -- so the rename
+        happens here, where the configuration is known.
+
+        Both ways of getting this wrong are expensive, which is why it is not
+        left to cold-start seeding: dropping the watermark re-offers the whole
+        open backlog as new, and seeding to ``now`` instead skips every event
+        in flight.
+
+        Idempotent -- a qualified row that already exists is left alone, so a
+        later start cannot drag the watermark back to the legacy value. The
+        legacy rows are left in place rather than deleted: they are inert once
+        adopted, and leaving them means a downgrade still finds its watermark.
+        """
+        for stem in (PULL_REQUESTS, COMMENTS):
+            name = self._watermark_name(stem)
+            if self.store.watermark(name) is not None:
+                continue
+            legacy = self.store.watermark(stem)
+            if legacy is None:
+                continue
+            self.store.advance_watermark(name, legacy)
+            logger.info(
+                "adopting the unqualified %s watermark (%s) as %s",
+                stem,
+                legacy.isoformat(),
+                name,
+            )
+
+    def _watermark_name(self, stem: str) -> str:
+        """The watermark key for ``stem`` in this daemon's repository."""
+        return f"{stem}:{self.config.github.repo}"
 
     async def run_once(self) -> CycleSummary:
         """Poll every endpoint once, and enqueue what the classifier accepts."""
@@ -213,7 +258,7 @@ class Daemon:
             open_numbers.add(pull.number)
             summary += self._enqueue(classifier.classify_pull_request(pull), now=now)
         self.open_pull_requests = frozenset(open_numbers)
-        self.store.advance_watermark(PULL_REQUESTS, newest)
+        self.store.advance_watermark(self._watermark_name(PULL_REQUESTS), newest)
         return summary
 
     def _comments(
@@ -236,7 +281,7 @@ class Daemon:
             for comment in payloads.comments(self.config.github.repo, batch):
                 newest = max(newest, comment.updated_at)
                 summary += self._enqueue(classifier.classify_comment(comment), now=now)
-        self.store.advance_watermark(COMMENTS, newest)
+        self.store.advance_watermark(self._watermark_name(COMMENTS), newest)
         return summary
 
     def _enqueue(self, decision: Decision, *, now: datetime) -> CycleSummary:
@@ -246,8 +291,9 @@ class Daemon:
         added = self.queue.enqueue(decision.trigger, now=now)
         return CycleSummary(seen=1, enqueued=int(added))
 
-    def _since(self, name: str, *, now: datetime) -> datetime:
-        """The watermark in force for ``name``, seeding an unset one to ``now``."""
+    def _since(self, stem: str, *, now: datetime) -> datetime:
+        """The watermark in force for ``stem``, seeding an unset one to ``now``."""
+        name = self._watermark_name(stem)
         stored = self.store.watermark(name)
         if stored is not None:
             return stored

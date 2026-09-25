@@ -42,11 +42,26 @@ that read a stale row, or two cycles settling out of order, must not walk it
 backwards and re-admit events already decided. `advance_watermark` takes the
 later of the stored and the offered value and returns whichever is in force.
 
-Watermarks are namespaced by name (`pull_requests`, `comments`) because the two
-streams advance independently: comments are sorted by `updated`, pull requests
-by `created`. Both comment endpoints share the one `comments` mark — `updated`
+Watermarks are namespaced by stream (`pull_requests`, `comments`) because the
+two advance independently: comments are sorted by `updated`, pull requests by
+`created`. Both comment endpoints share the one `comments` mark — `updated`
 only ever moves forward, so a single high-water mark cannot hide a comment that
 surfaces later on the other endpoint.
+
+They are namespaced by **repository** as well, so the key is
+`pull_requests:owner/name` rather than `pull_requests`. One store is how
+several daemons share one token budget — see [BUDGET.md](BUDGET.md) — and an
+unqualified key would be written by whichever repository polled last, leaving
+every other one reading its own backlog as already seen and skipping it
+permanently.
+
+A database written before the key carried a repository holds unqualified
+`pull_requests` and `comments` rows. A schema migration cannot rename them: the
+repository is named in `config.yaml` and is not in the database at all. So the
+daemon adopts them at startup instead, copying each onto its qualified name
+once, before seeding. The unqualified rows are then **vestigial** — left in
+place rather than deleted, so that a downgrade still finds its watermark, and
+ignored on every later start so an adopted mark is never dragged backwards.
 
 The [daemon loop](DAEMON.md) is what advances them, to the newest timestamp it
 saw in a payload rather than to wall-clock now, and only after the enqueue that
@@ -83,7 +98,7 @@ CREATE TABLE etags (
     etag TEXT NOT NULL
 );
 CREATE TABLE watermarks (
-    name TEXT PRIMARY KEY,
+    name TEXT PRIMARY KEY,  -- "<stream>:<owner>/<name>", e.g. "comments:o/r"
     at   TEXT NOT NULL      -- aware UTC, ISO-8601
 );
 CREATE TABLE queue (
