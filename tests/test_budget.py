@@ -81,7 +81,7 @@ def store_fixture(tmp_path):
 
 def admit_all(store, governor, triggers, *, now=NOON):
     """Enqueue and claim each trigger through the governor; return the claims."""
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     claims = []
     for index, trigger in enumerate(triggers):
         queue.enqueue(trigger, now=now + timedelta(seconds=index))
@@ -140,7 +140,7 @@ def test_the_session_window_can_be_the_tightest(store):
 def test_an_unsettled_reservation_counts_in_full(store):
     """The whole concurrency guarantee: a live hold is already spent."""
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     queue.claim(now=NOON, owner="w", admit=governor.admit)
 
@@ -150,7 +150,7 @@ def test_an_unsettled_reservation_counts_in_full(store):
 
 def test_settle_releases_the_unused_remainder(store):
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -168,7 +168,7 @@ def test_settle_releases_the_unused_remainder(store):
 def test_settle_records_what_a_posted_comment_is_traced_to(store):
     """ROADMAP: engine, model, mode, usage and confidence on every row."""
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -198,7 +198,7 @@ def test_settle_records_what_a_posted_comment_is_traced_to(store):
 def test_settle_records_why_the_run_stopped(store):
     """The reason is a column, not something inferred from the confidence."""
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -220,7 +220,7 @@ def test_settle_records_why_the_run_stopped(store):
 def test_a_refused_preflight_reads_as_refused_not_as_a_failure(store):
     """A free refusal spent nothing, and the ledger should not imply it did."""
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -235,7 +235,7 @@ def test_a_refused_preflight_reads_as_refused_not_as_a_failure(store):
 def test_settle_is_guarded_on_the_owner(store):
     """A worker whose lease lapsed cannot settle a newer worker's row."""
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -261,7 +261,7 @@ def test_a_crashed_run_stays_charged_past_its_lease(store):
     run has probably already spent, and it may be retried twice more.
     """
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     queue.claim(now=NOON, owner="w", admit=governor.admit)
 
@@ -277,7 +277,7 @@ def test_the_ladder_switches_at_eighty_five_percent(store):
     """Below the rung a pull request is admitted; at it, only a mention is."""
     governor = Governor(store, budget(max_run_tokens=100))
     daily = budget().daily_limit
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
 
     admitted = 0
     while governor.headroom(NOON).mode is Mode.FULL:
@@ -294,7 +294,7 @@ def test_the_ladder_switches_at_eighty_five_percent(store):
 
 def test_mention_only_admits_a_mention_and_refuses_a_pull_request(store):
     governor = Governor(store, budget(max_run_tokens=100))
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     _burn_to(governor, queue, Mode.MENTION_ONLY)
 
     queue.enqueue(opened(pr=900), now=NOON)
@@ -312,7 +312,7 @@ def test_a_refused_pull_request_does_not_block_a_mention_behind_it(store):
     until the window rolled -- days.
     """
     governor = Governor(store, budget(max_run_tokens=100))
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     _burn_to(governor, queue, Mode.MENTION_ONLY)
 
     queue.enqueue(opened(pr=900), now=NOON)
@@ -330,7 +330,7 @@ def test_a_refused_candidate_keeps_its_attempts_and_stays_pending(store):
     good trigger for a reason that had nothing to do with it.
     """
     governor = Governor(store, budget(enabled=False))
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
 
     for _ in range(5):
@@ -350,7 +350,7 @@ def test_exhausted_refuses_a_mention_too(store):
     that overran -- and that is the case a hard stop has to cover.
     """
     governor = Governor(store, budget(max_run_tokens=100))
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -431,7 +431,7 @@ def test_a_heavy_contributor_degrades_to_mention_only_first(store):
     governor = Governor(store, budget(max_run_tokens=100, per_contributor_pct=10))
     admit_all(store, governor, [opened(pr=n, actor_id=HEAVY) for n in range(9)])
 
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=900, actor_id=HEAVY), now=NOON)
     queue.enqueue(
         mention(pr=901, comment_id=5, actor_id=HEAVY), now=NOON + timedelta(seconds=1)
@@ -446,7 +446,7 @@ def test_one_spent_contributor_does_not_degrade_another(store):
     governor = Governor(store, budget(max_run_tokens=100, per_contributor_pct=1))
     admit_all(store, governor, [opened(pr=1, actor_id=HEAVY)])
 
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=2, actor_id=OTHER), now=NOON)
     assert queue.claim(now=NOON, owner="w", admit=governor.admit) is not None
 
@@ -469,7 +469,7 @@ def test_disabled_admits_nothing(store):
 
 def test_reload_takes_effect_without_a_restart(store):
     governor = Governor(store, budget(enabled=False))
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     assert queue.claim(now=NOON, owner="w", admit=governor.admit) is None
 
@@ -484,7 +484,7 @@ def test_no_admit_hook_leaves_the_queue_unguarded(store):
     convention held by review rather than by the type system. The only
     caller that will ever claim is the worker the engine phase adds.
     """
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     assert queue.claim(now=NOON, owner="w") is not None
 
@@ -495,7 +495,7 @@ def test_no_admit_hook_leaves_the_queue_unguarded(store):
 def test_the_admitted_rung_is_readable_from_the_claim(store):
     """The worker needs the rung to build a ReviewRequest, and Claim has none."""
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -504,7 +504,7 @@ def test_the_admitted_rung_is_readable_from_the_claim(store):
 
 def test_a_mention_admitted_under_the_rung_reports_it(store):
     governor = Governor(store, budget(max_run_tokens=100))
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     _burn_to(governor, queue, Mode.MENTION_ONLY)
     queue.enqueue(mention(pr=901, comment_id=5), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
@@ -515,7 +515,7 @@ def test_a_mention_admitted_under_the_rung_reports_it(store):
 def test_a_settled_claim_has_no_admitted_rung(store):
     """Settled is not unsettled: the reservation this asks about is gone."""
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -533,7 +533,7 @@ def test_a_lapsed_workers_claim_has_no_admitted_rung(store):
     from dataclasses import replace
 
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(), now=NOON)
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
@@ -674,7 +674,7 @@ def test_a_trip_refuses_every_claim(store):
 def test_a_refused_claim_costs_no_attempt(store):
     """A trip is about the allowance, not the trigger: it must not abandon one."""
     governor = Governor(store, budget())
-    queue = ReviewQueue(store)
+    queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     governor.trip(NOON)
 

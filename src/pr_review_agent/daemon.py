@@ -525,7 +525,7 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
                 config=config,
                 poller=Poller(client=client, endpoints=endpoints, etags=store),
                 store=store,
-                queue=ReviewQueue(store),
+                queue=ReviewQueue(store, repo=config.github.repo),
                 # The daemon owns the process, so it owns the governor its
                 # workers claim through, and SIGHUP has something live to
                 # reload.

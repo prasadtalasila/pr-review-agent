@@ -142,7 +142,7 @@ def make_daemon(tmp_path, handler, config=CONFIG, store=None) -> Daemon:
         config=config,
         poller=poller,
         store=store,
-        queue=ReviewQueue(store),
+        queue=ReviewQueue(store, repo=config.github.repo),
         governor=Governor(store, config.budget),
         publisher=Publisher(
             client=client,
@@ -376,7 +376,7 @@ async def test_a_failing_enqueue_leaves_the_watermark_unmoved(tmp_path):
             raise RuntimeError("disk full")
 
     daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
-    daemon.queue = BrokenQueue(daemon.store)
+    daemon.queue = BrokenQueue(daemon.store, repo=daemon.config.github.repo)
     daemon.store.advance_watermark(PULLS_WM, OLD)
 
     with pytest.raises(RuntimeError):
@@ -425,7 +425,7 @@ async def test_an_unexpected_error_is_not_swallowed(tmp_path):
             raise RuntimeError("disk full")
 
     daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
-    daemon.queue = BrokenQueue(daemon.store)
+    daemon.queue = BrokenQueue(daemon.store, repo=daemon.config.github.repo)
     daemon.store.advance_watermark(PULLS_WM, OLD)
 
     with pytest.raises(RuntimeError):
