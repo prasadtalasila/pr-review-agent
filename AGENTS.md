@@ -33,7 +33,7 @@ locally-hosted PR review agent.
 - Add comments only where logic is non-obvious. Prefer a docstring that
   explains *why* a rule exists over one that restates the signature.
 - Public modules, classes and functions carry a docstring: `pylint` is run at
-  a 10.00/10 score on `src`, and a missing docstring is a score regression.
+  a 9.95/10 score on `src`, and a missing docstring is a score regression.
 
 ## BEST PRACTICES
 
@@ -53,6 +53,8 @@ src/pr_review_agent/          importable package (src layout)
   _startup.py                 token + config, shared by both entry points
   bootstrap.py                pre-flight egress checks for a new host
   budget.py                   rolling windows, ladder, reserve-then-settle
+  logs.py                     one log level and one record format, and who sets them
+  numbering.py                finding numbers that survive a re-review
   publisher.py                the 👀, the head re-check, one comment per PR
   runs.py                     what a paid review produced, so it can be re-posted
   config.py                   config.yaml loader and validation
@@ -60,13 +62,18 @@ src/pr_review_agent/          importable package (src layout)
   queue.py                    claim protocol and per-pull-request leases
   worker.py                   claim, review, settle, close the row
   store.py                    SQLite schema, watermarks, ETags, queue table
+  cli/                        the `pr-review-agent <noun> <verb>` command tree
+  templates/                  data the wheel ships: config templates, systemd units
   triggers/                   allowlist, @mention parsing, classifier
   poller/                     GitHub REST polling, ETags, adaptive interval
   workspace/                  bare mirror, per-run worktree, diff, teardown
-  engine/                     the ReviewEngine seam and a fake engine
+  engine/                     the ReviewEngine seam, the `claude` adapter, a fake
 tests/                        pytest suite, one test_*.py per module
 .github/workflows/python-ci.yml   the single CI workflow
 ```
+
+`tests/test_docs_layout.py` fails if a module is missing from this tree or from
+the fuller one in `DEVELOPER.md`, so neither drifts behind the package.
 
 - The supported range is **Python 3.10 - 3.14**, and CI runs all five. Code
   must therefore stay 3.10-compatible: a 3.11+ name goes behind a shim in

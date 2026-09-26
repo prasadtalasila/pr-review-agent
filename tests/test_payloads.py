@@ -3,6 +3,8 @@ are dropped before the classifier ever sees them."""
 
 from datetime import datetime, timezone
 
+import pytest
+
 from pr_review_agent.poller.payloads import comments, parse_timestamp, pull_requests
 from pr_review_agent.triggers.models import CommentSource
 
@@ -145,3 +147,54 @@ def test_the_source_follows_the_url_field_not_the_id():
     """`pull_request_url` is the only thing that distinguishes the two."""
     (comment,) = comments(REPO, [review_comment(id=555)])
     assert comment.source is CommentSource.REVIEW
+
+
+# -- a repository or owner called `pull` (issue #74) ----------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #74: `/pull/` is matched anywhere in html_url, so a "
+    "repository or owner named `pull` turns plain issue comments into "
+    "mention triggers. Unfixed on this branch; this test is the sequence, "
+    "and it flips to a pass the moment the substring test becomes a path "
+    "test.",
+)
+def test_a_repository_named_pull_does_not_make_issue_comments_pull_requests():
+    """`https://github.com/acme/pull/issues/5#...` contains `/pull/`.
+
+    The consequence is not a cosmetic misclassification: the worker 👀s the
+    issue, `GET /pulls/5` 404s, and the trigger is retried three times and
+    abandoned -- deterministic once a repository has that name.
+    """
+    item = issue_comment(
+        html_url="https://github.com/acme/pull/issues/5#issuecomment-1",
+        issue_url="https://api.github.com/repos/acme/pull/issues/5",
+    )
+    assert list(comments("acme/pull", [item])) == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #74, the owner-named-`pull` half of the same substring test",
+)
+def test_an_owner_named_pull_does_not_make_issue_comments_pull_requests():
+    item = issue_comment(
+        html_url="https://github.com/pull/tools/issues/5#issuecomment-1",
+        issue_url="https://api.github.com/repos/pull/tools/issues/5",
+    )
+    assert list(comments("pull/tools", [item])) == []
+
+
+def test_a_repository_named_pull_still_maps_its_real_pull_requests():
+    """The other side: the fix must not throw the real ones away.
+
+    This passes today and has to keep passing, or a narrower match would
+    look like a fix while making the agent blind on that repository.
+    """
+    item = issue_comment(
+        html_url="https://github.com/acme/pull/pull/5#issuecomment-1",
+        issue_url="https://api.github.com/repos/acme/pull/issues/5",
+    )
+    (comment,) = comments("acme/pull", [item])
+    assert comment.pr_number == 5

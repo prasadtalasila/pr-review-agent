@@ -18,16 +18,22 @@ src/pr_review_agent/
 ├── budget.py          # rolling windows, the ladder, reserve-then-settle
 ├── config.py          # config.yaml → frozen dataclasses
 ├── daemon.py          # the poll-classify-enqueue loop
+├── logs.py            # one log level and one record format, and who sets them
+├── numbering.py       # finding numbers that survive a re-review
+├── publisher.py       # the 👀, the head re-check, one comment per review
+├── runs.py            # what a paid review produced, so publishing can retry
+├── queue.py           # claim protocol and per-pull-request leases
+├── worker.py          # claim → review → settle → close the row
+├── store.py           # SQLite: schema, watermarks, ETags, queue table
 ├── cli/
 │   ├── __init__.py    # the root group, the nouns, the exit codes
 │   ├── _common.py     # the shared --config option and startup handling
 │   ├── cmd_config.py  # config generate | validate
 │   ├── cmd_host.py    # host check
-│   └── cmd_daemon.py  # daemon start
-├── templates/         # the two config templates the wheel ships
-├── queue.py           # claim protocol and per-pull-request leases
-├── worker.py          # claim → review → settle → close the row
-├── store.py           # SQLite: schema, watermarks, ETags, queue table
+│   ├── cmd_daemon.py  # daemon start
+│   └── cmd_service.py # service install — place the systemd user unit
+├── templates/         # data the wheel ships: the two config templates and
+│                      # the two systemd units (pr-review-agent[@].service)
 ├── triggers/
 │   ├── models.py      # payload-shaped dataclasses; PayloadError
 │   ├── allowlist.py   # numeric-user-id membership
@@ -43,11 +49,20 @@ src/pr_review_agent/
 │   └── poller.py      # one sweep across all three endpoints
 ├── workspace/
 │   ├── gitcmd.py      # the one hardened `git` invocation
+│   ├── exclusions.py  # configured path patterns → git pathspec arguments
 │   └── repo.py        # bare mirror, per-run worktree, diff, teardown
 └── engine/
     ├── models.py      # ReviewEngine protocol, Capabilities, request/result
-    └── fake.py         # an engine that spends nothing, for tests
+    ├── prompt.py      # what the reviewer is told; untrusted text fenced off
+    ├── standards.py   # repo standards, read from the base ref, never the PR
+    ├── cli.py         # the subprocess boundary every CLI adapter shares
+    ├── claude.py      # the `claude` adapter, the one thing that spends
+    └── fake.py        # an engine that spends nothing, for tests
 ```
+
+`tests/test_docs_layout.py` walks the package and fails if a module is missing
+from this tree or from the one in [AGENTS.md](AGENTS.md), so the two stay
+honest without anyone remembering to update them.
 
 ## 🐍 The Python 3.10 shim
 
@@ -264,11 +279,12 @@ printed. `--config` points at a config file other than `./config.yaml`.
 GITHUB_TOKEN=... poetry run pr-review-agent daemon start
 ```
 
-It polls on the adaptive interval, classifies what changed, and enqueues what
-the classifier accepts. It claims nothing and calls no review engine, so it
-cannot spend allowance — the queue fills and nothing drains it until the worker
-and the first engine adapter land. The [budget governor](docs/BUDGET.md) is already in place ahead
-of it, so the spending rails exist before anything can spend.
+It polls on the adaptive interval, classifies what changed, enqueues what the
+classifier accepts, and runs `worker.count` workers in the same process that
+claim those rows and review them. **It spends allowance.** `daemon start` is
+the only verb in the command tree that constructs a review engine; every
+review it runs goes through the [budget governor](docs/BUDGET.md), which is
+what bounds the spending rather than preventing it.
 
 Same conventions as the host checks: `GITHUB_TOKEN` from the environment,
 `--config` for a config file elsewhere, exit `3` when either is missing. Exit

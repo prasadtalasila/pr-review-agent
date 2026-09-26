@@ -27,7 +27,7 @@ from pr_review_agent.budget import (
     UsageConfidence,
 )
 from pr_review_agent.config import BudgetConfig
-from pr_review_agent.queue import QueueStatus, ReviewQueue
+from pr_review_agent.queue import DEFAULT_LEASE, QueueStatus, ReviewQueue
 from pr_review_agent.store import BudgetPolicy, SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
 
@@ -824,3 +824,76 @@ def test_a_governor_that_does_not_comply_ignores_the_policy(store):
 
     admitted = admit_all(store, governor, [opened(pr=n) for n in range(60)])
     assert len(admitted) == budget().daily_limit // 1_000
+
+
+# -- reservation identity across a restart (issue #70) --------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #70: a reservation is identified by (dedupe_key, owner) "
+    "and nothing stops a second one existing, so the same worker re-claiming "
+    "after a crash writes a duplicate and `settle` matches two rows. Unfixed "
+    "on this branch; this test is the sequence, and it flips to a pass once "
+    "the identity is unique per admission.",
+)
+def test_a_paid_review_settles_after_the_same_worker_re_claims_the_row(store):
+    """The crash-and-retake sequence, which costs a review that was paid for.
+
+    `supervise` restarts a crashed worker under its *original* owner id --
+    the string is fixed at construction -- so attempt 2 is indistinguishable
+    from attempt 1 in the ledger. Two unsettled rows share the key, `_SETTLE`
+    updates both, `settle` sees `rowcount == 2`, returns `False`, and the
+    worker discards a result the account has already been billed for. The
+    allowance stays held at the ceiling until the window rolls.
+    """
+    # Wide enough that the daily window admits two runs: the point here is
+    # the duplicate reservation, not a refusal for headroom.
+    governor = Governor(store, budget(weekly_tokens=70_000, session_tokens=70_000))
+    queue = ReviewQueue(store, repo=REPO)
+    queue.enqueue(opened(pr=1), now=NOON)
+
+    first = queue.claim(now=NOON, owner="w", admit=governor.admit)
+    assert first is not None
+    # The worker crashed here: the engine ran, nothing settled, and the row
+    # stays claimed under a lease nobody is holding any more.
+
+    later = NOON + DEFAULT_LEASE + timedelta(minutes=1)
+    second = queue.claim(now=later, owner="w", admit=governor.admit)
+    assert second is not None
+    assert second.owner == first.owner
+
+    settled = governor.settle(
+        second,
+        Usage(250, UsageConfidence.EXACT, engine="claude_cli", model="claude-opus-5"),
+        now=later,
+        stop_reason=StopReason.COMPLETED,
+    )
+
+    assert settled is True
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #70: the second admission reserves the ceiling again, so "
+    "one pull request holds it twice. Unfixed on this branch.",
+)
+def test_the_same_worker_re_claiming_leaves_one_reservation_not_two(store):
+    """The condition underneath it, stated on its own.
+
+    Kept separate so that a fix which merely made `settle` tolerant of two
+    rows -- rather than stopping the second being written -- still shows up
+    here as the double hold on the allowance that it is. Today the same pull
+    request holds 2 000 tokens of a 28 000-token weekly share while one
+    review runs.
+    """
+    governor = Governor(store, budget(weekly_tokens=70_000, session_tokens=70_000))
+    queue = ReviewQueue(store, repo=REPO)
+    queue.enqueue(opened(pr=1), now=NOON)
+    queue.claim(now=NOON, owner="w", admit=governor.admit)
+    held_after_one = governor.headroom(NOON).remaining
+
+    later = NOON + DEFAULT_LEASE + timedelta(minutes=1)
+    queue.claim(now=later, owner="w", admit=governor.admit)
+
+    assert governor.headroom(later).remaining == held_after_one

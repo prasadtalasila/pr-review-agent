@@ -113,12 +113,31 @@ before the next cycle is dropped.** That is a behaviour change rather than
 only a quieter log, and it is the intended reading — the agent has nothing
 useful to say about a closed pull request.
 
+**The set holds at most 100 numbers.** `/pulls?state=open` is requested
+newest-first at `per_page=100` and the poller reads page 1 only, so on a
+repository with more than a hundred open pull requests the oldest of them are
+not in the set, and a mention on one of those is rejected as `pr_not_open`.
+This is the same page-1 bound every watched endpoint has (see
+[POLLER.md](POLLER.md)); it is visible here rather than elsewhere because this
+is the one leg whose result is used as a *membership test* rather than as a
+list of things that just changed. A repository that busy should raise
+`poll.interval` concerns long before this one.
+
 ### Drafts and mentions
 
 The draft check applies to **fresh pull requests only**. `draft` exists to stop
 the agent auto-reviewing work in progress nobody asked about; an allowlisted
 human typing `@claude` on a draft *is* the ask, and refusing it would make the
 handle unreliable exactly when a contributor wants early feedback.
+
+**Marking a draft ready for review does not summon one.** The only pull-request
+trigger is `pr_opened`, and it is gated on `created_at` against the watermark —
+nothing reads `ready_for_review`, and converting a draft leaves `created_at`
+where it was. So a pull request opened as a draft is never auto-reviewed, at
+any later point; the way to get a review on it is to mention the handle. This
+is deliberate rather than an oversight — the alternative is a second freshness
+clock, on a field the `/pulls` listing does not carry — but it surprises
+someone who opens every pull request as a draft by habit.
 
 ## 🔁 The agent cannot summon itself
 

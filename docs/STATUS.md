@@ -133,6 +133,11 @@ linked.
 The first three lines of the test-coverage item, and the trigger-scoping
 criterion, are met today by `tests/test_mention.py`,
 `tests/test_allowlist.py` and `tests/test_classifier.py`.
+`tests/test_integration_recorded.py` meets the recorded-fixtures clause: it
+drives a whole `Daemon.run_once` against payloads recorded from the real API
+(`tests/fixtures/github/`). What keeps the item unticked is the last clause —
+the conformance suite still runs against `FakeEngine` alone, and will until
+there is a second adapter to run it against.
 
 ## 🔭 Known gaps
 

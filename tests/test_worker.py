@@ -1081,6 +1081,70 @@ async def test_a_superseded_head_is_never_posted(wired, git_remote):
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
 
 
+class HeadSequence(GitHubDouble):
+    """A double whose head takes a given value on each successive read.
+
+    `GitHubDouble(head_moves_to=...)` moves the head once and leaves it
+    moved, which is all a single cycle needs. A *sequence* of cycles needs
+    the head to come back -- a force-push reverted, or simply the next pull
+    request read at its own settled head -- or the second cycle fails on the
+    checkout rather than on the behaviour under test.
+    """
+
+    def __init__(self, heads: list[str], **kwargs):
+        super().__init__(heads[0], **kwargs)
+        self._heads = heads
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.method == "GET":
+            index = min(self._reads, len(self._heads) - 1)
+            self._reads += 1
+            return httpx.Response(200, json=payload(self._heads[index]))
+        if self._write_status >= 400:
+            return httpx.Response(self._write_status, text="nope")
+        return httpx.Response(self._write_status, json={"id": self._comment_id})
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #68: a SUPERSEDED publish returns before `_stamp`, so the "
+    "run keeps `published_at IS NULL`, `has_unpublished` stays true for the "
+    "pull request, and `admit`'s resume bypass consumes every later trigger "
+    "on it without a review. Unfixed on this branch; this test is the "
+    "sequence, and it flips to a pass once a superseded run is closed out.",
+)
+async def test_a_mention_after_a_superseded_review_is_still_reviewed(wired, git_remote):
+    """Two cycles, and the second one is the bug.
+
+    Cycle 1 reviews the freshly opened pull request; the head moves between
+    the worker's read and the publisher's, so nothing is posted and the run
+    is left recorded-but-unpublished. Cycle 2 is a human typing the handle.
+    It should be reviewed. Instead `admit` sees an unpublished run for that
+    pull request, takes the resume path, re-reads the head, gets SUPERSEDED
+    a second time, and marks *the mention* done -- so the maintainer's
+    request is consumed in silence and asking again cannot help, because the
+    unpublished run is still there.
+    """
+    moved = "a-newer-commit-entirely"
+    github = HeadSequence(
+        # Cycle 1: the worker reads the real head, the publisher reads a
+        # moved one. Cycle 2: settled back, so the checkout can succeed.
+        [git_remote.head_sha, moved, git_remote.head_sha, git_remote.head_sha]
+    )
+    fixture = wired(github=github)
+
+    fixture.queue.enqueue(opened(head_sha=git_remote.head_sha), now=NOW)
+    await fixture.worker.run_once()
+    assert fixture.github.comments == []  # superseded, as expected
+    assert len(fixture.engine.requests) == 1
+
+    fixture.queue.enqueue(mention(), now=NOW)
+    await fixture.worker.run_once()
+
+    assert len(fixture.engine.requests) == 2
+
+
 async def test_a_failed_publish_is_retried_without_a_second_review(wired, git_remote):
     """The money is already spent; a flaky write must not spend it again."""
     github = GitHubDouble(git_remote.head_sha, write_status=502)
@@ -1097,6 +1161,52 @@ async def test_a_failed_publish_is_retried_without_a_second_review(wired, git_re
     assert len(fixture.engine.requests) == 1  # the engine was not run again
     assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+
+
+class DeletedComment(GitHubDouble):
+    """POSTs succeed; editing the comment we posted before 404s.
+
+    What a maintainer tidying a thread leaves behind: the id `runs` remembers
+    names a comment that is no longer there.
+    """
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH":
+            self.requests.append(request)
+            return httpx.Response(404, text='{"message": "Not Found"}')
+        return super()._handle(request)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #71: a PATCH to a deleted comment 404s, `_write` raises, "
+    "and the row is handed back to be retried on every claim forever. "
+    "Unfixed on this branch; this test is the sequence, and it flips to a "
+    "pass once a 404 on the remembered id falls back to a new comment.",
+)
+async def test_a_review_whose_comment_was_deleted_is_posted_again(wired, git_remote):
+    """The ordinary way to reach the known gap in STATUS.md.
+
+    The first review posts comment 555. A maintainer deletes it -- "resolved,
+    tidy the thread" -- and the next trigger on that pull request edits an id
+    that is gone. GitHub says 404, the worker hands the row back unattempted,
+    and the next claim does exactly the same thing: a paid review that is
+    never visible and an ERROR in the log every idle period. Posting a new
+    comment is the recovery, and it costs nothing -- the review is already
+    paid for.
+    """
+    github = DeletedComment(git_remote.head_sha)
+    fixture = wired(github=github)
+
+    fixture.queue.enqueue(opened(head_sha=git_remote.head_sha), now=NOW)
+    await fixture.worker.run_once()
+    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+
+    fixture.queue.enqueue(mention(), now=NOW)
+    await fixture.worker.run_once()
+
+    assert fixture.queue.status(mention().dedupe_key) is QueueStatus.DONE
+    assert [r.method for r in fixture.github.comments].count("POST") == 2
 
 
 async def test_a_republished_run_writes_no_ledger_row(wired, git_remote):

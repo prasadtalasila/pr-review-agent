@@ -17,13 +17,32 @@ asking for help. A credential in it would leak the first time anyone did that.
 `config validate` therefore needs no token at all — it answers a question about
 the file, not about GitHub.
 
-**What it needs:** a fine-grained personal access token with **read and write on
-pull requests** for the one repository the config names. Read, so the poller can
-see pull requests and comments; write, so the publisher can post the
-acknowledgement and the review.
+**What it needs:** a fine-grained personal access token scoped to the one
+repository the config names, with exactly these repository permissions:
+
+| Permission | Level | What needs it |
+| --- | --- | --- |
+| Pull requests | Read and write | the `/pulls` and `/pulls/comments` polls; the 👀 on a review comment |
+| Issues | Read and write | the `/issues/comments` poll; the review comment itself and the 👀 on a freshly opened pull request, both of which GitHub routes through `/issues/…` even for a pull request |
+| Metadata | Read | mandatory whenever either of the above is granted |
+
+Nothing else. In particular the agent needs **no Contents permission**: it
+fetches the repository over unauthenticated `git`, not through the API.
 
 Scope it to that repository. A token that can reach more than the agent is
 configured for is a token whose blast radius is larger than the agent's.
+
+### What `host check` can and cannot prove about it
+
+`pr-review-agent host check` reads the `permissions` object GitHub returns on
+`/repos/{owner}/{repo}` and reports on its `push` field. That field is a
+*coarse* summary — on a classic token it is contents-write, and on a
+fine-grained one it is GitHub's own best-effort mapping — so it is a useful
+signal and not the same question as the table above. The check therefore warns
+rather than fails when the field is absent, and no read-only call can prove a
+write call will be accepted without making one. Grant the three rows above and
+the first review will post; the check is there to catch a token that is
+obviously read-only, not to certify one that is correct.
 
 **What happens to it.** It is passed as a `Bearer` header and nothing else. It
 is never logged, never printed by the pre-flight checks — those report what

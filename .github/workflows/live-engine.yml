@@ -1,0 +1,86 @@
+name: Live engine
+
+# The one test that spends real tokens. `-m live` is the only way to select
+# it; `addopts` in pyproject.toml deselects it everywhere else, so nothing
+# here can be reached by a pull request or a push.
+#
+# Why run it at all: every other engine test stubs the subprocess, which
+# proves the adapter's logic and proves nothing about the envelope the real
+# `claude` prints. An output-format change on the other side of that
+# subprocess boundary is invisible to the whole rest of the suite, and this
+# is how it gets noticed -- monthly, at the cost of one small review, rather
+# than by a daemon that has been failing to parse results in production.
+#
+# It is skipped, not failed, when the credential is absent: a fork and a
+# clone must not see a red run for a secret they were never going to have.
+
+'on':
+  workflow_dispatch:
+  schedule:
+    # 04:17 on the first of the month. Off the hour because GitHub queues
+    # everything scheduled on it.
+    - cron: '17 4 1 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-engine
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Review a two-line diff with the real CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Decide whether the credential is present
+        id: creds
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY is not set; the live test is skipped."
+          fi
+
+      - name: Set up Python
+        if: steps.creds.outputs.present == 'true'
+        # v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Bootstrap Poetry into the project venv
+        if: steps.creds.outputs.present == 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install poetry
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        if: steps.creds.outputs.present == 'true'
+        run: poetry install --with dev
+
+      # Pinned to the version config.example.yaml names in
+      # `engine.expected_version`, so a mismatch warning here means the two
+      # have drifted rather than that npm served something new today.
+      - name: Install the claude CLI
+        if: steps.creds.outputs.present == 'true'
+        run: |
+          npm install -g "@anthropic-ai/claude-code@2.1.274"
+          claude --version
+
+      - name: Run the live engine test
+        if: steps.creds.outputs.present == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: poetry run pytest -m live -q tests/test_cli_engine_live.py

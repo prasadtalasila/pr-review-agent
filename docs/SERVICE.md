@@ -139,8 +139,10 @@ One line, no quotes, no `export`:
 GITHUB_TOKEN=github_pat_...
 ```
 
-A fine-grained PAT with read and write on pull requests for the one
-repository in `config.yaml` — see [TOKENS.md](TOKENS.md). It is passed to the daemon by
+A fine-grained PAT scoped to the one repository in `config.yaml`, granting
+**Pull requests: read and write**, **Issues: read and write** and
+**Metadata: read** — and nothing else; [TOKENS.md](TOKENS.md) says which call
+needs which. It is passed to the daemon by
 `EnvironmentFile=` and never by `ExecStart=`, so it does not appear in
 `ps`, in `systemctl show` or in `systemctl cat`.
 

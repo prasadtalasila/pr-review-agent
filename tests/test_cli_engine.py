@@ -397,6 +397,49 @@ async def test_a_usage_limit_in_the_envelope_carries_its_usage(tmp_path, run):
     assert raised.value.usage.confidence is UsageConfidence.EXACT
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #61: the markers are matched against json.dumps(envelope), "
+    "which includes the findings, so a review that *reports* a usage limit "
+    "is mistaken for one that *hit* one. Unfixed on this branch; this test "
+    "is the sequence, and it flips to a pass when the match is narrowed to "
+    "the CLI's own error fields.",
+)
+async def test_a_finding_that_quotes_a_usage_limit_is_not_a_usage_limit(tmp_path, run):
+    """A successful review whose prose happens to contain the marker.
+
+    Reviewing this repository is enough to produce one: the phrase is in
+    `engine/claude.py`, in `docs/BUDGET.md` and in this very file. The cost
+    is not a mis-parse -- it trips the breaker, so the agent stops reviewing
+    anything at all until the window rolls, on the strength of text that came
+    out of the model rather than out of the CLI.
+    """
+    finding = {
+        "path": "src/pr_review_agent/engine/claude.py",
+        "line": 60,
+        "severity": "minor",
+        "title": "The marker 'usage limit reached' is matched too broadly.",
+        "body": "Anything quoting it is treated as a limit.",
+    }
+    run(Recorder(envelope(structured_output={"findings": [finding]})))
+
+    result = await engine().review(request(tmp_path))
+
+    assert result.outcome is Outcome.COMPLETED
+    assert len(result.findings) == 1
+
+
+async def test_a_genuine_mid_run_limit_is_still_caught(tmp_path, run):
+    """The other side: narrowing the match must not lose the real case.
+
+    Passes today, and has to keep passing -- a fix that simply stopped
+    looking at the envelope would silence a limit the CLI really did hit.
+    """
+    run(Recorder(envelope(subtype="error_during_execution", error="rate_limit_error")))
+    with pytest.raises(UsageLimited):
+        await engine().review(request(tmp_path))
+
+
 async def test_an_unrelated_failure_is_still_a_protocol_error(tmp_path, run):
     """The breaker refuses work, so a false trip costs more than a retry."""
     run(Recorder("", stderr="segmentation fault", returncode=139))

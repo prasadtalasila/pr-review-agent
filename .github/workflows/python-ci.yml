@@ -97,11 +97,15 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev
 
+      # `src tests scripts` rather than `.`: the gate should name what it
+      # covers. A bare `.` also drags in whatever untracked Python a working
+      # copy happens to hold, and would silently adopt any future committed
+      # helper outside these three directories without anyone deciding to.
       - name: Check formatting
-        run: poetry run ruff format --check .
+        run: poetry run ruff format --check src tests scripts
 
       - name: Run ruff
-        run: poetry run ruff check .
+        run: poetry run ruff check src tests scripts
 
       - name: Run pylint on src (min score 9.0)
         run: poetry run pylint src --rcfile=.pylintrc --fail-under=9.0

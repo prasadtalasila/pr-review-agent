@@ -102,6 +102,13 @@ async def _check_write_scope(
     An absent ``permissions`` object warns rather than fails. A fine-grained
     token need not report one, and refusing to start over a field GitHub
     chose not to send would make the check worse than no check.
+
+    ``push`` is a *coarser* question than the one docs/TOKENS.md answers: it
+    is contents-write on a classic token and GitHub's own best-effort mapping
+    on a fine-grained one, whereas what the publisher actually needs is
+    Pull requests and Issues at write. No read-only call can settle that --
+    only posting can -- so this catches a token that is obviously read-only
+    and names what to grant, rather than certifying one that is correct.
     """
     name = "github write scope"
     try:
@@ -117,7 +124,11 @@ async def _check_write_scope(
         )
     if not permissions["push"]:
         return CheckResult(
-            name, False, "the token has no write access; the publisher cannot post"
+            name,
+            False,
+            "the token has no write access; the publisher cannot post. Grant "
+            "Pull requests: read and write, Issues: read and write, and "
+            "Metadata: read (see docs/TOKENS.md)",
         )
     return CheckResult(name, True, "the token may post comments")
 

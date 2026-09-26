@@ -1,6 +1,6 @@
 [project]
 name = "pr-review-agent"
-version = "1.1.0"
+version = "1.1.2"
 description = "Locally-hosted LLM-based PR review agent with enforced usage budgets"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -80,6 +80,12 @@ asyncio_mode = "auto"
 # deselected by default and never runs in CI. `-m live` opts in.
 addopts = ["-m", "not live"]
 markers = ["live: runs a real engine binary and spends tokens; opt in with -m live"]
+# A RuntimeWarning in an async suite is almost always a real defect in the
+# test -- a coroutine or an async generator that was created and never
+# awaited, which means the code under test did not run and the assertions
+# below it proved nothing. One of those sat in the suite for months, visible
+# on every run and acted on by nobody, so it is an error now.
+filterwarnings = ["error::RuntimeWarning"]
 
 [tool.coverage.run]
 source = ["src/pr_review_agent"]
@@ -88,6 +94,13 @@ branch = true
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+# Ruff's default exclusions cover build output and VCS directories, not the
+# tool caches and scratch checkouts that accumulate in a working copy. Without
+# these, `ruff check .` in a tree that happens to hold an agent's own
+# `.claude/` reports thousands of errors from code this project does not own,
+# and `ruff format --check .` would reformat it. CI names `src tests scripts`
+# explicitly for the same reason; this keeps a bare `ruff check .` honest too.
+extend-exclude = [".claude", "docker/.claude", "site", "dist"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

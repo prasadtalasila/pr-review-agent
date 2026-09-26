@@ -360,13 +360,28 @@ async def test_a_force_pushed_base_branch_still_fetches(workspace, git_remote):
 # -- the startup sweep ---------------------------------------------------
 
 
-async def test_the_sweep_clears_what_a_crash_left_behind(workspace, git_remote):
-    # Enter the context manager and never exit it: that is what a crash
-    # between `worktree add` and teardown leaves on disk.
-    manager = workspace.checkout(facts(git_remote), **CAPS)
-    checkout = await manager.__aenter__()
+async def test_the_sweep_clears_what_a_crash_left_behind(
+    workspace, git_remote, monkeypatch
+):
+    """A crash between `worktree add` and teardown, without leaking a generator.
+
+    The crash to model is "the process died, so the `finally` never ran", and
+    the obvious way to write it -- `__aenter__` with no matching `__aexit__` --
+    models it by leaking the async generator, which the interpreter then
+    complains about (`coroutine method 'aclose' ... was never awaited`) on
+    every run of the suite. Suppressing the teardown instead leaves the same
+    worktree and the same run ref on disk, which is all the sweep can see.
+    """
+
+    async def never_runs(run_path, ref):
+        del run_path, ref
+
+    async with workspace.checkout(facts(git_remote), **CAPS) as checkout:
+        monkeypatch.setattr(workspace, "_teardown", never_runs)
+        assert checkout.path.exists()
+        assert await workspace.run_refs() != []
+
     assert checkout.path.exists()
-    assert await workspace.run_refs() != []
 
     await workspace.sweep()
 

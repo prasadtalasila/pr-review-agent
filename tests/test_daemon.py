@@ -368,6 +368,56 @@ async def test_the_open_pull_request_set_survives_a_304(tmp_path):
     assert (await daemon.run_once()).enqueued == 1
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #69: the open set is in memory and the /pulls ETag is in "
+    "SQLite, so a restart meets a 304 with an empty set and the filter is "
+    "off. Unfixed on this branch; this test is the sequence, and it flips "
+    "to a pass once the set is persisted or a 304 re-reads it.",
+)
+async def test_the_open_set_survives_a_restart_not_only_a_304(tmp_path):
+    """The 304 above, but across a process boundary rather than within one.
+
+    `test_the_open_pull_request_set_survives_a_304` keeps the set because the
+    same `Daemon` object is still holding it. A restart is the ordinary case
+    -- a deploy, a `systemctl restart`, a crash -- and there the ETag is in
+    SQLite while the set was only ever in memory: the first `/pulls` answer
+    is a 304, `open_pull_requests` stays `None`, and the filter is off until
+    some open pull request happens to change, which on a quiet repository is
+    days. Every mention on every long-closed pull request is reviewed and
+    paid for in the meantime.
+    """
+    store = SqliteStore(tmp_path / "state.db")
+    cycles = iter(
+        [
+            # The first process learns that 3 is the one open pull request,
+            # and stores the ETag for that answer.
+            responder(pulls=[pr_item(3, OLD)]),
+            # The second process sends it back and is told: unchanged. The
+            # comment names 12, closed weeks ago.
+            responder(issue_comments=[issue_comment(11, RECENT)]),
+        ]
+    )
+    handler = next(cycles)
+
+    def dispatch(request):
+        return handler(request)
+
+    first = make_daemon(tmp_path, dispatch, store=store)
+    first.store.advance_watermark(PULLS_WM, OLD)
+    first.store.advance_watermark(COMMENTS_WM, OLD)
+    await first.run_once()
+
+    handler = next(cycles)
+    restarted = make_daemon(tmp_path, dispatch, store=store)
+    assert restarted.open_pull_requests is None
+
+    summary = await restarted.run_once()
+
+    assert summary.enqueued == 0
+    assert queued(restarted) == 0
+
+
 async def test_a_failing_enqueue_leaves_the_watermark_unmoved(tmp_path):
     # Enqueue happens before the watermark advances, so a crash in between
     # costs one re-classification rather than a lost trigger.

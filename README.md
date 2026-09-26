@@ -31,7 +31,9 @@ pr-review-agent config generate      # writes ./config.yaml
 # update config; `config generate --full` writes the commented template
 pr-review-agent config validate
 
-# get GitHub PAT with read and write permissions on pull requests
+# get a fine-grained GitHub PAT, scoped to the one repository, granting
+# Pull requests: read/write, Issues: read/write, Metadata: read
+# (docs/TOKENS.md explains why each is needed)
 GITHUB_TOKEN=xxxx pr-review-agent host check            # can this host reach it all?
 GITHUB_TOKEN=xxxx pr-review-agent daemon start          # reads ./config.yaml
 GITHUB_TOKEN=xxxx pr-review-agent daemon start --config /etc/pr-review-agent/config.yaml
