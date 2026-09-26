@@ -1,6 +1,7 @@
 """Bootstrap checks: can this host actually reach what the daemon needs?"""
 
 import sys
+from pathlib import Path
 
 import httpx
 import pytest
@@ -250,8 +251,12 @@ def test_a_name_on_path_reports_where_it_resolved(tmp_path):
     """Found is not the answer: which file runs is."""
     result = binaries(tmp_path)["git binary"]
     assert result.ok
-    assert "through PATH" in result.detail
-    assert "/git" in result.detail
+    assert result.detail.startswith("'git' -> ")
+    assert result.detail.endswith("(through PATH)")
+    # The point of the line: an absolute path, whatever this platform
+    # spells one as.
+    resolved = result.detail[len("'git' -> ") : -len(" (through PATH)")]
+    assert Path(resolved).is_absolute()
 
 
 def test_an_absolute_path_is_reported_as_configured(tmp_path):

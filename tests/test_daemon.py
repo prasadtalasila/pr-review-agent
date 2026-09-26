@@ -726,8 +726,12 @@ def test_a_relative_engine_binary_warns(caplog):
     assert "resolves through PATH" in caplog.text
 
 
-def test_an_absolute_engine_binary_does_not_warn(caplog):
-    config = replace(CONFIG, engine=replace(CONFIG.engine, binary="/opt/claude"))
+def test_an_absolute_engine_binary_does_not_warn(caplog, tmp_path):
+    # tmp_path rather than a literal: "/opt/claude" is not an absolute path
+    # on Windows, where the suite also runs.
+    config = replace(
+        CONFIG, engine=replace(CONFIG.engine, binary=str(tmp_path / "claude"))
+    )
     with caplog.at_level(logging.WARNING):
         build_engine(config)
     assert "resolves through PATH" not in caplog.text
