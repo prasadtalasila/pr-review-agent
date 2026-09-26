@@ -908,9 +908,7 @@ def test_sighup_still_reloads_the_limits_when_the_role_is_pinned(tmp_path):
         tmp_path, config_yaml(authority="true", weekly="1500000")
     )
 
-    path.write_text(
-        config_yaml(authority="false", weekly="1200000"), encoding="utf-8"
-    )
+    path.write_text(config_yaml(authority="false", weekly="1200000"), encoding="utf-8")
     daemon.reload_config()
 
     assert daemon.config.budget.authority is True
