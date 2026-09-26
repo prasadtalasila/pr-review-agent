@@ -16,7 +16,7 @@ import yaml
 from click.testing import CliRunner
 
 from pr_review_agent import bootstrap
-from pr_review_agent._startup import TOKEN_ENV
+from pr_review_agent._startup import PLACEHOLDER_REPO, TOKEN_ENV
 from pr_review_agent.bootstrap import CheckResult
 from pr_review_agent.cli import cli
 from pr_review_agent.cli._common import EXIT_STARTUP
@@ -164,7 +164,30 @@ def test_the_generated_config_loads(run, tmp_path):
     """The regression test for the bug this release exists to fix."""
     assert run("config", "generate").exit_code == 0
     config = Config.load(tmp_path / "config.yaml")
-    assert config.github.repo == "prasadtalasila/pr-review-agent"
+    assert config.github.repo == PLACEHOLDER_REPO
+
+
+def test_the_generated_config_does_not_validate_until_the_repo_is_set(run, tmp_path):
+    """Generated and unedited must not be runnable: it names nobody's repository."""
+    assert run("config", "generate").exit_code == 0
+    result = run("config", "validate")
+    assert result.exit_code == EXIT_STARTUP
+    assert "placeholder" in result.output
+
+
+def test_a_generated_config_with_a_real_repo_warns_about_the_empty_allowlist(
+    run, tmp_path
+):
+    """Valid, and useless until somebody is trusted -- so it says so."""
+    assert run("config", "generate").exit_code == 0
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(PLACEHOLDER_REPO, "o/r"),
+        encoding="utf-8",
+    )
+    result = run("config", "validate")
+    assert result.exit_code == 0
+    assert "the allowlist is empty" in result.output
 
 
 def test_the_generated_full_config_loads(run, tmp_path):

@@ -33,7 +33,11 @@
 github:
   # REQUIRED. The repository to poll. Reviews are posted here. Exactly one
   # "/", both halves non-empty.
-  repo: prasadtalasila/pr-review-agent
+  #
+  # `owner/name` is a placeholder, and the literal string is REFUSED at
+  # startup: a template that runs as shipped is a template that reviews
+  # somebody else's repository under your token.
+  repo: owner/name
 
   # There was an agent_user_id here, naming the account the agent posts as.
   # It is gone, and a file that still carries it is refused by name. The
@@ -54,14 +58,12 @@ triggers:
   #
   #     curl -s https://api.github.com/users/<login> | grep '"id"'
   #
-  # An empty list is valid and allows nobody. It is the safe starting state.
-  allowlist:
-    - 114395272  # 8ohamed (Mohamed Abdulkarim)
-    # prasadtalasila. This is also the account the agent posts as on this
-    # deployment, which is no longer a contradiction: nothing keys on the
-    # agent's identity, so this entry is what decides whether these events
-    # start a review -- and it is the only thing that decides it.
-    - 9206466
+  # An empty list is valid and allows nobody. It is the safe starting state,
+  # and it is what ships: a shipped id is an account somebody else's
+  # deployment would be summoning paid reviews from. Startup logs a WARNING
+  # while the list is empty, because "the agent never answers" and "the
+  # allowlist is empty" look identical from the outside.
+  allowlist: []
 
   # Optional (default "claude"). The handle that summons a review:
   # "@claude review this". A leading "@" is stripped. This is what makes the

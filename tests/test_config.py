@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from pr_review_agent._startup import PLACEHOLDER_REPO, StartupError, load_config
 from pr_review_agent.config import (
     DEFAULT_EXCLUDED_PATHS,
     MAX_WORKERS,
@@ -190,8 +191,8 @@ def test_shipped_example_config_is_valid():
 
     example = Path(__file__).parent.parent / "config.example.yaml"
     config = Config.load(example)
-    assert config.github.repo == "prasadtalasila/pr-review-agent"
-    assert config.triggers.allowlist.allows(Actor(114395272, "8ohamed"))
+    assert config.github.repo == PLACEHOLDER_REPO
+    assert not config.triggers.allowlist.user_ids
 
 
 def test_store_path_defaults_when_the_section_is_absent():
@@ -618,8 +619,23 @@ def test_the_minimal_example_loads():
     documentation and the loader drifting apart again.
     """
     config = Config.load(EXAMPLES / "config.minimal.example.yaml")
-    assert config.github.repo == "prasadtalasila/pr-review-agent"
+    assert config.github.repo == PLACEHOLDER_REPO
     assert config.budget.enabled is True
+
+
+@pytest.mark.parametrize("name", ["config.minimal.example.yaml", "config.example.yaml"])
+def test_a_shipped_example_names_no_real_account(name):
+    """A shipped id is an account somebody else's deployment would trust."""
+    config = Config.load(EXAMPLES / name)
+    assert config.github.repo == PLACEHOLDER_REPO
+    assert config.triggers.allowlist.user_ids == frozenset()
+
+
+@pytest.mark.parametrize("name", ["config.minimal.example.yaml", "config.example.yaml"])
+def test_a_shipped_example_is_parseable_but_not_runnable(name):
+    """The loader accepts the placeholder; every command that acts refuses it."""
+    with pytest.raises(StartupError, match="placeholder"):
+        load_config(str(EXAMPLES / name))
 
 
 def test_the_minimal_example_carries_only_required_keys():
