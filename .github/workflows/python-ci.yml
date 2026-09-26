@@ -200,11 +200,23 @@ jobs:
           mkdir -p /tmp/wheel-run
           cd /tmp/wheel-run
           /tmp/wheel-check/bin/pr-review-agent config generate
-          /tmp/wheel-check/bin/pr-review-agent config validate
-          /tmp/wheel-check/bin/pr-review-agent config generate --full --force
+
+          # A generated config must NOT be runnable: it names `owner/name`,
+          # and a template that runs as shipped is a template that polls and
+          # posts against somebody else's repository. Exit 3 is the contract.
+          if /tmp/wheel-check/bin/pr-review-agent config validate; then
+            echo "::error::The shipped template validates unedited."
+            exit 1
+          fi
+
+          sed -i 's|owner/name|example/repo|' config.yaml
           /tmp/wheel-check/bin/pr-review-agent config validate
 
-          echo "OK: the installed wheel generates and validates a config."
+          /tmp/wheel-check/bin/pr-review-agent config generate --full --force
+          sed -i 's|owner/name|example/repo|' config.yaml
+          /tmp/wheel-check/bin/pr-review-agent config validate
+
+          echo "OK: the installed wheel ships a template that must be edited."
 
       # Same failure mode one file over: the unit is data, so only a real
       # install proves `service install` can read it. XDG_* keeps it out of
