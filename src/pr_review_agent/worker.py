@@ -70,7 +70,7 @@ from .engine import (
 from .numbering import assign
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
-from .poller.pulls import fetch_pull_request_facts
+from .poller.pulls import PullRequestClosed, fetch_pull_request_facts
 from .publisher import Publisher, PublishOutcome
 from .queue import Claim, ReviewQueue
 from .runs import RecordedRun, RunStore
@@ -310,6 +310,14 @@ class ReviewWorker:
             )
         # PullRequestTooLarge subclasses WorkspaceError, so it is caught
         # first or it would be retried.
+        except PullRequestClosed as closed:
+            # Deterministic and cheap to detect: nothing was checked out and
+            # no engine was reached, so this costs the reservation and not a
+            # review. Abandoned rather than retried -- a merged pull request
+            # does not reopen because the queue tried again.
+            logger.info("dropping %s: %s", claim.trigger.dedupe_key, closed)
+            reason = StopReason.REFUSED
+            finish = self.queue.abandon
         except (PullRequestTooLarge, PayloadError):
             logger.error(
                 "giving up on %s permanently", claim.trigger.dedupe_key, exc_info=True

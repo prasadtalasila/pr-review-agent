@@ -153,6 +153,12 @@ bugs:
   reaches no engine drains none — so nothing eventually gives up on it. The
   retention sweep is where this stops mattering: a purged run is no longer
   offered for publication.
+
+    The *ordinary* way to reach this gap is closed: a comment a maintainer
+    deleted answers `404`, and the publisher now posts a new one rather than
+    editing an id that is gone forever. What is left is the genuinely
+    unacceptable body — one GitHub rejects on its own terms — which no retry
+    and no fallback can fix.
 - **Review content accumulates in `runs` and nothing purges it yet.**
   `RunStore.purge_content` exists and has no caller; the retention sweep is
   the next component.

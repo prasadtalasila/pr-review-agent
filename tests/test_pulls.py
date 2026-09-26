@@ -5,7 +5,11 @@ import pytest
 
 from pr_review_agent.poller.client import GitHubClient
 from pr_review_agent.poller.endpoints import RepoEndpoints
-from pr_review_agent.poller.pulls import fetch_pull_request_facts, pull_request_facts
+from pr_review_agent.poller.pulls import (
+    PullRequestClosed,
+    fetch_pull_request_facts,
+    pull_request_facts,
+)
 from pr_review_agent.triggers.models import PayloadError
 
 PAYLOAD = {
@@ -15,6 +19,7 @@ PAYLOAD = {
     "additions": 12,
     "deletions": 3,
     "changed_files": 2,
+    "state": "open",
 }
 
 
@@ -83,3 +88,33 @@ async def test_a_collection_response_is_refused():
         await fetch_pull_request_facts(
             make_client(handler), RepoEndpoints(owner="o", name="n"), 7
         )
+
+
+async def test_a_closed_pull_request_is_refused_rather_than_mapped():
+    """Issue #69: the state is read, not only the counts.
+
+    A trigger is enqueued while the pull request is open and claimed later,
+    so by the time a worker reaches it the pull request may have merged.
+    """
+    client = make_client(_answering({**PAYLOAD, "state": "closed"}))
+    with pytest.raises(PullRequestClosed):
+        await fetch_pull_request_facts(client, RepoEndpoints(owner="o", name="n"), 7)
+
+
+async def test_a_payload_with_no_state_at_all_is_refused_too():
+    """Absent reads as not-open, which is the safe direction.
+
+    The alternative -- treating a missing field as open -- would spend the
+    allowance on the strength of something GitHub did not say.
+    """
+    without = {k: v for k, v in PAYLOAD.items() if k != "state"}
+    client = make_client(_answering(without))
+    with pytest.raises(PullRequestClosed):
+        await fetch_pull_request_facts(client, RepoEndpoints(owner="o", name="n"), 7)
+
+
+def _answering(payload: dict):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload, headers={"etag": '"x"'})
+
+    return handler

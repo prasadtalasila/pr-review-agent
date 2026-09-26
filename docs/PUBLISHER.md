@@ -73,6 +73,17 @@ thread of superseded machine opinion they have to scroll past. The history
 is not lost — it lives in `runs` and the ledger, where it can be queried and
 purged.
 
+**A comment somebody deleted is posted again, not edited forever.** The id
+the agent remembers can stop existing — "resolved, tidy the thread" is the
+ordinary way — and GitHub answers `404` to an edit of it. That used to raise:
+the worker handed the row back unattempted and the next claim did exactly the
+same thing, so a paid review stayed permanently invisible and wrote an ERROR
+into the operator's journal every idle period. Now the `404` falls back to a
+new comment and the new id is remembered, so the round after that edits *it*.
+Only a `404` is caught. A 5xx is GitHub being unwell, and the worker's retry
+is the right answer to it; falling back there too would turn one transient
+failure into a duplicate review.
+
 The body names the commit it describes, because an edited comment otherwise
 says nothing about which revision it is about. It also names the round and
 the commit count — "round 3" and "round 1" are different statements, and a

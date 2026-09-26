@@ -282,6 +282,67 @@ async def test_a_clean_re_review_edits_rather_than_duplicates(runs):
     assert [w.method for w in transport.writes] == ["POST", "PATCH"]
 
 
+class DeletedComment(Transport):
+    """Editing the comment we posted before 404s; everything else is normal.
+
+    What a maintainer tidying a thread leaves behind.
+    """
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH":
+            self.requests.append(request)
+            return httpx.Response(404, json={"message": "Not Found"})
+        return super().__call__(request)
+
+
+class UnwellGitHub(Transport):
+    """Editing 500s: the same call failing for a reason that may pass."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH":
+            self.requests.append(request)
+            return httpx.Response(500, text="boom")
+        return super().__call__(request)
+
+
+async def test_a_deleted_comment_is_posted_again_rather_than_edited_forever(runs):
+    """Issue #71: a 404 on the remembered id has a clean recovery.
+
+    The review is already paid for, so posting afresh reaches no engine. What
+    it replaces is a PATCH that could never succeed again, retried on every
+    claim for the life of the pull request.
+    """
+    transport = DeletedComment(comment_id=777)
+    publisher = make_publisher(runs, transport)
+    await publisher.publish(recorded(runs, key="first"))
+    transport._comment_id = 888
+
+    outcome = await publisher.publish(recorded(runs, key="second"))
+
+    assert [w.method for w in transport.writes] == ["POST", "PATCH", "POST"]
+    assert transport.writes[2].url.path == "/repos/o/r/issues/7/comments"
+    assert outcome.outcome is PublishOutcome.PUBLISHED
+    # The new id is remembered, so the next round edits *that* one.
+    assert runs.comment_for_pull_request(REPO, 7) == 888
+
+
+async def test_a_failing_edit_that_is_not_a_404_still_raises(runs):
+    """The boundary: only a deleted comment gets the second POST.
+
+    A 5xx is GitHub being unwell, and the worker's retry is the right answer
+    to it. Falling back here too would turn one transient failure into a
+    duplicate review comment.
+    """
+    transport = UnwellGitHub()
+    publisher = make_publisher(runs, transport)
+    await publisher.publish(recorded(runs, key="first"))
+
+    with pytest.raises(GitHubClientError):
+        await publisher.publish(recorded(runs, key="second"))
+
+    assert [w.method for w in transport.writes] == ["POST", "PATCH"]
+
+
 async def test_publishing_stamps_the_run(runs):
     transport = Transport()
     await make_publisher(runs, transport).publish(recorded(runs))

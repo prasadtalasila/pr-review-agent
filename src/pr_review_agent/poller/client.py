@@ -48,7 +48,18 @@ logger = logging.getLogger(__name__)
 
 class GitHubClientError(RuntimeError):
     """Raised on a non-2xx, non-304 response other than a handled rate limit,
-    or when the transport itself fails (timeout, connection error, ...)."""
+    or when the transport itself fails (timeout, connection error, ...).
+
+    ``status`` is the HTTP status when there was a response and ``None`` when
+    the transport never produced one. It exists so a caller can branch on a
+    status without parsing the message: the publisher has to tell "the
+    comment you remembered is gone" (404) from "GitHub is unwell" (5xx),
+    because the first has a clean recovery and the second is worth retrying.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -125,7 +136,8 @@ class GitHubClient:
             )
         if response.status_code != 200:
             raise GitHubClientError(
-                f"GET {path} -> {response.status_code}: {response.text[:200]}"
+                f"GET {path} -> {response.status_code}: {response.text[:200]}",
+                status=response.status_code,
             )
         try:
             data = response.json()
@@ -161,7 +173,8 @@ class GitHubClient:
         response = await self._send_with_retries(method, path, {}, json=json)
         if response.status_code not in (200, 201):
             raise GitHubClientError(
-                f"{method} {path} -> {response.status_code}: {response.text[:200]}"
+                f"{method} {path} -> {response.status_code}: {response.text[:200]}",
+                status=response.status_code,
             )
         try:
             body = response.json()

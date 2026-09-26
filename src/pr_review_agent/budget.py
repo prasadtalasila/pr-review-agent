@@ -182,7 +182,9 @@ class StopReason(StrEnum):
     #: Kept apart from ``ENGINE_ERROR`` because the operator action differs:
     #: this one is the host's configuration, that one is the tool.
     ENGINE_UNAVAILABLE = "engine_unavailable"
-    #: The pre-flight estimate refused the run. Settles at zero: no engine
+    #: The run was refused before an engine was reached -- by the pre-flight
+    #: estimate, or because the pull request had closed between the trigger
+    #: being enqueued and the row being claimed. Settles at zero: no engine
     #: ran, so nothing was spent.
     REFUSED = "refused"
     #: GitHub or the workspace failed before the engine started.
@@ -190,6 +192,14 @@ class StopReason(StrEnum):
     #: The *account's* limit was reached, not this run's ceiling. The one
     #: reason that trips the circuit breaker rather than being retried.
     USAGE_LIMIT = "usage_limit"
+    #: The worker holding this reservation never came back to settle it, and
+    #: the row it held has since been re-claimed. Settled at the full
+    #: reservation because a crashed run may have spent anything up to its
+    #: ceiling and nothing measured it -- the same conservative direction as
+    #: a killed run. Its own reason rather than ``FAILED`` because the
+    #: operator action differs: a run of these is a worker crashing, not an
+    #: engine misbehaving, and ``GROUP BY stop_reason`` should say so.
+    LOST = "lost"
 
 
 @dataclass(frozen=True)
@@ -277,6 +287,29 @@ _RESERVE = """
 INSERT INTO ledger
     (dedupe_key, owner, actor_id, mode, reserved_tokens, reserved_at)
 VALUES (:key, :owner, :actor, :mode, :tokens, :now)
+"""
+
+# Close any reservation still open for this trigger before writing the new
+# one. Admission runs inside the claim transaction, and the queue gives one
+# live lease per row, so an open row here belongs to an attempt that is over:
+# a worker that crashed, or one whose lease lapsed. Leaving it open is issue
+# #70 -- `_SETTLE` would match two rows, `settle` would see `rowcount == 2`
+# and return False, and the worker would discard a review the account has
+# already been billed for.
+#
+# Guarded on the trigger alone rather than on `(trigger, owner)` because the
+# question is about the *row*, not about who held it: `supervise` restarts a
+# crashed worker under its original owner, so the duplicate usually shares
+# one, and a worker that died for good leaves one that does not.
+#
+# At the full reservation, which changes no window: `_USED_SINCE` already
+# counts an open row at `reserved_tokens`, so this makes the charge explicit
+# without making it larger.
+_LOSE_OPEN = """
+UPDATE ledger
+SET used_tokens = reserved_tokens, usage_confidence = :confidence,
+    stop_reason = :reason, settled_at = :now
+WHERE dedupe_key = :key AND settled_at IS NULL
 """
 
 # An unsettled row counts its whole reservation, which is what stops a second
@@ -403,6 +436,22 @@ class Governor:
         )
         if not self._allows(headroom, claim, config):
             return False
+        lost = conn.execute(
+            _LOSE_OPEN,
+            {
+                "key": claim.trigger.dedupe_key,
+                "confidence": str(UsageConfidence.UNAVAILABLE),
+                "reason": str(StopReason.LOST),
+                "now": _stamp(now),
+            },
+        ).rowcount
+        if lost:
+            logger.warning(
+                "settling %d abandoned reservation(s) for %s at the full "
+                "ceiling: the worker that held it never came back",
+                lost,
+                claim.trigger.dedupe_key,
+            )
         conn.execute(
             _RESERVE,
             {

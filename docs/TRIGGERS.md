@@ -106,6 +106,16 @@ because that leg answers `304` whenever nothing changed, and a `304` means
 filter is off — failing open costs a few `DEBUG` lines, whereas failing closed
 would silently drop every mention.
 
+**A restart forgets the `/pulls` ETag on purpose.** The set is process state
+and the ETag is on disk, so a daemon that simply started again would send the
+ETag it stored, be told `304` — correctly — and keep an empty set: the filter
+off, for as long as it took some open pull request to change, which on a quiet
+repository is days. Startup therefore discards that one ETag, so the first
+sweep after a restart is a full read. It costs one unconditional request per
+process start out of a budget measured in thousands per hour, and it is the
+only ETag discarded: the two comment legs are the ones that return a hundred
+items, and neither of them is read as a set.
+
 Both legs belong to one sweep and the pulls leg is classified first, so a
 comment on a pull request opened in that very cycle is still matched. The
 trade-off worth stating: **a mention posted on a pull request that closes

@@ -6,6 +6,7 @@ are those bounds.
 """
 
 import itertools
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -829,14 +830,6 @@ def test_a_governor_that_does_not_comply_ignores_the_policy(store):
 # -- reservation identity across a restart (issue #70) --------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #70: a reservation is identified by (dedupe_key, owner) "
-    "and nothing stops a second one existing, so the same worker re-claiming "
-    "after a crash writes a duplicate and `settle` matches two rows. Unfixed "
-    "on this branch; this test is the sequence, and it flips to a pass once "
-    "the identity is unique per admission.",
-)
 def test_a_paid_review_settles_after_the_same_worker_re_claims_the_row(store):
     """The crash-and-retake sequence, which costs a review that was paid for.
 
@@ -873,27 +866,76 @@ def test_a_paid_review_settles_after_the_same_worker_re_claims_the_row(store):
     assert settled is True
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #70: the second admission reserves the ceiling again, so "
-    "one pull request holds it twice. Unfixed on this branch.",
-)
-def test_the_same_worker_re_claiming_leaves_one_reservation_not_two(store):
+def test_each_attempt_leaves_exactly_one_settled_ledger_row(store):
     """The condition underneath it, stated on its own.
 
-    Kept separate so that a fix which merely made `settle` tolerant of two
-    rows -- rather than stopping the second being written -- still shows up
-    here as the double hold on the allowance that it is. Today the same pull
-    request holds 2 000 tokens of a 28 000-token weekly share while one
-    review runs.
+    Two attempts genuinely ran, and the first may have spent anything up to
+    its ceiling before it died, so two rows is the honest record -- what was
+    wrong was leaving the first one *open*. After the fix the abandoned row
+    is settled at the ceiling it was already being counted at, with
+    `StopReason.LOST` naming what happened, and exactly one row is open at a
+    time.
+
+    Kept separate from the sequence above so that a fix which merely made
+    `settle` tolerant of two open rows -- rather than closing the stale one
+    -- still fails here.
     """
     governor = Governor(store, budget(weekly_tokens=70_000, session_tokens=70_000))
     queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(pr=1), now=NOON)
     queue.claim(now=NOON, owner="w", admit=governor.admit)
-    held_after_one = governor.headroom(NOON).remaining
+    assert _open_rows(store) == 1
 
     later = NOON + DEFAULT_LEASE + timedelta(minutes=1)
-    queue.claim(now=later, owner="w", admit=governor.admit)
+    claim = queue.claim(now=later, owner="w", admit=governor.admit)
+    assert claim is not None
 
-    assert governor.headroom(later).remaining == held_after_one
+    # The abandoned row is closed and named; the new one is open and has
+    # no reason yet, because nothing has happened to it.
+    assert _open_rows(store) == 1
+    assert _stop_reasons(store) == [str(StopReason.LOST), None]
+
+    assert governor.settle(
+        claim,
+        Usage(250, UsageConfidence.EXACT, engine="claude_cli", model="claude-opus-5"),
+        now=later,
+        stop_reason=StopReason.COMPLETED,
+    )
+    assert _open_rows(store) == 0
+    assert _stop_reasons(store) == [str(StopReason.LOST), str(StopReason.COMPLETED)]
+
+
+def test_a_second_open_reservation_for_one_trigger_is_refused_by_the_schema(store):
+    """The invariant is the database's, not only the code's.
+
+    `admit` closes the stale row before inserting, so nothing in the agent
+    reaches this. The index is what makes that a guarantee rather than a
+    convention -- a future path that forgets fails loudly here instead of
+    silently discarding a paid review.
+    """
+    governor = Governor(store, budget(weekly_tokens=70_000, session_tokens=70_000))
+    queue = ReviewQueue(store, repo=REPO)
+    queue.enqueue(opened(pr=1), now=NOON)
+    queue.claim(now=NOON, owner="w", admit=governor.admit)
+
+    with pytest.raises(sqlite3.IntegrityError), store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
+            "reserved_tokens, reserved_at) "
+            "VALUES (:key, 'other', 1, 'full', 1000, :now)",
+            {"key": opened(pr=1).dedupe_key, "now": NOON.isoformat()},
+        )
+
+
+def _open_rows(store) -> int:
+    with store.transaction() as conn:
+        return conn.execute(
+            "SELECT count(*) FROM ledger WHERE settled_at IS NULL"
+        ).fetchone()[0]
+
+
+def _stop_reasons(store) -> list[str]:
+    with store.transaction() as conn:
+        return [
+            row[0] for row in conn.execute("SELECT stop_reason FROM ledger ORDER BY id")
+        ]

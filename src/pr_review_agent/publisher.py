@@ -206,14 +206,7 @@ class Publisher:
             return self._stamp(run, comment_id=None, outcome=PublishOutcome.DRY_RUN)
 
         existing = self.runs.comment_for_pull_request(run.repo, run.pr_number)
-        if existing is None:
-            posted = await self.client.post(
-                self.endpoints.issue_comments(run.pr_number), {"body": body}
-            )
-        else:
-            posted = await self.client.patch(
-                self.endpoints.issue_comment(existing), {"body": body}
-            )
+        posted = await self._post_or_edit(run, existing, body)
         comment_id = int(posted["id"])
         logger.info(
             "published %s on %s#%d as comment %d",
@@ -224,6 +217,43 @@ class Publisher:
             extra={"repo": run.repo, "pr": run.pr_number, "comment": comment_id},
         )
         return self._stamp(run, comment_id=comment_id)
+
+    async def _post_or_edit(
+        self, run: RecordedRun, existing: int | None, body: str
+    ) -> dict:
+        """Edit the comment this pull request already has, or post a new one.
+
+        A remembered id that GitHub answers 404 for is a comment somebody
+        deleted -- "resolved, tidy the thread" is the ordinary way to get
+        one -- and editing it can never succeed again. Before this fell back,
+        the write raised, the worker handed the row back unattempted, and the
+        next claim did exactly the same thing: a paid review that was never
+        visible and an ERROR in the log every idle period (issue #71).
+
+        Posting afresh is the recovery, and it costs nothing: the review is
+        already paid for, so this reaches no engine. Only a 404 is caught. A
+        5xx is GitHub being unwell and the retry is right for it; catching
+        that too would turn one transient failure into a second comment.
+        """
+        if existing is None:
+            return await self.client.post(
+                self.endpoints.issue_comments(run.pr_number), {"body": body}
+            )
+        try:
+            return await self.client.patch(
+                self.endpoints.issue_comment(existing), {"body": body}
+            )
+        except GitHubClientError as exc:
+            if exc.status != 404:
+                raise
+            # One line, because the exemption in tests/test_logs.py is keyed
+            # on a message the checker can see beside its `logger.` call. The
+            # repository and pull request are on the "published ..." line
+            # this is immediately followed by.
+            logger.warning("comment %d is gone; posting the review again", existing)
+        return await self.client.post(
+            self.endpoints.issue_comments(run.pr_number), {"body": body}
+        )
 
     async def _live_pull(self, pr_number: int) -> tuple[str, int]:
         """The head and commit count this pull request has *now*.

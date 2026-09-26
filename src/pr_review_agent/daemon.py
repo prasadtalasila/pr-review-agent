@@ -195,6 +195,24 @@ class Daemon:
             fresh.publish.dry_run,
         )
 
+    def refresh_open_pull_requests(self) -> None:
+        """Forget the stored ``/pulls`` ETag, so the first poll is a full read.
+
+        ``open_pull_requests`` is process state and the ETag is on disk, and
+        that mismatch was issue #69: a restarted daemon sends the ETag it
+        stored, is correctly told *unchanged*, and keeps an empty set -- so
+        the closed-pull-request filter is off, and every mention on every
+        long-closed pull request is reviewed and paid for until some open one
+        happens to change. On a quiet repository that is days.
+
+        Forgetting the ETag rather than persisting the set keeps one source
+        of truth: the set is derived from the payload, and a derived value
+        stored beside its source is a second thing to keep in step. The cost
+        is one unconditional request per process start, against a budget
+        measured in thousands per hour.
+        """
+        self.poller.etags.set(self.poller.endpoints.path(Endpoint.OPEN_PULLS), None)
+
     def seed_watermarks(self, *, now: datetime) -> None:
         """Bound a fresh database to ``now`` before the first poll.
 
@@ -546,6 +564,7 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
             )
             _install_signal_handlers(stop, daemon.reload_config)
             daemon.seed_watermarks(now=datetime.now(timezone.utc))
+            daemon.refresh_open_pull_requests()
             # Startup is the only safe moment to clear what a crashed run
             # left behind: no git of ours is running yet.
             await workspace.sweep()

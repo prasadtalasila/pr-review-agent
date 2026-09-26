@@ -139,6 +139,9 @@ CREATE TABLE ledger (
     reviewed_lines   INTEGER,         -- what the estimate is fitted against
     stop_reason      TEXT             -- why the run ended; NULL until settled
 );
+-- One open reservation per trigger. Partial, so a trigger may be admitted
+-- again once its previous run has settled -- which is the ordinary case.
+CREATE UNIQUE INDEX ledger_open ON ledger (dedupe_key) WHERE settled_at IS NULL;
 CREATE TABLE runs (
     dedupe_key        TEXT PRIMARY KEY, -- the queue row and ledger rows it joins
     repo              TEXT NOT NULL,
@@ -217,11 +220,16 @@ enter the fit.
 `usage_confidence`'s how far its recorded cost can be trusted. Without it a
 run killed on the wall clock and one whose envelope would not parse are the
 same row: both `unavailable`, both charged the full reservation, and nothing
-to say which control bound the run. One of seven values — `completed`,
-`truncated`, `failed`, `timeout`, `engine_error`, `refused`,
-`infrastructure` — rather than free text, because it is read by an operator
-and, later, by the circuit breaker, and `GROUP BY stop_reason` has to mean
-something. Rows written before the column existed keep a NULL: nothing
+to say which control bound the run. One of ten values — `completed`,
+`truncated`, `failed`, `timeout`, `engine_error`, `engine_unavailable`,
+`refused`, `infrastructure`, `usage_limit` and `lost` — rather than free
+text, because it is read by an operator and, later, by the circuit breaker,
+and `GROUP BY stop_reason` has to mean something.
+
+`lost` is the one nothing reports about itself: it is written *for* a
+reservation whose worker never came back, by the next admission of the same
+trigger. A run of them is a worker crashing, which is why it is not folded
+into `failed`. Rows written before the column existed keep a NULL: nothing
 recorded why they stopped, and inventing a reason would put fiction in the
 one table that is never pruned.
 
@@ -235,7 +243,10 @@ budget window; version 5 adds `ledger.reviewed_lines`; version 6 adds
 `ledger.stop_reason`; version 7 adds `queue.comment_id` and
 `queue.comment_source`, which is what lets the publisher acknowledge the
 comment a mention was written in; version 8 adds `runs`; version 9 adds
-`budget_state`; version 10 adds `budget_policy`.
+`budget_state`; version 10 adds `budget_policy`; version 11 adds the
+`ledger_open` unique index, closing any duplicate open reservations already
+on disk first — a database written by the code that allowed them would
+otherwise fail the `CREATE UNIQUE INDEX` and be unopenable.
 
 **Each migration and its version bump commit together**, in one transaction.
 That is what lets versions 5, 6 and 7 be `ALTER TABLE ADD COLUMN`, which

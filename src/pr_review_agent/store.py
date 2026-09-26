@@ -167,6 +167,30 @@ _MIGRATIONS: tuple[str, ...] = (
         written_at     TEXT NOT NULL
     );
     """,
+    # One open reservation per trigger, enforced rather than assumed (issue
+    # #70). A worker that crashed left its row open, the queue re-offered
+    # the trigger after the lease lapsed, and the second admission wrote a
+    # second open row with the same key -- after which `settle` matched both,
+    # reported `rowcount == 2`, and the worker discarded a review that had
+    # already been paid for.
+    #
+    # The UPDATE comes first because a database written by the buggy code
+    # may already hold duplicates, and `CREATE UNIQUE INDEX` over them would
+    # fail and wedge startup. It keeps the newest open row per trigger --
+    # the attempt that may still be running -- and settles the older ones at
+    # the ceiling they were already being counted at, so no window moves.
+    """
+    UPDATE ledger
+    SET used_tokens = COALESCE(used_tokens, reserved_tokens),
+        usage_confidence = COALESCE(usage_confidence, 'unavailable'),
+        stop_reason = COALESCE(stop_reason, 'lost'),
+        settled_at = COALESCE(settled_at, reserved_at)
+    WHERE settled_at IS NULL AND id NOT IN (
+        SELECT MAX(id) FROM ledger WHERE settled_at IS NULL GROUP BY dedupe_key
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ledger_open
+        ON ledger (dedupe_key) WHERE settled_at IS NULL;
+    """,
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

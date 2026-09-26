@@ -24,7 +24,7 @@ from pr_review_agent.daemon import (
 )
 from pr_review_agent.engine.claude import ClaudeCliEngine
 from pr_review_agent.poller.client import GitHubClient
-from pr_review_agent.poller.endpoints import RepoEndpoints
+from pr_review_agent.poller.endpoints import Endpoint, RepoEndpoints
 from pr_review_agent.poller.interval import AdaptiveInterval
 from pr_review_agent.poller.poller import Poller
 from pr_review_agent.publisher import Publisher
@@ -368,13 +368,6 @@ async def test_the_open_pull_request_set_survives_a_304(tmp_path):
     assert (await daemon.run_once()).enqueued == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #69: the open set is in memory and the /pulls ETag is in "
-    "SQLite, so a restart meets a 304 with an empty set and the filter is "
-    "off. Unfixed on this branch; this test is the sequence, and it flips "
-    "to a pass once the set is persisted or a 304 re-reads it.",
-)
 async def test_the_open_set_survives_a_restart_not_only_a_304(tmp_path):
     """The 304 above, but across a process boundary rather than within one.
 
@@ -388,34 +381,63 @@ async def test_the_open_set_survives_a_restart_not_only_a_304(tmp_path):
     paid for in the meantime.
     """
     store = SqliteStore(tmp_path / "state.db")
-    cycles = iter(
-        [
-            # The first process learns that 3 is the one open pull request,
-            # and stores the ETag for that answer.
-            responder(pulls=[pr_item(3, OLD)]),
-            # The second process sends it back and is told: unchanged. The
-            # comment names 12, closed weeks ago.
-            responder(issue_comments=[issue_comment(11, RECENT)]),
-        ]
-    )
-    handler = next(cycles)
+    open_pulls = [pr_item(3, OLD)]
 
     def dispatch(request):
-        return handler(request)
+        """GitHub's own rule: 304 only in answer to an `If-None-Match`.
+
+        The comment names pull request 12, closed weeks ago. The pulls leg
+        answers 304 to a conditional request and 200 to an unconditional
+        one, which is the whole difference a restart can make.
+        """
+        url = str(request.url)
+        if "/comments" in url:
+            return responder(issue_comments=[issue_comment(11, RECENT)])(request)
+        if request.headers.get("if-none-match"):
+            return httpx.Response(304)
+        return httpx.Response(200, json=open_pulls, headers={"etag": '"e"'})
 
     first = make_daemon(tmp_path, dispatch, store=store)
     first.store.advance_watermark(PULLS_WM, OLD)
     first.store.advance_watermark(COMMENTS_WM, OLD)
     await first.run_once()
 
-    handler = next(cycles)
     restarted = make_daemon(tmp_path, dispatch, store=store)
     assert restarted.open_pull_requests is None
+    restarted.refresh_open_pull_requests()
 
     summary = await restarted.run_once()
 
     assert summary.enqueued == 0
     assert queued(restarted) == 0
+
+
+async def test_only_the_pulls_etag_is_forgotten_at_startup(tmp_path):
+    """The comment legs keep theirs, because only the pulls set is lost.
+
+    Forgetting all three would cost three full reads per restart to fix a
+    problem one of them has -- and the comment legs are the two that return
+    a hundred items.
+    """
+    daemon = make_daemon(
+        tmp_path,
+        responder(
+            pulls=[pr_item(3, OLD)],
+            issue_comments=[issue_comment(11, RECENT)],
+            review_comments=[review_comment(13, RECENT)],
+        ),
+    )
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
+    await daemon.run_once()
+    paths = daemon.poller.endpoints.all_paths()
+    assert all(daemon.store.get(path) is not None for path in paths.values())
+
+    daemon.refresh_open_pull_requests()
+
+    assert daemon.store.get(paths[Endpoint.OPEN_PULLS]) is None
+    assert daemon.store.get(paths[Endpoint.ISSUE_COMMENTS]) is not None
+    assert daemon.store.get(paths[Endpoint.REVIEW_COMMENTS]) is not None
 
 
 async def test_a_failing_enqueue_leaves_the_watermark_unmoved(tmp_path):

@@ -3,8 +3,6 @@ are dropped before the classifier ever sees them."""
 
 from datetime import datetime, timezone
 
-import pytest
-
 from pr_review_agent.poller.payloads import comments, parse_timestamp, pull_requests
 from pr_review_agent.triggers.models import CommentSource
 
@@ -152,20 +150,15 @@ def test_the_source_follows_the_url_field_not_the_id():
 # -- a repository or owner called `pull` (issue #74) ----------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #74: `/pull/` is matched anywhere in html_url, so a "
-    "repository or owner named `pull` turns plain issue comments into "
-    "mention triggers. Unfixed on this branch; this test is the sequence, "
-    "and it flips to a pass the moment the substring test becomes a path "
-    "test.",
-)
 def test_a_repository_named_pull_does_not_make_issue_comments_pull_requests():
     """`https://github.com/acme/pull/issues/5#...` contains `/pull/`.
 
-    The consequence is not a cosmetic misclassification: the worker 👀s the
+    It is still an issue: `pull` is the repository name, not the path
+    segment that marks a pull request. The consequence of reading it the
+    other way was not a cosmetic misclassification -- the worker 👀s the
     issue, `GET /pulls/5` 404s, and the trigger is retried three times and
-    abandoned -- deterministic once a repository has that name.
+    abandoned, deterministically, for as long as the repository has that
+    name.
     """
     item = issue_comment(
         html_url="https://github.com/acme/pull/issues/5#issuecomment-1",
@@ -174,10 +167,6 @@ def test_a_repository_named_pull_does_not_make_issue_comments_pull_requests():
     assert list(comments("acme/pull", [item])) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #74, the owner-named-`pull` half of the same substring test",
-)
 def test_an_owner_named_pull_does_not_make_issue_comments_pull_requests():
     item = issue_comment(
         html_url="https://github.com/pull/tools/issues/5#issuecomment-1",

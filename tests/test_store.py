@@ -131,7 +131,7 @@ def test_a_failed_transaction_rolls_back(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 10
+        assert store.schema_version == SCHEMA_VERSION == 11
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -388,3 +388,60 @@ def test_publishing_a_policy_replaces_the_previous_one(tmp_path):
         published = store.budget_policy()
 
     assert published == BudgetPolicy("o/r", {"weekly_tokens": 2_000})
+
+
+def test_a_database_holding_duplicate_open_reservations_still_upgrades(tmp_path):
+    """A v10 store written by the code issue #70 describes.
+
+    The duplicates are already on disk by the time the fix ships, so the
+    migration cannot simply add the unique index -- `CREATE UNIQUE INDEX`
+    over existing duplicates fails, and a failed migration leaves the daemon
+    unable to open its own state. It closes the older rows first, keeping
+    the newest, which is the attempt that may still be running.
+    """
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store, store.transaction() as conn:
+        conn.execute("DROP INDEX IF EXISTS ledger_open")
+        conn.execute("PRAGMA user_version = 10")
+        for _ in range(3):
+            conn.execute(
+                "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
+                "reserved_tokens, reserved_at) "
+                "VALUES ('k', 'w', 1, 'full', 1000, '2026-09-17T12:00:00+00:00')"
+            )
+
+    with SqliteStore(path) as reopened:
+        assert reopened.schema_version == SCHEMA_VERSION
+        with reopened.transaction() as conn:
+            rows = conn.execute(
+                "SELECT stop_reason, used_tokens, settled_at FROM ledger ORDER BY id"
+            ).fetchall()
+            names = {row[1] for row in conn.execute("PRAGMA index_list(ledger)")}
+
+    assert "ledger_open" in names
+    # The two older rows are closed at the ceiling they were already counted
+    # at, so no window moves; the newest stays open for its worker to settle.
+    assert [row[0] for row in rows] == ["lost", "lost", None]
+    assert [row[1] for row in rows] == [1000, 1000, None]
+    assert rows[2][2] is None
+
+
+def test_a_settled_reservation_does_not_block_a_later_one(tmp_path):
+    """The index is partial, so a trigger may be admitted again once closed.
+
+    Without `WHERE settled_at IS NULL` this would refuse every retry of a
+    trigger that has ever been reviewed -- which is the ordinary case, not
+    an edge one.
+    """
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store, store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
+            "reserved_tokens, reserved_at, settled_at) "
+            "VALUES ('k', 'w', 1, 'full', 1000, 'a', 'b')"
+        )
+        conn.execute(
+            "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
+            "reserved_tokens, reserved_at) VALUES ('k', 'w', 1, 'full', 1000, 'c')"
+        )
+        assert conn.execute("SELECT count(*) FROM ledger").fetchone()[0] == 2

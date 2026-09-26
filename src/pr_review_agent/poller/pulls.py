@@ -19,6 +19,17 @@ from .client import GitHubClient
 from .endpoints import RepoEndpoints
 
 
+class PullRequestClosed(Exception):
+    """The pull request a claimed trigger names is no longer open.
+
+    Its own exception rather than a ``PayloadError`` because the payload is
+    perfectly good -- it says, correctly, that there is nothing to review any
+    more. The worker abandons the trigger on it, for the same reason it
+    abandons an oversized one: a closed pull request will not reopen because
+    the review was retried.
+    """
+
+
 def pull_request_facts(payload: dict) -> PullRequestFacts:
     """Map a single-pull-request payload onto the facts a checkout needs."""
     try:
@@ -46,4 +57,15 @@ async def fetch_pull_request_facts(
     if not isinstance(result.data, dict):
         shape = type(result.data).__name__
         raise PayloadError(f"pull request {number} returned {shape}, not an object")
+    # The state is checked here rather than by the caller because this is the
+    # only read of it, and the point is to check *before* the checkout and
+    # the engine. A trigger is enqueued while the pull request is open and
+    # claimed some time later -- a queue behind an exhausted budget can be
+    # hours long -- so by the time a worker gets to it the pull request may
+    # have merged or closed. Reviewing it anyway spends the allowance on a
+    # comment nobody will read (issue #69). Issue #35 quietened the *log* for
+    # this case; the spend was still happening.
+    state = result.data.get("state")
+    if state != "open":
+        raise PullRequestClosed(f"pull request {number} is {state!r}, not open")
     return pull_request_facts(result.data)

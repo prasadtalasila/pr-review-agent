@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from ..triggers.models import (
     Actor,
@@ -118,11 +119,29 @@ def _source(item: dict) -> CommentSource:
     )
 
 
+def _is_pull_request_url(html_url: str) -> bool:
+    """Whether ``html_url`` points at a pull request rather than an issue.
+
+    The shape is ``/{owner}/{repo}/pull/{number}``, so ``pull`` has to be the
+    *third* path segment. Testing for ``"/pull/"`` anywhere in the string --
+    which this did until issue #74 -- is also true of
+    ``/acme/pull/issues/5`` and ``/pull/tools/issues/5``, where ``pull`` is
+    the repository or the owner. Those are plain issue comments, and
+    treating one as a mention costs a 👀 on the issue and four failing
+    requests for a pull request that does not exist.
+
+    The fragment (``#issuecomment-1``) is dropped by ``urlsplit`` before the
+    segments are counted, so it cannot be mistaken for one.
+    """
+    segments = urlsplit(html_url).path.strip("/").split("/")
+    return len(segments) >= 4 and segments[2] == "pull"
+
+
 def _pr_number(item: dict) -> int | None:
     """The pull request a comment belongs to, or ``None`` if it is not one."""
     url = item.get("pull_request_url")
     if url is None:
-        if "/pull/" not in (item.get("html_url") or ""):
+        if not _is_pull_request_url(item.get("html_url") or ""):
             return None  # a plain issue comment
         url = item.get("issue_url")
     if not isinstance(url, str):

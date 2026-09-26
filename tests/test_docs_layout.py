@@ -95,3 +95,35 @@ def test_the_templates_directory_is_described_as_shipped_data():
     assert shipped, "the templates directory is empty"
     for block in (DEVELOPER_TREE, AGENTS_TREE):
         assert "templates/" in block
+
+
+# -- the bounded sets a document enumerates ------------------------------
+#
+# `STORAGE.md` listed seven stop reasons while the enum had nine, for two
+# releases. The list is the operator's reference for `GROUP BY stop_reason`,
+# so a missing value is a reason they will not think to look for.
+
+
+def test_storage_md_lists_every_stop_reason():
+    from pr_review_agent.budget import StopReason
+
+    storage = (ROOT / "docs" / "STORAGE.md").read_text(encoding="utf-8")
+    section = storage.split("`stop_reason` is why the run ended", 1)[1]
+    missing = [reason for reason in StopReason if f"`{reason}`" not in section[:1500]]
+    assert missing == []
+
+
+def test_storage_md_counts_the_stop_reasons_it_lists():
+    """The number in the prose, against the enum it describes."""
+    from pr_review_agent.budget import StopReason
+
+    storage = (ROOT / "docs" / "STORAGE.md").read_text(encoding="utf-8")
+    spelled = {
+        7: "seven",
+        8: "eight",
+        9: "nine",
+        10: "ten",
+        11: "eleven",
+        12: "twelve",
+    }
+    assert f"One of {spelled[len(list(StopReason))]} values" in storage

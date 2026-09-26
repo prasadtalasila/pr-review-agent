@@ -344,13 +344,29 @@ def test_all_four_per_review_events_are_visible_by_default(clean_logging):
 # Failures are ERROR, and the rule is mechanical
 # --------------------------------------------------------------------------
 
-#: The one record inside an ``except`` block that is deliberately below
-#: ERROR, because the exception there is control flow rather than a failure:
-#: ``engine/standards.py`` asks git for an optional file at the merge base
-#: and reads ``GitCommandError`` as "not there". A configured path that does
-#: not exist is documented as skipped, so this would fire on every review of
-#: every repository that does not carry all of them.
-_CONTROL_FLOW_HANDLERS = frozenset({"no %s at %s"})
+#: The records inside an ``except`` block that are deliberately below ERROR,
+#: because the exception each one catches is control flow rather than a
+#: failure. The bar for joining this set is that the handler *recovers* --
+#: the agent goes on to do the right thing -- so an operator grepping
+#: `journalctl -p err` is not missing anything they would act on.
+#:
+#: - ``engine/standards.py`` asks git for an optional file at the merge base
+#:   and reads ``GitCommandError`` as "not there". A configured path that
+#:   does not exist is documented as skipped, so this would fire on every
+#:   review of every repository that does not carry all of them.
+#: - ``worker.py`` drops a trigger whose pull request closed while it sat in
+#:   the queue. Nothing failed: the pull request merged, which is the
+#:   ordinary end of one, and the agent correctly declines to spend on it.
+#: - ``publisher.py`` posts a new comment when the one it remembers was
+#:   deleted. The review is published either way, which is the outcome that
+#:   matters; the record says why the id changed.
+_CONTROL_FLOW_HANDLERS = frozenset(
+    {
+        "no %s at %s",
+        "dropping %s: %s",
+        "comment %d is gone; posting the review again",
+    }
+)
 
 _EXCEPT = re.compile(r"^(\s*)except\b")
 _LOGGER_CALL = re.compile(r"^(\s*)logger\.(\w+)\(")

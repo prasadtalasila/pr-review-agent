@@ -174,6 +174,7 @@ A failed run has two possible fates and they are not interchangeable.
 | `UsageLimited` | `release`, and the breaker trips | The wall is the *account's*; the row waits behind the breaker rather than being retried into it |
 | `PullRequestTooLarge` | `abandon` | Deterministic on this head |
 | `PayloadError` | `abandon` | Deterministic |
+| `PullRequestClosed` | `abandon` | The pull request merged or closed while the trigger waited; it will not reopen because the row was retried |
 
 `release` returns the row to `pending` with its attempt already counted, so
 three failures reach `abandoned`. `abandon` gives up at once.
@@ -193,6 +194,23 @@ being reachable only by exhausting `max_attempts`.
 
 **Why not retry a permanent failure anyway?** Two more attempts reach the
 same refusal, and each one reserves allowance to get there.
+
+### A pull request that closed first is never reviewed
+
+A trigger is enqueued while the pull request is open and claimed some time
+later — a queue behind an exhausted budget can be hours long — so by the time
+a worker reaches it the pull request may have merged. The state is read from
+the same `GET /pulls/{n}` the checkout already needs, *before* the checkout
+and the engine, and a closed one raises `PullRequestClosed`.
+
+The cost of getting this wrong was not log noise: it was a full review, paid
+for at the ladder's rung, posted as a comment on a merged pull request that
+nobody will read. The refusal settles the reservation at zero, because
+nothing was checked out and no process was created.
+
+An absent `state` field reads as *not open*, which is the safe direction: the
+alternative spends the allowance on the strength of something GitHub did not
+say.
 
 ### `PullRequestTooLarge` is caught first
 

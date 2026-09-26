@@ -42,6 +42,13 @@ The ETag cache is keyed by request path. Losing it costs one extra full GET
 per endpoint, not correctness; see [STORAGE.md](STORAGE.md) for where it is
 kept.
 
+The `/pulls` entry is **deliberately discarded at startup**, so the first
+sweep of a restarted daemon reads it in full. Its payload is not only "what
+changed" — the daemon derives the set of open pull requests from it, and that
+set is process state, so keeping the ETag across a restart would mean
+answering `304` to a question the new process cannot answer. See
+[TRIGGERS.md](TRIGGERS.md#comments-are-filtered-to-open-pull-requests).
+
 ## ⏱ The adaptive interval
 
 | Event | Effect |

@@ -99,6 +99,7 @@ def payload(head_sha: str, **overrides) -> dict:
         "additions": 2,
         "deletions": 0,
         "changed_files": 1,
+        "state": "open",
         **overrides,
     }
 
@@ -692,6 +693,53 @@ async def test_an_oversized_pull_request_is_abandoned(wired):
     assert row[3] == 0
 
 
+class ClosedPullRequest(GitHubDouble):
+    """The pull request merged while its trigger waited in the queue."""
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            self.requests.append(request)
+            self._reads += 1
+            return httpx.Response(200, json=payload(self._head_sha, state="closed"))
+        return super()._handle(request)
+
+
+async def test_a_pull_request_that_closed_first_is_never_reviewed(wired):
+    """Issue #69: the spend, not only the log noise.
+
+    A queue behind an exhausted budget can be hours long, so a trigger
+    enqueued while the pull request was open is routinely claimed after it
+    merged. Reviewing it anyway buys a comment nobody will read.
+    """
+    fixture = wired(github=ClosedPullRequest("abc123"))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.engine.requests == []
+    assert fixture.github.comments == []
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.ABANDONED
+
+
+async def test_a_pull_request_that_closed_first_costs_no_tokens(wired):
+    """It reserved, and it settles that reservation back at zero.
+
+    Nothing was checked out and no process was created, so the zero is
+    provable rather than assumed -- and leaving the row open would hold the
+    ceiling against the windows until it aged out.
+    """
+    fixture = wired(github=ClosedPullRequest("abc123"))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    (row,) = ledger_rows(fixture.store)
+    _, _, reserved, used, _, _, _ = row
+    assert reserved == budget().max_run_tokens
+    assert used == 0
+    assert stop_reasons(fixture.store) == [str(StopReason.REFUSED)]
+
+
 async def test_an_unusable_payload_is_abandoned(wired):
     fixture = wired(client=client_returning({"number": PR}))
     fixture.queue.enqueue(opened(), now=NOW)
@@ -1177,13 +1225,6 @@ class DeletedComment(GitHubDouble):
         return super()._handle(request)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #71: a PATCH to a deleted comment 404s, `_write` raises, "
-    "and the row is handed back to be retried on every claim forever. "
-    "Unfixed on this branch; this test is the sequence, and it flips to a "
-    "pass once a 404 on the remembered id falls back to a new comment.",
-)
 async def test_a_review_whose_comment_was_deleted_is_posted_again(wired, git_remote):
     """The ordinary way to reach the known gap in STATUS.md.
 
@@ -1206,7 +1247,14 @@ async def test_a_review_whose_comment_was_deleted_is_posted_again(wired, git_rem
     await fixture.worker.run_once()
 
     assert fixture.queue.status(mention().dedupe_key) is QueueStatus.DONE
-    assert [r.method for r in fixture.github.comments].count("POST") == 2
+    # Comment *creations* only: `comments` also matches the 👀 a mention gets,
+    # which is a POST to `/issues/comments/{id}/reactions`.
+    created = [
+        r
+        for r in fixture.github.comments
+        if r.method == "POST" and r.url.path.endswith("/comments")
+    ]
+    assert len(created) == 2
 
 
 async def test_a_republished_run_writes_no_ledger_row(wired, git_remote):
