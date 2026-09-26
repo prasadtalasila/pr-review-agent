@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 
 from .. import daemon, logs
+from .._startup import StartupError
 from ._common import config_option, fail, startup_or_exit
 
 
@@ -58,4 +59,11 @@ def start(config_path: str, log_level: str | None, log_format: str | None) -> No
     except (logs.LevelError, logs.FormatError) as exc:
         fail(str(exc))
     logs.configure(level, fmt)
-    asyncio.run(daemon.run(config, token, Path(config_path)))
+    try:
+        asyncio.run(daemon.run(config, token, Path(config_path)))
+    except StartupError as exc:
+        # The shared budget policy is only readable once the store is open,
+        # so this half of "the host is not set up" surfaces from inside the
+        # run rather than from `startup_or_exit`. Exit 3 all the same: a
+        # complier waiting for its authority is restarted by the unit.
+        fail(str(exc))

@@ -42,11 +42,26 @@ that read a stale row, or two cycles settling out of order, must not walk it
 backwards and re-admit events already decided. `advance_watermark` takes the
 later of the stored and the offered value and returns whichever is in force.
 
-Watermarks are namespaced by name (`pull_requests`, `comments`) because the two
-streams advance independently: comments are sorted by `updated`, pull requests
-by `created`. Both comment endpoints share the one `comments` mark — `updated`
+Watermarks are namespaced by stream (`pull_requests`, `comments`) because the
+two advance independently: comments are sorted by `updated`, pull requests by
+`created`. Both comment endpoints share the one `comments` mark — `updated`
 only ever moves forward, so a single high-water mark cannot hide a comment that
 surfaces later on the other endpoint.
+
+They are namespaced by **repository** as well, so the key is
+`pull_requests:owner/name` rather than `pull_requests`. One store is how
+several daemons share one token budget — see [BUDGET.md](BUDGET.md) — and an
+unqualified key would be written by whichever repository polled last, leaving
+every other one reading its own backlog as already seen and skipping it
+permanently.
+
+A database written before the key carried a repository holds unqualified
+`pull_requests` and `comments` rows. A schema migration cannot rename them: the
+repository is named in `config.yaml` and is not in the database at all. So the
+daemon adopts them at startup instead, copying each onto its qualified name
+once, before seeding. The unqualified rows are then **vestigial** — left in
+place rather than deleted, so that a downgrade still finds its watermark, and
+ignored on every later start so an adopted mark is never dragged backwards.
 
 The [daemon loop](DAEMON.md) is what advances them, to the newest timestamp it
 saw in a payload rather than to wall-clock now, and only after the enqueue that
@@ -83,7 +98,7 @@ CREATE TABLE etags (
     etag TEXT NOT NULL
 );
 CREATE TABLE watermarks (
-    name TEXT PRIMARY KEY,
+    name TEXT PRIMARY KEY,  -- "<stream>:<owner>/<name>", e.g. "comments:o/r"
     at   TEXT NOT NULL      -- aware UTC, ISO-8601
 );
 CREATE TABLE queue (
@@ -133,7 +148,20 @@ CREATE TABLE budget_state (
     key   TEXT PRIMARY KEY,           -- calibrated_pct|tripped_until|last_trip_at
     value TEXT NOT NULL
 );
+CREATE TABLE budget_policy (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),   -- one row, enforced
+    authority_repo TEXT NOT NULL,     -- who published it
+    policy         TEXT NOT NULL,     -- JSON: the five shared budget fields
+    written_at     TEXT NOT NULL
+);
 ```
+
+`budget_policy` is what lets several daemons share one file and therefore one
+token budget — see [BUDGET.md](BUDGET.md#-several-repositories-one-allowance).
+The `CHECK` holds it to one row because a second row would be a second opinion
+about one allowance. It is kept apart from `budget_state` even though both are
+small and scalar: that one is what the circuit breaker *learned*, this is what
+an operator *declared*, and resetting either must not disturb the other.
 
 `runs` is the **only** table holding review content, and therefore the only
 one the retention sweep purges. It is written before the publisher is asked,
@@ -200,7 +228,7 @@ budget window; version 5 adds `ledger.reviewed_lines`; version 6 adds
 `ledger.stop_reason`; version 7 adds `queue.comment_id` and
 `queue.comment_source`, which is what lets the publisher acknowledge the
 comment a mention was written in; version 8 adds `runs`; version 9 adds
-`budget_state`.
+`budget_state`; version 10 adds `budget_policy`.
 
 **Each migration and its version bump commit together**, in one transaction.
 That is what lets versions 5, 6 and 7 be `ALTER TABLE ADD COLUMN`, which

@@ -1,6 +1,7 @@
 """Daemon loop: what one cycle enqueues, and what it must never enqueue."""
 
 import asyncio
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import cast
@@ -8,8 +9,9 @@ from typing import cast
 import httpx
 import pytest
 
+from pr_review_agent._startup import StartupError
 from pr_review_agent.budget import Governor
-from pr_review_agent.config import Config, WorkerConfig
+from pr_review_agent.config import Config, GitHubConfig, WorkerConfig
 from pr_review_agent.daemon import (
     COMMENTS,
     EMPTY,
@@ -17,6 +19,7 @@ from pr_review_agent.daemon import (
     Daemon,
     build_engine,
     build_workers,
+    resolve_budget,
     supervise,
 )
 from pr_review_agent.engine.claude import ClaudeCliEngine
@@ -56,6 +59,17 @@ CONFIG = Config.from_mapping(
         },
     }
 )
+
+
+#: The two watermark keys ``CONFIG``'s repository writes. Qualified by repo,
+#: so that several daemons sharing one store for one budget do not overwrite
+#: each other's high-water marks.
+PULLS_WM = f"{PULL_REQUESTS}:o/r"
+COMMENTS_WM = f"{COMMENTS}:o/r"
+
+#: A second repository, for the case one store serves several daemons.
+OTHER = replace(CONFIG, github=GitHubConfig(repo="other/repo"))
+OTHER_PULLS_WM = f"{PULL_REQUESTS}:other/repo"
 
 
 def stamp(at: datetime) -> str:
@@ -111,10 +125,12 @@ def responder(pulls=None, issue_comments=None, review_comments=None):
     return handler
 
 
-def make_daemon(tmp_path, handler) -> Daemon:
-    store = SqliteStore(tmp_path / "state.db")
+def make_daemon(tmp_path, handler, config=CONFIG, store=None) -> Daemon:
+    # ``store`` is passed in only to put two repositories on one file, which
+    # is how a shared budget is deployed.
+    store = SqliteStore(tmp_path / "state.db") if store is None else store
     client = GitHubClient(token="t", transport=httpx.MockTransport(handler))
-    endpoints = RepoEndpoints("o", "r")
+    endpoints = RepoEndpoints(config.github.owner, config.github.name)
     poller = Poller(
         client=client,
         endpoints=endpoints,
@@ -123,17 +139,17 @@ def make_daemon(tmp_path, handler) -> Daemon:
         interval=AdaptiveInterval(min_seconds=0, max_seconds=0),
     )
     return Daemon(
-        config=CONFIG,
+        config=config,
         poller=poller,
         store=store,
-        queue=ReviewQueue(store),
-        governor=Governor(store, CONFIG.budget),
+        queue=ReviewQueue(store, repo=config.github.repo),
+        governor=Governor(store, config.budget),
         publisher=Publisher(
             client=client,
             endpoints=endpoints,
             runs=RunStore(store),
-            config=CONFIG.publish,
-            handle=CONFIG.triggers.handle,
+            config=config.publish,
+            handle=config.triggers.handle,
         ),
     )
 
@@ -165,20 +181,67 @@ async def test_cold_start_enqueues_nothing_from_the_backlog(tmp_path):
 async def test_seeding_sets_both_watermarks(tmp_path):
     daemon = make_daemon(tmp_path, responder())
     daemon.seed_watermarks(now=NOW)
-    assert daemon.store.watermark(PULL_REQUESTS) == NOW
-    assert daemon.store.watermark(COMMENTS) == NOW
+    assert daemon.store.watermark(PULLS_WM) == NOW
+    assert daemon.store.watermark(COMMENTS_WM) == NOW
 
 
 async def test_seeding_does_not_rewind_an_existing_watermark(tmp_path):
     daemon = make_daemon(tmp_path, responder())
-    daemon.store.advance_watermark(PULL_REQUESTS, NOW)
+    daemon.store.advance_watermark(PULLS_WM, NOW)
     daemon.seed_watermarks(now=OLD)
-    assert daemon.store.watermark(PULL_REQUESTS) == NOW
+    assert daemon.store.watermark(PULLS_WM) == NOW
+
+
+async def test_two_repositories_on_one_store_keep_separate_watermarks(tmp_path):
+    # Why the key carries the repository: one store is how several daemons
+    # share one budget, and an unqualified key would let whichever polled
+    # last overwrite the rest -- every other repository then reading its own
+    # backlog as already seen, and skipping it forever.
+    store = SqliteStore(tmp_path / "state.db")
+    mine = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]), store=store)
+    theirs = make_daemon(tmp_path, responder(), config=OTHER, store=store)
+    theirs.seed_watermarks(now=NOW)
+    mine.store.advance_watermark(PULLS_WM, OLD)
+
+    summary = await mine.run_once()
+
+    assert summary.enqueued == 1
+    assert store.watermark(PULLS_WM) == RECENT
+    assert store.watermark(OTHER_PULLS_WM) == NOW
+
+
+async def test_an_unqualified_watermark_is_adopted(tmp_path):
+    # A database written before the key carried a repository. Dropping the
+    # value re-offers the whole open backlog as new; seeding over it skips
+    # every event in flight. Neither is acceptable, so it is carried across.
+    daemon = make_daemon(tmp_path, responder())
+    daemon.store.advance_watermark(PULL_REQUESTS, RECENT)
+    daemon.store.advance_watermark(COMMENTS, RECENT)
+
+    daemon.seed_watermarks(now=NOW)
+
+    assert daemon.store.watermark(PULLS_WM) == RECENT
+    assert daemon.store.watermark(COMMENTS_WM) == RECENT
+
+
+async def test_an_unqualified_watermark_is_adopted_only_once(tmp_path):
+    # The legacy row is left on disk so a downgrade still finds it, which
+    # means a later start must ignore it rather than read it again -- here it
+    # has moved ahead of the qualified one, so a second adoption would show.
+    daemon = make_daemon(tmp_path, responder())
+    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.seed_watermarks(now=NOW)
+    assert daemon.store.watermark(PULLS_WM) == OLD
+    daemon.store.advance_watermark(PULL_REQUESTS, NOW + timedelta(days=1))
+
+    daemon.seed_watermarks(now=NOW)
+
+    assert daemon.store.watermark(PULLS_WM) == OLD
 
 
 async def test_a_pull_request_after_the_watermark_is_enqueued(tmp_path):
     daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
 
     summary = await daemon.run_once()
 
@@ -188,12 +251,12 @@ async def test_a_pull_request_after_the_watermark_is_enqueued(tmp_path):
 
 async def test_repolling_the_same_payload_enqueues_once(tmp_path):
     daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
 
     first = await daemon.run_once()
     # Rewind by hand: the watermark alone would hide the second look, and
     # the dedupe key is what this test is about.
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
     second = await daemon.run_once()
 
     assert (first.enqueued, second.enqueued) == (1, 0)
@@ -205,23 +268,23 @@ async def test_watermark_advances_to_the_newest_item_not_to_now(tmp_path):
     daemon = make_daemon(
         tmp_path, responder(pulls=[pr_item(3, RECENT), pr_item(4, older)])
     )
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
 
     await daemon.run_once()
 
-    assert daemon.store.watermark(PULL_REQUESTS) == RECENT
+    assert daemon.store.watermark(PULLS_WM) == RECENT
 
 
 async def test_an_unchanged_endpoint_moves_no_watermark(tmp_path):
     daemon = make_daemon(tmp_path, responder())  # every endpoint 304s
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
-    daemon.store.advance_watermark(COMMENTS, OLD)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
 
     summary = await daemon.run_once()
 
     assert summary == EMPTY
-    assert daemon.store.watermark(PULL_REQUESTS) == OLD
-    assert daemon.store.watermark(COMMENTS) == OLD
+    assert daemon.store.watermark(PULLS_WM) == OLD
+    assert daemon.store.watermark(COMMENTS_WM) == OLD
 
 
 async def test_both_comment_endpoints_share_one_watermark(tmp_path):
@@ -232,12 +295,12 @@ async def test_both_comment_endpoints_share_one_watermark(tmp_path):
             review_comments=[review_comment(12, RECENT)],
         ),
     )
-    daemon.store.advance_watermark(COMMENTS, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
 
     summary = await daemon.run_once()
 
     assert summary.enqueued == 2
-    assert daemon.store.watermark(COMMENTS) == RECENT
+    assert daemon.store.watermark(COMMENTS_WM) == RECENT
 
 
 # -- comments on closed pull requests -------------------------------------
@@ -256,8 +319,8 @@ async def test_a_comment_on_a_closed_pull_request_is_not_enqueued(tmp_path):
             issue_comments=[issue_comment(11, RECENT)],
         ),
     )
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
-    daemon.store.advance_watermark(COMMENTS, OLD)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
 
     summary = await daemon.run_once()
 
@@ -274,8 +337,8 @@ async def test_a_comment_on_a_pull_request_opened_this_cycle_is_enqueued(tmp_pat
             issue_comments=[issue_comment(11, RECENT)],
         ),
     )
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
-    daemon.store.advance_watermark(COMMENTS, OLD)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
 
     assert (await daemon.run_once()).enqueued == 1
 
@@ -296,8 +359,8 @@ async def test_the_open_pull_request_set_survives_a_304(tmp_path):
         return handler(request)
 
     daemon = make_daemon(tmp_path, dispatch)
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
-    daemon.store.advance_watermark(COMMENTS, OLD)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
 
     await daemon.run_once()
     handler = next(cycles)
@@ -313,13 +376,13 @@ async def test_a_failing_enqueue_leaves_the_watermark_unmoved(tmp_path):
             raise RuntimeError("disk full")
 
     daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
-    daemon.queue = BrokenQueue(daemon.store)
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.queue = BrokenQueue(daemon.store, repo=daemon.config.github.repo)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
 
     with pytest.raises(RuntimeError):
         await daemon.run_once()
 
-    assert daemon.store.watermark(PULL_REQUESTS) == OLD
+    assert daemon.store.watermark(PULLS_WM) == OLD
 
 
 async def test_the_loop_stops_without_waiting_out_the_interval(tmp_path):
@@ -362,8 +425,8 @@ async def test_an_unexpected_error_is_not_swallowed(tmp_path):
             raise RuntimeError("disk full")
 
     daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
-    daemon.queue = BrokenQueue(daemon.store)
-    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.queue = BrokenQueue(daemon.store, repo=daemon.config.github.repo)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
 
     with pytest.raises(RuntimeError):
         await asyncio.wait_for(daemon.run_forever(asyncio.Event()), timeout=5)
@@ -390,14 +453,17 @@ async def test_an_already_set_stop_runs_no_cycle(tmp_path):
 # -- SIGHUP: the kill switch must not need a restart ---------------------
 
 
-def config_yaml(enabled="true", repo="o/r", dry_run="false"):
+def config_yaml(
+    enabled="true", repo="o/r", dry_run="false", authority="true", weekly="1500000"
+):
     return (
         f"github:\n  repo: {repo}\n"
         f"triggers:\n  handle: claude\n  allowlist:\n    - {ALICE_ID}\n"
         f"publish:\n  dry_run: {dry_run}\n"
         f"budget:\n  enabled: {enabled}\n"
+        f"  authority: {authority}\n"
         "  session_tokens: 88000\n"
-        "  weekly_tokens: 1500000\n"
+        f"  weekly_tokens: {weekly}\n"
         "  max_run_tokens: 60000\n"
         "engine:\n"
         "  model: claude-sonnet-5\n"
@@ -657,3 +723,103 @@ def test_no_fake_engine_reaches_a_running_daemon(tmp_path):
     """FakeEngine is a test double; a daemon running one would review nothing."""
     workers = make_workers(tmp_path, 2)
     assert all(isinstance(w.engine, ClaudeCliEngine) for w in workers)
+
+
+# -- the shared budget policy: whose numbers govern one store ------------
+
+
+def with_budget(config=CONFIG, **overrides):
+    return replace(config, budget=replace(config.budget, **overrides))
+
+
+def test_an_authority_publishes_the_pool_arithmetic(tmp_path):
+    with SqliteStore(tmp_path / "state.db") as store:
+        comply = resolve_budget(store, with_budget(authority=True), now=NOW)
+        published = store.budget_policy()
+
+    assert comply is False
+    assert published is not None
+    assert published.authority_repo == "o/r"
+    assert published.fields == CONFIG.budget.shared()
+
+
+def test_a_lone_daemon_publishes_without_being_told_to(tmp_path):
+    """Both keys default true, so a single deployment needs neither."""
+    with SqliteStore(tmp_path / "state.db") as store:
+        assert resolve_budget(store, CONFIG, now=NOW) is False
+        assert store.budget_policy() is not None
+
+
+def test_a_complier_refuses_to_start_before_any_authority(tmp_path):
+    # Retryable by design: the unit restarts on failure, so a complier
+    # started before its authority waits rather than needing a start order.
+    with (
+        SqliteStore(tmp_path / "state.db") as store,
+        pytest.raises(StartupError, match="no authority has published"),
+    ):
+        resolve_budget(store, with_budget(authority=False), now=NOW)
+
+
+def test_a_complier_starts_once_the_authority_has_published(tmp_path):
+    with SqliteStore(tmp_path / "state.db") as store:
+        resolve_budget(store, OTHER, now=NOW)
+
+        assert resolve_budget(store, with_budget(authority=False), now=NOW) is True
+
+
+def test_a_second_authority_refuses_to_start(tmp_path):
+    """Two authorities are two opinions about one allowance."""
+    with SqliteStore(tmp_path / "state.db") as store:
+        resolve_budget(store, with_budget(OTHER, authority=True), now=NOW)
+
+        with pytest.raises(StartupError, match="already the budget authority"):
+            resolve_budget(store, with_budget(authority=True), now=NOW)
+
+
+def test_an_authority_republishes_on_restart(tmp_path):
+    """Its file is the declared truth; the row is only ever a copy of it."""
+    with SqliteStore(tmp_path / "state.db") as store:
+        resolve_budget(store, with_budget(authority=True), now=NOW)
+
+        resolve_budget(
+            store, with_budget(authority=True, weekly_tokens=3_000_000), now=NOW
+        )
+
+        published = store.budget_policy()
+        assert published is not None
+        assert published.fields["weekly_tokens"] == 3_000_000
+
+
+def test_declining_to_comply_beside_an_authority_warns(tmp_path, caplog):
+    """The one remaining way to overspend a shared pool, so it is said loudly."""
+    with SqliteStore(tmp_path / "state.db") as store:
+        resolve_budget(store, with_budget(OTHER, authority=True), now=NOW)
+
+        declined = with_budget(authority=False, comply=False)
+        assert resolve_budget(store, declined, now=NOW) is False
+
+    assert "budget.comply is false" in caplog.text
+
+
+def test_sighup_republishes_an_authoritys_policy(tmp_path):
+    """An authority's reload is how a shared limit changes for everyone."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml(authority="true"))
+    path.write_text(config_yaml(authority="true", weekly="3000000"), encoding="utf-8")
+
+    daemon.reload_config()
+
+    published = daemon.store.budget_policy()
+    assert published is not None
+    assert published.fields["weekly_tokens"] == 3_000_000
+
+
+def test_sighup_does_not_claim_a_compliers_limits_changed(tmp_path, caplog):
+    """A complier's own token counts are inert, so the log must not imply
+    a reload applied them."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml(authority="false"))
+    path.write_text(config_yaml(authority="false", weekly="3000000"), encoding="utf-8")
+
+    with caplog.at_level(logging.INFO):
+        daemon.reload_config()
+
+    assert "the limits in force remain the authority's" in caplog.text

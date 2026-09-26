@@ -166,3 +166,34 @@ wrong file costs the queue's memory of what has already been reviewed.
 
 Run the [bootstrap checks](https://github.com/prasadtalasila/pr-review-agent/blob/main/DEVELOPER.md#-bootstrap-checks) first on a host
 that has never run the daemon.
+
+## 🏘 Several repositories, one host
+
+One daemon serves one repository. Several repositories means several
+processes, each with its own `config.yaml`, its own `GITHUB_TOKEN` in its own
+`0600` environment file, and its own allowlist. Token isolation is therefore
+the operating system's to enforce rather than this code's: a process never
+holds a token for a repository it does not serve, so it cannot post with one.
+
+They share a token budget by sharing **one** `store.path`:
+
+- **Make `store.path` absolute, and identical in every config.** It defaults
+  to a relative `state.db` resolved against the working directory, so two
+  units started from different directories would silently get two stores,
+  two ledgers and two independent budgets — the failure this whole
+  arrangement exists to prevent. The resolved path is logged at `INFO` on
+  startup; check it there.
+- **Exactly one config sets `budget.authority: true`.** It publishes the pool
+  arithmetic and the rest adopt it. See
+  [BUDGET.md](BUDGET.md#-several-repositories-one-allowance) — a second
+  authority on the same store refuses to start and names the first, and a
+  complier that starts before its authority exits `3` and is restarted until
+  the policy appears, so start order does not matter.
+
+Sharing the file shares the queue with it, but not the work: a queue is
+[scoped to its repository](QUEUE.md#-a-queue-belongs-to-one-repository), so a
+daemon only ever claims, leases and abandons its own rows. Watermarks are
+namespaced the same way, so neither repository skips the other's events.
+
+`service install` writes one systemd instance per repository from a template
+unit — see [SERVICE.md](SERVICE.md).

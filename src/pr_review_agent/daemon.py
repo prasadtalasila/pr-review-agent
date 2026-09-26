@@ -37,6 +37,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ._startup import StartupError
 from .budget import Governor
 from .config import Config, ConfigError
 from .engine import ReviewEngine
@@ -48,7 +49,7 @@ from .poller.poller import PollCycle, Poller
 from .publisher import Publisher
 from .queue import ReviewQueue
 from .runs import RunStore
-from .store import SqliteStore
+from .store import BudgetPolicy, SqliteStore
 from .triggers.models import Decision
 from .worker import ReviewWorker
 from .workspace import Workspace
@@ -57,9 +58,15 @@ logger = logging.getLogger(__name__)
 
 TOKEN_ENV = "GITHUB_TOKEN"
 
-#: The two watermark names STORAGE.md declares. Both comment endpoints feed
+#: The two watermark stems STORAGE.md declares. Both comment endpoints feed
 #: ``COMMENTS``: GitHub's ``updated`` only ever moves forward, so a single
 #: high-water mark cannot hide a comment that surfaces later on the other.
+#:
+#: A stem is never a key on its own. Several daemons may share one store so
+#: that they share one budget, and a bare ``pull_requests`` row would then be
+#: written by whichever repository polled last -- every other repository
+#: silently skipping everything before that write. ``_watermark_name``
+#: qualifies each stem with the repository it belongs to.
 PULL_REQUESTS = "pull_requests"
 COMMENTS = "comments"
 
@@ -144,6 +151,21 @@ class Daemon:
         self.config = replace(self.config, budget=fresh.budget, publish=fresh.publish)
         self.governor.reload(fresh.budget)
         self.publisher.reload(fresh.publish)
+        if fresh.budget.authority:
+            self.store.publish_budget_policy(
+                BudgetPolicy(self.config.github.repo, fresh.budget.shared()),
+                now=datetime.now(timezone.utc),
+            )
+        if fresh.budget.comply and not fresh.budget.authority:
+            # A complier's own token counts are inert, so reporting them as
+            # reloaded would be the log claiming a change that did not happen.
+            logger.info(
+                "SIGHUP: budget.enabled=%s reloaded; the limits in force remain "
+                "the authority's; publish.dry_run=%s",
+                fresh.budget.enabled,
+                fresh.publish.dry_run,
+            )
+            return
         logger.info(
             "SIGHUP: budget reloaded, enabled=%s session=%d weekly=%d; "
             "publish.dry_run=%s",
@@ -160,8 +182,47 @@ class Daemon:
         first-successful-poll -- which would drift later every time an early
         poll failed, widening the window of backlog treated as new.
         """
-        for name in (PULL_REQUESTS, COMMENTS):
-            self._since(name, now=now)
+        self._adopt_unqualified_watermarks()
+        for stem in (PULL_REQUESTS, COMMENTS):
+            self._since(stem, now=now)
+
+    def _adopt_unqualified_watermarks(self) -> None:
+        """Carry a pre-multi-repo watermark forward onto its qualified name.
+
+        A database written before watermarks were qualified holds bare
+        ``pull_requests`` and ``comments`` rows. They cannot be renamed by a
+        schema migration, because the repository they belong to is named in
+        ``config.yaml`` and is not in the database at all -- so the rename
+        happens here, where the configuration is known.
+
+        Both ways of getting this wrong are expensive, which is why it is not
+        left to cold-start seeding: dropping the watermark re-offers the whole
+        open backlog as new, and seeding to ``now`` instead skips every event
+        in flight.
+
+        Idempotent -- a qualified row that already exists is left alone, so a
+        later start cannot drag the watermark back to the legacy value. The
+        legacy rows are left in place rather than deleted: they are inert once
+        adopted, and leaving them means a downgrade still finds its watermark.
+        """
+        for stem in (PULL_REQUESTS, COMMENTS):
+            name = self._watermark_name(stem)
+            if self.store.watermark(name) is not None:
+                continue
+            legacy = self.store.watermark(stem)
+            if legacy is None:
+                continue
+            self.store.advance_watermark(name, legacy)
+            logger.info(
+                "adopting the unqualified %s watermark (%s) as %s",
+                stem,
+                legacy.isoformat(),
+                name,
+            )
+
+    def _watermark_name(self, stem: str) -> str:
+        """The watermark key for ``stem`` in this daemon's repository."""
+        return f"{stem}:{self.config.github.repo}"
 
     async def run_once(self) -> CycleSummary:
         """Poll every endpoint once, and enqueue what the classifier accepts."""
@@ -213,7 +274,7 @@ class Daemon:
             open_numbers.add(pull.number)
             summary += self._enqueue(classifier.classify_pull_request(pull), now=now)
         self.open_pull_requests = frozenset(open_numbers)
-        self.store.advance_watermark(PULL_REQUESTS, newest)
+        self.store.advance_watermark(self._watermark_name(PULL_REQUESTS), newest)
         return summary
 
     def _comments(
@@ -236,7 +297,7 @@ class Daemon:
             for comment in payloads.comments(self.config.github.repo, batch):
                 newest = max(newest, comment.updated_at)
                 summary += self._enqueue(classifier.classify_comment(comment), now=now)
-        self.store.advance_watermark(COMMENTS, newest)
+        self.store.advance_watermark(self._watermark_name(COMMENTS), newest)
         return summary
 
     def _enqueue(self, decision: Decision, *, now: datetime) -> CycleSummary:
@@ -246,13 +307,72 @@ class Daemon:
         added = self.queue.enqueue(decision.trigger, now=now)
         return CycleSummary(seen=1, enqueued=int(added))
 
-    def _since(self, name: str, *, now: datetime) -> datetime:
-        """The watermark in force for ``name``, seeding an unset one to ``now``."""
+    def _since(self, stem: str, *, now: datetime) -> datetime:
+        """The watermark in force for ``stem``, seeding an unset one to ``now``."""
+        name = self._watermark_name(stem)
         stored = self.store.watermark(name)
         if stored is not None:
             return stored
         logger.info("cold start: seeding the %s watermark to %s", name, now.isoformat())
         return self.store.advance_watermark(name, now)
+
+
+def resolve_budget(store: SqliteStore, config: Config, *, now: datetime) -> bool:
+    """Settle whose numbers govern this store's pool; return whether to comply.
+
+    Several daemons may share one store precisely so that they share one token
+    budget. Each would otherwise police that shared pool using its own file,
+    and two files that disagree do not split the allowance between them --
+    every window is measured against one usage total, so the most permissive
+    file simply keeps admitting runs after the others have correctly stopped.
+
+    So one configuration is named the authority and publishes the pool
+    arithmetic; the rest adopt it. The whole read-modify-write runs in one
+    ``BEGIN IMMEDIATE`` so that two authorities starting together cannot both
+    see an empty table and both believe they won.
+
+    A complier that finds no policy fails with a :class:`StartupError`, which
+    is **retryable by design**: the shipped unit restarts on failure, so a
+    complier started before its authority spins until the authority publishes,
+    and cold start converges in any order. Nothing here needs the fleet
+    started in a particular sequence.
+    """
+    budget, repo = config.budget, config.github.repo
+    with store.transaction():
+        published = store.budget_policy()
+        if budget.authority:
+            if published is not None and published.authority_repo != repo:
+                raise StartupError(
+                    f"{published.authority_repo} is already the budget authority "
+                    f"for this store, so {repo} cannot be one too: two "
+                    "authorities are two opinions about one allowance. Set "
+                    "budget.authority: false here, or stop the other daemon."
+                )
+            store.publish_budget_policy(BudgetPolicy(repo, budget.shared()), now=now)
+            logger.info("publishing the shared budget policy as the authority")
+            return False
+        if budget.comply:
+            if published is None:
+                raise StartupError(
+                    "budget.authority is false here and no authority has "
+                    "published to this store yet: start the daemon whose "
+                    "config keeps budget.authority: true. This one retries "
+                    "until it has, so no particular start order is needed."
+                )
+            logger.info(
+                "complying with the budget policy %s published",
+                published.authority_repo,
+            )
+            return True
+    if published is not None:
+        # The one remaining way to overspend a shared pool, so it is said
+        # loudly rather than left to be discovered in the ledger.
+        logger.warning(
+            "budget.comply is false while %s governs this store: this file's "
+            "own limits will be applied to the shared allowance",
+            published.authority_repo,
+        )
+    return False
 
 
 def build_engine(config: Config) -> ClaudeCliEngine:
@@ -397,15 +517,19 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
     logger.info("workspace cache: %s", workspace.cache_dir)
     try:
         with SqliteStore(path) as store:
+            # Before anything can spend: whose limits govern this store's
+            # pool. Raises rather than guessing when the answer is not
+            # settled, because guessing means guessing about money.
+            comply = resolve_budget(store, config, now=datetime.now(timezone.utc))
             daemon = Daemon(
                 config=config,
                 poller=Poller(client=client, endpoints=endpoints, etags=store),
                 store=store,
-                queue=ReviewQueue(store),
+                queue=ReviewQueue(store, repo=config.github.repo),
                 # The daemon owns the process, so it owns the governor its
                 # workers claim through, and SIGHUP has something live to
                 # reload.
-                governor=Governor(store, config.budget),
+                governor=Governor(store, config.budget, comply=comply),
                 publisher=Publisher(
                     client=client,
                     endpoints=endpoints,

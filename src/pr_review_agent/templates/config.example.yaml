@@ -80,6 +80,40 @@ budget:
   # so the governor refuses every claim while this is false.
   enabled: true
 
+  # Optional (both default true), and both can be ignored entirely while one
+  # daemon has its store to itself -- which is what the defaults mean.
+  #
+  # They matter when several daemons -- one per repository, each with its own
+  # token and allowlist -- share ONE store.path. That is how they come to
+  # share one token budget: the ledger and the circuit breaker are global to
+  # the file, so the pool is shared by construction.
+  #
+  # Whose numbers govern that pool is not. Each process would otherwise
+  # police it with its own file, and two files that disagree do not split the
+  # allowance -- every window is measured against one usage total, so the
+  # most permissive file keeps admitting runs after the others have correctly
+  # stopped.
+  #
+  # So EXACTLY ONE config stays authority: true and publishes the five pool
+  # settings -- session_tokens, weekly_tokens, max_run_tokens,
+  # reviewer_share_pct, per_contributor_pct -- while the rest set
+  # authority: false and adopt them. Forgetting one is loud, not silent: a
+  # second authority on the same store refuses to start and names the first.
+  #
+  # Everything else here stays local. `enabled`, because a brake that could
+  # only be pulled fleet-wide could not stop one misbehaving repository; the
+  # size caps and excluded_paths, because they describe a repository rather
+  # than the allowance.
+  #
+  # Start order does not matter. A complier that finds no published policy
+  # exits 3 and the unit restarts it, so it simply waits for its authority.
+  #
+  # comply: false is the escape hatch -- govern with this file's own limits
+  # even though another config is the authority. It is the one remaining way
+  # to overspend a shared pool, so it is logged at WARNING.
+  authority: true
+  comply: true
+
   # REQUIRED, all three. Your estimate of the PLAN's limits, in tokens, plus
   # the ceiling for a single run. No defaults, deliberately: a subscription
   # publishes no quota, so any default would be a spending ceiling nobody

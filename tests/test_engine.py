@@ -247,7 +247,7 @@ async def test_fake_result_settles_against_the_governor(tmp_path):
                 session_tokens=25_000, weekly_tokens=25_000, max_run_tokens=1_000
             ),
         )
-        queue = ReviewQueue(store)
+        queue = ReviewQueue(store, repo=TRIGGER.repo)
         queue.enqueue(TRIGGER, now=now)
         claim = queue.claim(now=now, owner="w", admit=governor.admit)
         assert claim is not None
