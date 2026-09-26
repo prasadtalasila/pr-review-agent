@@ -397,6 +397,51 @@ async def test_a_usage_limit_in_the_envelope_carries_its_usage(tmp_path, run):
     assert raised.value.usage.confidence is UsageConfidence.EXACT
 
 
+MARKED_FINDING = {
+    "path": "a.py",
+    "line": 1,
+    "severity": "nit",
+    "title": "usage limit reached",
+    "body": (
+        "The handler catches `rate_limit_error` and retries forever, which is "
+        "how you get a mail saying you exceeded your account's quota."
+    ),
+}
+
+
+async def test_a_marker_quoted_by_a_finding_is_not_a_usage_limit(tmp_path, run):
+    """The review's own prose is attacker-influenced; it must not trip the breaker."""
+    run(Recorder(envelope(structured_output={"findings": [MARKED_FINDING]})))
+    result = await engine().review(request(tmp_path))
+
+    assert result.outcome is Outcome.COMPLETED
+    assert len(result.findings) == 1
+
+
+async def test_a_marker_in_a_clean_envelopes_result_is_not_a_usage_limit(tmp_path, run):
+    """`is_error` false and no `error_` subtype means the CLI is not complaining."""
+    run(Recorder(envelope(result="usage limit reached")))
+    result = await engine().review(request(tmp_path))
+
+    assert result.outcome is Outcome.COMPLETED
+
+
+async def test_an_errored_envelope_still_reports_its_usage_limit(tmp_path, run):
+    """`is_error` alone is enough; the marker need not be in the subtype."""
+    run(
+        Recorder(
+            envelope(
+                subtype="success",
+                is_error=True,
+                result="Claude usage limit reached",
+                structured_output={"findings": [MARKED_FINDING]},
+            )
+        )
+    )
+    with pytest.raises(UsageLimited):
+        await engine().review(request(tmp_path))
+
+
 async def test_an_unrelated_failure_is_still_a_protocol_error(tmp_path, run):
     """The breaker refuses work, so a false trip costs more than a retry."""
     run(Recorder("", stderr="segmentation fault", returncode=139))
