@@ -119,8 +119,8 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 | `weekly_tokens` | integer | yes | Your estimate of the plan's rolling 7-day allowance. |
 | `max_run_tokens` | integer | yes | Reserved up front for one review, released down to actual usage when it settles. |
 | `enabled` | boolean | no (default `true`) | `false` **stops reviewing**. It does not turn the budget checks off. |
-| `authority` | boolean | no (default `true`) | This file publishes the pool arithmetic every daemon sharing the store governs by. Exactly one config per store may have it. |
-| `comply` | boolean | no (default `true`) | Adopt what the authority published rather than this file's own limits. Consulted only when `authority` is `false`. |
+| `authority` | boolean | no (default `true`) | This file publishes the pool arithmetic every daemon sharing the store governs by. Exactly one config per store may have it. Settled at startup: a change needs a restart, not a `SIGHUP`. |
+| `comply` | boolean | no (default `true`) | Adopt what the authority published rather than this file's own limits. Consulted only when `authority` is `false`. Settled at startup, like `authority`. |
 | `reviewer_share_pct` | integer 1–100 | no (default `40`) | The share of each plan window the agent may use, never the whole allowance. |
 | `per_contributor_pct` | integer 1–100 | no (default: **no cap**) | The share of the agent's weekly allowance any one contributor may spend, over the same rolling week. |
 | `max_changed_files` | integer | no (default `100`) | A pull request touching more *reviewable* files is refused before a worktree exists. |
@@ -175,6 +175,13 @@ because it is the one remaining way to overspend a shared pool.
 **A single daemon needs none of this.** Both keys default to `true`, and
 `comply` is consulted only when `authority` is `false`, so a lone daemon
 governs its own store with nothing added to the file.
+
+**The role needs a restart.** `SIGHUP` reloads the limits but pins `authority`
+and `comply` to what the process started with, logging a `WARNING` when the
+file disagrees. Who governs the pool is decided once, against the whole store:
+promoting a complier on a reload would republish over a live authority without
+the second-authority refusal, and demoting an authority would leave its
+governor complying with nobody while the log reported success.
 
 `max_run_tokens` must fit inside the daily allowance — a seventh of the
 weekly limit, after `reviewer_share_pct` — or the file is refused. A run

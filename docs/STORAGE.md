@@ -59,9 +59,16 @@ A database written before the key carried a repository holds unqualified
 `pull_requests` and `comments` rows. A schema migration cannot rename them: the
 repository is named in `config.yaml` and is not in the database at all. So the
 daemon adopts them at startup instead, copying each onto its qualified name
-once, before seeding. The unqualified rows are then **vestigial** — left in
-place rather than deleted, so that a downgrade still finds its watermark, and
-ignored on every later start so an adopted mark is never dragged backwards.
+before seeding.
+
+Adoption happens **once per store, not once per repository**, and the
+unqualified rows are **deleted** in the same transaction. The rows describe the
+one repository that was polling before the upgrade, so a second repository
+later pointed at that store must not inherit them: it would start from a
+timestamp it has never polled — possibly weeks back — and enqueue and pay for
+every open pull request since, which is the cold-start spend bound
+[DAEMON.md](DAEMON.md) exists to hold. Deleting them costs a downgrade its
+watermark, and that is the cheaper of the two.
 
 The [daemon loop](DAEMON.md) is what advances them, to the newest timestamp it
 saw in a payload rather than to wall-clock now, and only after the enqueue that

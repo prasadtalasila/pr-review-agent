@@ -148,30 +148,50 @@ class Daemon:
                 "SIGHUP: only the budget and publish sections are reloaded; "
                 "changes to github, triggers or store need a restart"
             )
-        self.config = replace(self.config, budget=fresh.budget, publish=fresh.publish)
-        self.governor.reload(fresh.budget)
+        budget = fresh.budget
+        role = (budget.authority, budget.comply)
+        if role != (self.config.budget.authority, self.config.budget.comply):
+            # Which daemon governs the shared pool is settled once, in
+            # `resolve_budget`, against the whole store: promoting a complier
+            # here would republish over a live authority without the
+            # two-authorities refusal, and demoting an authority would leave
+            # the governor complying with nobody. The limits still reload;
+            # only the role is pinned.
+            logger.warning(
+                "SIGHUP: budget.authority and budget.comply are settled at "
+                "startup and need a restart; keeping authority=%s comply=%s",
+                self.config.budget.authority,
+                self.config.budget.comply,
+            )
+            budget = replace(
+                budget,
+                authority=self.config.budget.authority,
+                comply=self.config.budget.comply,
+            )
+        self.config = replace(self.config, budget=budget, publish=fresh.publish)
+        self.governor.reload(budget)
         self.publisher.reload(fresh.publish)
-        if fresh.budget.authority:
+        if budget.authority:
             self.store.publish_budget_policy(
-                BudgetPolicy(self.config.github.repo, fresh.budget.shared()),
+                BudgetPolicy(self.config.github.repo, budget.shared()),
                 now=datetime.now(timezone.utc),
             )
-        if fresh.budget.comply and not fresh.budget.authority:
+        if budget.comply and not budget.authority:
             # A complier's own token counts are inert, so reporting them as
             # reloaded would be the log claiming a change that did not happen.
             logger.info(
                 "SIGHUP: budget.enabled=%s reloaded; the limits in force remain "
                 "the authority's; publish.dry_run=%s",
-                fresh.budget.enabled,
+                budget.enabled,
                 fresh.publish.dry_run,
             )
             return
         logger.info(
             "SIGHUP: budget reloaded, enabled=%s session=%d weekly=%d; "
             "publish.dry_run=%s",
-            fresh.budget.enabled,
-            fresh.budget.session_limit,
-            fresh.budget.weekly_limit,
+            budget.enabled,
+            budget.session_limit,
+            budget.weekly_limit,
             fresh.publish.dry_run,
         )
 
@@ -189,35 +209,20 @@ class Daemon:
     def _adopt_unqualified_watermarks(self) -> None:
         """Carry a pre-multi-repo watermark forward onto its qualified name.
 
-        A database written before watermarks were qualified holds bare
-        ``pull_requests`` and ``comments`` rows. They cannot be renamed by a
-        schema migration, because the repository they belong to is named in
-        ``config.yaml`` and is not in the database at all -- so the rename
-        happens here, where the configuration is known.
-
         Both ways of getting this wrong are expensive, which is why it is not
         left to cold-start seeding: dropping the watermark re-offers the whole
         open backlog as new, and seeding to ``now`` instead skips every event
-        in flight.
-
-        Idempotent -- a qualified row that already exists is left alone, so a
-        later start cannot drag the watermark back to the legacy value. The
-        legacy rows are left in place rather than deleted: they are inert once
-        adopted, and leaving them means a downgrade still finds its watermark.
+        in flight. The upgrading repository is the one the rows belong to, so
+        only it may adopt them -- see
+        :meth:`SqliteStore.adopt_legacy_watermarks`, which enforces that and
+        deletes them in the same transaction.
         """
-        for stem in (PULL_REQUESTS, COMMENTS):
-            name = self._watermark_name(stem)
-            if self.store.watermark(name) is not None:
-                continue
-            legacy = self.store.watermark(stem)
-            if legacy is None:
-                continue
-            self.store.advance_watermark(name, legacy)
+        adopted = self.store.adopt_legacy_watermarks(
+            {stem: self._watermark_name(stem) for stem in (PULL_REQUESTS, COMMENTS)}
+        )
+        for name, at in adopted.items():
             logger.info(
-                "adopting the unqualified %s watermark (%s) as %s",
-                stem,
-                legacy.isoformat(),
-                name,
+                "adopting the unqualified watermark (%s) as %s", at.isoformat(), name
             )
 
     def _watermark_name(self, stem: str) -> str:

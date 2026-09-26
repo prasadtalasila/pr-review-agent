@@ -30,7 +30,7 @@ from pr_review_agent.poller.poller import Poller
 from pr_review_agent.publisher import Publisher
 from pr_review_agent.queue import ReviewQueue
 from pr_review_agent.runs import RunStore
-from pr_review_agent.store import SqliteStore
+from pr_review_agent.store import BudgetPolicy, SqliteStore
 from pr_review_agent.worker import ReviewWorker
 from pr_review_agent.workspace import Workspace
 
@@ -225,9 +225,9 @@ async def test_an_unqualified_watermark_is_adopted(tmp_path):
 
 
 async def test_an_unqualified_watermark_is_adopted_only_once(tmp_path):
-    # The legacy row is left on disk so a downgrade still finds it, which
-    # means a later start must ignore it rather than read it again -- here it
-    # has moved ahead of the qualified one, so a second adoption would show.
+    # A legacy row written again after the adoption -- by a downgraded
+    # binary, say -- must not be read a second time. Here it has moved ahead
+    # of the qualified one, so a second adoption would show.
     daemon = make_daemon(tmp_path, responder())
     daemon.store.advance_watermark(PULL_REQUESTS, OLD)
     daemon.seed_watermarks(now=NOW)
@@ -817,9 +817,101 @@ def test_sighup_does_not_claim_a_compliers_limits_changed(tmp_path, caplog):
     """A complier's own token counts are inert, so the log must not imply
     a reload applied them."""
     daemon, path = daemon_with_config(tmp_path, config_yaml(authority="false"))
+    daemon.config = with_budget(daemon.config, authority=False, comply=True)
     path.write_text(config_yaml(authority="false", weekly="3000000"), encoding="utf-8")
 
     with caplog.at_level(logging.INFO):
         daemon.reload_config()
 
     assert "the limits in force remain the authority's" in caplog.text
+
+
+async def test_adoption_deletes_the_legacy_rows(tmp_path):
+    """Deleted in the same transaction that adopts them.
+
+    Leaving them inert was the earlier choice, so that a downgrade still
+    found its watermark. It cannot survive a shared store: the rows outlive
+    the repository they describe, and the next repository to arrive would
+    read them as its own.
+    """
+    daemon = make_daemon(tmp_path, responder())
+    daemon.store.advance_watermark(PULL_REQUESTS, OLD)
+    daemon.store.advance_watermark(COMMENTS, OLD)
+
+    daemon.seed_watermarks(now=NOW)
+
+    assert daemon.store.watermark(PULLS_WM) == OLD
+    assert daemon.store.watermark(PULL_REQUESTS) is None
+    assert daemon.store.watermark(COMMENTS) is None
+
+
+async def test_a_second_repository_does_not_adopt_the_firsts_watermark(tmp_path):
+    """The legacy rows belong to the repository that upgraded, and to it only.
+
+    A newcomer pointed at that store would otherwise start from a timestamp
+    it has never polled -- possibly weeks back -- and enqueue and pay for
+    every open pull request since. That is the cold-start spend bound, lost
+    to a rename.
+    """
+    store = SqliteStore(tmp_path / "state.db")
+    store.advance_watermark(PULL_REQUESTS, OLD)
+    mine = make_daemon(tmp_path, responder(), store=store)
+    mine.seed_watermarks(now=NOW)
+    assert store.watermark(PULLS_WM) == OLD
+
+    theirs = make_daemon(tmp_path, responder(), config=OTHER, store=store)
+    theirs.seed_watermarks(now=NOW)
+
+    assert store.watermark(OTHER_PULLS_WM) == NOW
+
+
+def test_sighup_does_not_promote_a_complier_to_authority(tmp_path, caplog):
+    """`resolve_budget`'s two-authorities refusal runs at startup only.
+
+    A complier that republished here would overwrite a live authority's
+    policy with its own numbers, which is the silent disagreement about one
+    allowance the whole authority model exists to prevent.
+    """
+    daemon, path = daemon_with_config(tmp_path, config_yaml(authority="false"))
+    daemon.config = with_budget(daemon.config, authority=False, comply=True)
+    daemon.store.publish_budget_policy(
+        BudgetPolicy("other/repo", daemon.config.budget.shared()), now=NOW
+    )
+
+    path.write_text(config_yaml(authority="true"), encoding="utf-8")
+    daemon.reload_config()
+
+    assert daemon.config.budget.authority is False
+    published = daemon.store.budget_policy()
+    assert published is not None
+    assert published.authority_repo == "other/repo"
+    assert "need a restart" in caplog.text
+
+
+def test_sighup_does_not_demote_an_authority(tmp_path, caplog):
+    """The mirror: the governor's compliance is fixed at construction, so an
+    authority demoted here would keep governing with its own file while the
+    log claimed the authority's limits were in force."""
+    daemon, path = daemon_with_config(tmp_path, config_yaml(authority="true"))
+    assert daemon.config.budget.authority is True
+
+    path.write_text(config_yaml(authority="false"), encoding="utf-8")
+    daemon.reload_config()
+
+    assert daemon.config.budget.authority is True
+    assert "need a restart" in caplog.text
+
+
+def test_sighup_still_reloads_the_limits_when_the_role_is_pinned(tmp_path):
+    """Pinning the role must not cost the reload its actual purpose."""
+    daemon, path = daemon_with_config(
+        tmp_path, config_yaml(authority="true", weekly="1500000")
+    )
+
+    path.write_text(
+        config_yaml(authority="false", weekly="1200000"), encoding="utf-8"
+    )
+    daemon.reload_config()
+
+    assert daemon.config.budget.authority is True
+    assert daemon.governor.config.weekly_tokens == 1_200_000

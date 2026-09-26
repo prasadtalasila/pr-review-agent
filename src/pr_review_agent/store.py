@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -274,6 +274,50 @@ class SqliteStore:
             "SELECT at FROM watermarks WHERE name = ?", (name,)
         ).fetchone()
         return None if row is None else parse_timestamp(row[0])
+
+    def adopt_legacy_watermarks(
+        self, qualified: Mapping[str, str]
+    ) -> dict[str, datetime]:
+        """Rename pre-multi-repo watermark rows, once per store.
+
+        ``qualified`` maps each bare stem to the name it should take. A
+        database written before watermarks carried a repository holds bare
+        ``pull_requests`` and ``comments`` rows, and no schema migration can
+        rename them: the repository is named in ``config.yaml`` and is not in
+        the database at all.
+
+        **Once per store, not once per repository.** The rows are the first
+        repository's, so a second repository pointed at the same file must
+        not inherit them -- its watermark would start weeks in the past and
+        its whole open backlog would be enqueued and paid for. Adoption
+        therefore happens only while no qualified row exists anywhere, and
+        the legacy rows are deleted in the same transaction so that a later
+        arrival cannot adopt them. That trades a downgrade's watermark for a
+        bound on spending, which is the direction this project errs in.
+
+        Returns the names adopted, for the caller to log.
+        """
+        adopted: dict[str, datetime] = {}
+        with self.transaction() as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM watermarks WHERE name LIKE '%:%' LIMIT 1"
+                ).fetchone()
+                is not None
+            ):
+                return adopted
+            for stem, name in qualified.items():
+                row = conn.execute(
+                    "SELECT at FROM watermarks WHERE name = ?", (stem,)
+                ).fetchone()
+                if row is None:
+                    continue
+                conn.execute(
+                    "INSERT INTO watermarks (name, at) VALUES (?, ?)", (name, row[0])
+                )
+                adopted[name] = parse_timestamp(row[0])
+            conn.execute("DELETE FROM watermarks WHERE name NOT LIKE '%:%'")
+        return adopted
 
     def advance_watermark(self, name: str, at: datetime) -> datetime:
         """Move the ``name`` watermark forward to ``at``, never backwards.
