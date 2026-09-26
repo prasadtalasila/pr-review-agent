@@ -268,11 +268,18 @@ stores and two independent budgets.
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
 | `cache_dir` | string | no (default `.cache/repos`) | Where the bare mirror and the per-run checkouts live. Created `0700`. A relative path is resolved against the daemon's working directory **once, at startup**, and the absolute result is logged; it is not re-read on `SIGHUP`. |
+| `git` | string | no (default `git`) | Which git the hardened checkout runs. A plain name resolves through the `PATH` the checkout passes through to the child — so a writable directory early on the daemon user's `PATH` shadows it and defeats `gitcmd`'s `-c` hardening flags and its built environment together, without touching either. An absolute path settles it. |
 
 The **second** optional section, and the argument differs from `store`'s. It
-is affordable because the section holds a path and nothing else: the setting
-that bounds what a checkout may cost lives in `budget`, with every other
-spending cap. Unknown keys inside `workspace` are still rejected.
+is affordable because the section holds two paths and nothing else: the
+setting that bounds what a checkout may cost lives in `budget`, with every
+other spending cap. Unknown keys inside `workspace` are still rejected.
+
+`git` and [`engine.binary`](#engine) are the only two programs this agent
+executes, and both take the same answer. `pr-review-agent host check` prints
+where each name resolved to — the absolute path, not just "found" — because
+which file runs is the whole question; and startup logs a WARNING while
+either is a plain name.
 
 A relative path is resolved against the working directory the daemon starts
 in, and logged absolute at `INFO`, exactly as `store.path` is.

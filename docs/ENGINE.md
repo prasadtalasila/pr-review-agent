@@ -213,6 +213,41 @@ question [DESIGN.md](DESIGN.md#-billing-mode) leaves open.
 | `subagents` | `false` | the CLI can fan out; this tool set does not let it |
 | `prompt_caching` | `true` | the envelope reports cache tokens |
 
+### Preflight refuses an unconfined run
+
+The three flags above are the whole sandbox, and argv is only a control while
+the binary still has the flag. A future `claude` that renamed or dropped
+`--restricted` would take the argument and ignore it, and the adapter would
+review an attacker's tree unconfined while the log said "output parsing may
+fail".
+
+So `preflight` does two things with two different endings:
+
+| Probe | On a surprise |
+| :-- | :-- |
+| `claude --version` against `engine.expected_version` | **WARNING**, and proceed |
+| `claude --help` against `REQUIRED_FLAGS` | **`EngineUnavailable`** — refuse |
+
+The version only warns because the parse is what protects against output
+changing shape and it already fails loudly; refusing would take the reviewer
+offline on a routine upgrade that changed nothing we read. A missing
+containment flag is the opposite: offline is the correct failure, and
+`EngineUnavailable` is the right shape for it because nothing was executed,
+so the worker settles the run at a provable zero.
+
+`REQUIRED_FLAGS` is spelled out rather than derived from a call to `argv`,
+which would need a `ReviewRequest` it has no use for — and a test asserts the
+constant is exactly the set of long flags `argv` passes, so the two cannot
+drift.
+
+Both probes run under `PROBE_TIMEOUT_SECONDS` (30 s). They are awaited inside
+`review()` *before* `run()`'s own wall clock starts, so without one a
+`claude --version` that hangs on a network update check holds the worker
+until the lease lapses — and nothing claims that pull request again until a
+restart.
+
+This is roadmap item A3.
+
 ### Reading the envelope
 
 Stdout is one JSON object, and the parse is strict:

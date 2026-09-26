@@ -23,8 +23,9 @@ from pr_review_agent.engine import (
     Severity,
     UsageLimited,
 )
-from pr_review_agent.engine.claude import TOOLS
-from pr_review_agent.engine.cli import cli_environment
+from pr_review_agent.engine import cli as cli_module
+from pr_review_agent.engine.claude import REQUIRED_FLAGS, TOOLS
+from pr_review_agent.engine.cli import PROBE_TIMEOUT_SECONDS, cli_environment
 from pr_review_agent.engine.prompt import (
     FINDINGS_SCHEMA,
     SYSTEM_PROMPT,
@@ -49,6 +50,13 @@ TRIGGER = Trigger(
     head_sha="a" * 40,
     actor_id=114395272,
     dedupe_key="o/r#7@" + "a" * 40,
+)
+
+#: Stands in for what `claude --help` prints. Only the flag names matter,
+#: so it is the real shape without the prose: preflight reads it to prove
+#: the containment flags it passes still exist.
+HELP = "Usage: claude [options]\n" + "".join(
+    f"  {flag} <value>\n" for flag in REQUIRED_FLAGS
 )
 
 USAGE = {
@@ -111,12 +119,17 @@ class Recorder:
         returncode: int | None = 0,
         hang: bool = False,
         version: str = "2.1.274 (Claude Code)",
+        help_text: str = HELP,
+        hang_on_probe: bool = False,
     ):
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
         self.hang = hang
         self.version = version
+        self.help_text = help_text
+        self.hang_on_probe = hang_on_probe
+        self.probes = 0
         self.argv: tuple[str, ...] = ()
         self.env: dict[str, str] = {}
         self.cwd: str | None = None
@@ -130,9 +143,14 @@ class Recorder:
         return self
 
     async def communicate(self, stdin=b""):
-        # The version probe runs first and through the same patch point.
-        if "--version" in self.argv:
-            return self.version.encode(), b""
+        # The two preflight probes run first, through the same patch point.
+        if "--version" in self.argv or "--help" in self.argv:
+            self.probes += 1
+            if self.hang_on_probe:
+                await asyncio.sleep(3600)
+            if "--version" in self.argv:
+                return self.version.encode(), b""
+            return self.help_text.encode(), b""
         self.stdin = stdin
         if self.hang:
             await asyncio.sleep(3600)
@@ -372,6 +390,72 @@ def test_a_diff_full_of_backticks_cannot_end_its_own_fence(tmp_path):
     prompt = build_prompt(request(tmp_path, diff=diff), standards="")
     fence = "`" * 5
     assert prompt.count(fence) == 2
+
+
+# -- preflight: the containment flags have to still exist -----------------
+
+
+async def test_preflight_passes_when_help_lists_every_flag(tmp_path, run):
+    run(Recorder(envelope()))
+    result = await engine().review(request(tmp_path))
+    assert result.outcome is Outcome.COMPLETED
+
+
+@pytest.mark.parametrize("dropped", ["--restricted", "--tools", "--permission-prompts"])
+async def test_a_missing_containment_flag_refuses_rather_than_warns(
+    tmp_path, run, dropped
+):
+    """Unconfined over an attacker's tree is worse than offline."""
+    run(Recorder(envelope(), help_text=HELP.replace(f"  {dropped} <value>\n", "")))
+    with pytest.raises(EngineUnavailable, match=dropped):
+        await engine().review(request(tmp_path))
+
+
+async def test_the_refusal_names_every_missing_flag(tmp_path, run):
+    run(Recorder(envelope(), help_text="Usage: claude [options]\n"))
+    with pytest.raises(EngineUnavailable) as raised:
+        await engine().review(request(tmp_path))
+
+    for flag in REQUIRED_FLAGS:
+        assert flag in str(raised.value)
+
+
+def test_required_flags_are_exactly_the_long_flags_argv_passes(tmp_path):
+    """The constant and the argv cannot drift: this is what pins them."""
+    passed = {arg for arg in engine().argv(request(tmp_path)) if arg.startswith("--")}
+    assert set(REQUIRED_FLAGS) == passed
+
+
+async def test_preflight_runs_once_per_engine(tmp_path, run):
+    """Two reviews, one version probe and one help probe."""
+    recorder = run(Recorder(envelope()))
+    built = engine()
+    await built.review(request(tmp_path))
+    probes = recorder.probes
+    await built.review(request(tmp_path))
+    assert recorder.probes == probes
+
+
+# -- the probes have a wall clock of their own ----------------------------
+
+
+async def test_a_hanging_probe_does_not_block_the_worker(tmp_path, run, monkeypatch):
+    """It is awaited before `run()`'s clock starts, so it needs one of its own.
+
+    Without it a `claude --version` that hangs on a network update check
+    holds the worker until the lease lapses, and nothing claims that pull
+    request again until a restart.
+    """
+    monkeypatch.setattr(cli_module, "PROBE_TIMEOUT_SECONDS", 0.01)
+    recorder = run(Recorder(envelope(), hang_on_probe=True, returncode=None))
+    with pytest.raises(EngineUnavailable, match="did not answer"):
+        await engine().review(request(tmp_path))
+    assert recorder.stopped
+
+
+def test_the_probe_clock_is_shorter_than_any_review():
+    """A probe does no work, so it must not be able to outlive one that does."""
+    assert engine().timeout_seconds > PROBE_TIMEOUT_SECONDS
 
 
 # -- the account's own limit, which must not be retried --

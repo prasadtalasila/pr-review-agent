@@ -232,6 +232,15 @@ workspace:
   # budget.max_changed_files / max_changed_lines, with every other cap.
   cache_dir: .cache/repos
 
+  # Optional (default "git"). Which git the hardened checkout runs. A plain
+  # name is resolved by the kernel through PATH, which this agent passes
+  # through to the child -- so a writable directory early on the daemon
+  # user's PATH shadows it and defeats the checkout's -c hardening flags and
+  # its built environment together, without touching either. An absolute
+  # path is what settles the question. `host check` prints where each name
+  # resolved to, and startup logs a WARNING while this is a plain name.
+  git: git
+
 # ---------------------------------------------------------------------------
 # worker -- optional. How many reviews run at once.
 # ---------------------------------------------------------------------------

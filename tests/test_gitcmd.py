@@ -1,5 +1,6 @@
 """The one place the agent shells out, and the environment it builds."""
 
+import logging
 import sys
 
 import pytest
@@ -11,6 +12,7 @@ from pr_review_agent.workspace.gitcmd import (
     git_environment,
     git_version,
     run_git,
+    use_git,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -81,3 +83,29 @@ def test_the_minimum_version_is_the_one_that_added_config_overrides():
     # GIT_CONFIG_GLOBAL/SYSTEM arrived in 2.32; below it they are ignored
     # silently, taking the whole hardening with them.
     assert MINIMUM_GIT_VERSION == (2, 32)
+
+
+# -- which git actually runs ----------------------------------------------
+
+
+def test_use_git_points_every_later_run_at_it(monkeypatch):
+    monkeypatch.setattr("pr_review_agent.workspace.gitcmd.GIT", "git")
+    use_git("/opt/git/bin/git")
+    from pr_review_agent.workspace import gitcmd
+
+    assert gitcmd.GIT == "/opt/git/bin/git"
+
+
+def test_a_relative_git_warns(monkeypatch, caplog):
+    """It resolves through PATH, and a shadow there is invisible from inside."""
+    monkeypatch.setattr("pr_review_agent.workspace.gitcmd.GIT", "git")
+    with caplog.at_level(logging.WARNING):
+        use_git("git")
+    assert "resolves through PATH" in caplog.text
+
+
+def test_an_absolute_git_does_not_warn(monkeypatch, caplog):
+    monkeypatch.setattr("pr_review_agent.workspace.gitcmd.GIT", "git")
+    with caplog.at_level(logging.WARNING):
+        use_git("/usr/bin/git")
+    assert "resolves through PATH" not in caplog.text
