@@ -45,3 +45,7 @@ Installing the package puts `pr-review-agent` on the path. Commands follow a
 `config` → `host` → `daemon`, plus `service` for the systemd install.
 `--config` is optional: without it a command reads `config.yaml` from the
 directory it is started in, which is also where `state.db` is written.
+
+Every command and option is in the [CLI reference](CLI.md); where the GitHub
+token lives, and why each repository needs its own, is in
+[Tokens and credentials](TOKENS.md).

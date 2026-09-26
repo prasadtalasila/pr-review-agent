@@ -47,6 +47,9 @@ variable, so it can come from a systemd `EnvironmentFile`, a secret manager or
 the shell without ever being a file the repository could swallow. `config.yaml`
 is gitignored regardless, because it names real accounts.
 
+See [TOKENS.md](TOKENS.md) for the scope the token needs, and why several
+repositories sharing one budget must not share one token.
+
 ## 📖 Sections
 
 ### `github`

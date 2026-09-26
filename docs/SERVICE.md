@@ -140,7 +140,7 @@ GITHUB_TOKEN=github_pat_...
 ```
 
 A fine-grained PAT with read and write on pull requests for the one
-repository in `config.yaml`. It is passed to the daemon by
+repository in `config.yaml` — see [TOKENS.md](TOKENS.md). It is passed to the daemon by
 `EnvironmentFile=` and never by `ExecStart=`, so it does not appear in
 `ps`, in `systemctl show` or in `systemctl cat`.
 

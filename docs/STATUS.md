@@ -27,6 +27,7 @@ they are reproduced here so they survive the issue being closed.
 | `pr-review-agent <noun> <verb>` command tree, `config generate` | implemented, unit tested |
 | systemd user unit and `service install` | implemented, unit tested |
 | Logging: level, `auto`/`text`/`json` shape, journald priorities | implemented, unit tested |
+| Multi-repo: repo-scoped queue and watermarks, shared budget authority, `service install --instance` | implemented, unit tested |
 | Retention sweep | not started |
 
 The ordering is deliberate: the **budget governor lands before the review
