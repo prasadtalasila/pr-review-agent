@@ -64,7 +64,7 @@ from datetime import datetime, timedelta
 from ._compat import StrEnum
 from .config import BudgetConfig
 from .queue import Claim
-from .store import SqliteStore, parse_timestamp, to_utc
+from .store import SqliteStore, parse_timestamp, read_budget_policy, to_utc
 from .triggers.models import TriggerKind
 
 logger = logging.getLogger(__name__)
@@ -324,20 +324,50 @@ WHERE settled_at IS NOT NULL AND usage_confidence = :exact
 class Governor:
     """The one gate between a queued trigger and a review engine."""
 
-    def __init__(self, store: SqliteStore, config: BudgetConfig) -> None:
+    def __init__(
+        self, store: SqliteStore, config: BudgetConfig, *, comply: bool = False
+    ) -> None:
         self._store = store
         self._config = config
-        self._windows = _windows(config)
+        self._comply = comply
 
     @property
     def config(self) -> BudgetConfig:
-        """The budget settings currently in force."""
+        """This daemon's own budget settings, before any adoption."""
         return self._config
 
     def reload(self, config: BudgetConfig) -> None:
         """Adopt ``config``, so ``SIGHUP`` needs no restart to take effect."""
         self._config = config
-        self._windows = _windows(config)
+
+    def _effective(self, conn: sqlite3.Connection) -> BudgetConfig:
+        """The budget actually in force on ``conn``.
+
+        For a complier this is the local file under the authority's published
+        pool arithmetic, re-read on every admission rather than cached. That
+        is what makes an authority's ``SIGHUP`` reach a running complier
+        without signalling it: the next claim simply measures against the new
+        numbers. It costs one single-row lookup on a connection the caller has
+        already opened.
+
+        A missing row leaves the local file standing. Startup refuses to run a
+        complier before an authority has published, so this is the *last*
+        published policy going missing under a live daemon rather than a state
+        the daemon can start in.
+        """
+        if not self._comply:
+            return self._config
+        published = read_budget_policy(conn)
+        if published is None:
+            return self._config
+        return self._config.adopt(published.fields)
+
+    def _effective_now(self) -> BudgetConfig:
+        """The same, for a caller that holds no transaction of its own."""
+        if not self._comply:
+            return self._config
+        with self._store.transaction() as conn:
+            return self._effective(conn)
 
     def admit(self, conn: sqlite3.Connection, claim: Claim, now: datetime) -> bool:
         """Reserve this run's ceiling, or refuse it.
@@ -346,7 +376,8 @@ class Governor:
         opened, so the reservation and the claim commit together or not at
         all. Never opens or closes a transaction of its own.
         """
-        if not self._config.enabled:
+        config = self._effective(conn)
+        if not config.enabled:
             logger.warning(
                 "budget.enabled is false: refusing %s", claim.trigger.dedupe_key
             )
@@ -366,10 +397,11 @@ class Governor:
         headroom = self._headroom(
             conn,
             now,
+            config,
             actor_id=claim.trigger.actor_id,
             calibration=breaker.calibration(at),
         )
-        if not self._allows(headroom, claim):
+        if not self._allows(headroom, claim, config):
             return False
         conn.execute(
             _RESERVE,
@@ -378,7 +410,7 @@ class Governor:
                 "owner": claim.owner,
                 "actor": claim.trigger.actor_id,
                 "mode": str(headroom.mode),
-                "tokens": self._config.max_run_tokens,
+                "tokens": config.max_run_tokens,
                 "now": _stamp(now),
             },
         )
@@ -498,13 +530,14 @@ class Governor:
         caller.
         """
         key = claim.trigger.dedupe_key
+        max_run_tokens = self._effective_now().max_run_tokens
         if reviewed_lines <= 0:
             logger.info(
                 "nothing left to review in %s after path exclusions: refusing", key
             )
         else:
             predicted = self.estimate(reviewed_lines)
-            if predicted <= self._config.max_run_tokens:
+            if predicted <= max_run_tokens:
                 return True
             logger.warning(
                 "%s is predicted to cost %d tokens over %d reviewable lines, "
@@ -512,7 +545,7 @@ class Governor:
                 key,
                 predicted,
                 reviewed_lines,
-                self._config.max_run_tokens,
+                max_run_tokens,
             )
         # Known to have cost nothing, which is not the same as unknown: an
         # `unavailable` row would draw its whole reservation down instead.
@@ -573,12 +606,19 @@ class Governor:
         """
         at = to_utc(now, "now")
         with self._store.transaction() as conn:
-            return self._headroom(conn, now, calibration=_breaker(conn).calibration(at))
+            return self._headroom(
+                conn,
+                now,
+                self._effective(conn),
+                calibration=_breaker(conn).calibration(at),
+            )
 
     def _headroom(
         self,
         conn: sqlite3.Connection,
         now: datetime,
+        config: BudgetConfig,
+        *,
         actor_id: int | None = None,
         calibration: int = FULL_CALIBRATION,
     ) -> Headroom:
@@ -589,7 +629,7 @@ class Governor:
         than against the operator's guess alone.
         """
         at = to_utc(now, "now")
-        windows = self._windows + self._contributor_window(actor_id)
+        windows = _windows(config) + self._contributor_window(config, actor_id)
         worst, tightest = 0.0, windows[0]
         remaining = None
         for window in windows:
@@ -604,18 +644,20 @@ class Governor:
             mode=_mode_for(worst), remaining=max(0, remaining), tightest=tightest.name
         )
 
-    def _contributor_window(self, actor_id: int | None) -> tuple[Window, ...]:
+    def _contributor_window(
+        self, config: BudgetConfig, actor_id: int | None
+    ) -> tuple[Window, ...]:
         """The fourth window, when one contributor's claim is being weighed.
 
         Empty unless ``per_contributor_pct`` is configured *and* an actor is
         being admitted, which is why an unset cap changes nothing at all.
         """
-        limit = self._config.per_contributor_limit
+        limit = config.per_contributor_limit
         if actor_id is None or limit is None:
             return ()
         return (Window("contributor", WEEKLY, limit, actor_id=actor_id),)
 
-    def _allows(self, headroom: Headroom, claim: Claim) -> bool:
+    def _allows(self, headroom: Headroom, claim: Claim, config: BudgetConfig) -> bool:
         """Whether the ladder and the remaining allowance permit this run."""
         key = claim.trigger.dedupe_key
         if headroom.mode is Mode.EXHAUSTED:
@@ -636,7 +678,7 @@ class Governor:
                 key,
             )
             return False
-        if headroom.remaining < self._config.max_run_tokens:
+        if headroom.remaining < config.max_run_tokens:
             # No partial reservation: a run that cannot be afforded in full is
             # not worth starting, because a truncated review is still a spend.
             logger.warning(
@@ -644,7 +686,7 @@ class Governor:
                 "refusing %s",
                 headroom.tightest,
                 headroom.remaining,
-                self._config.max_run_tokens,
+                config.max_run_tokens,
                 key,
             )
             return False

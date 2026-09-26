@@ -19,11 +19,12 @@ from datetime import datetime, timedelta, timezone
 from pr_review_agent.budget import MENTION_ONLY_AT, Governor
 from pr_review_agent.config import BudgetConfig
 from pr_review_agent.queue import ReviewQueue
-from pr_review_agent.store import SqliteStore
+from pr_review_agent.store import BudgetPolicy, SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 REPO = "prasadtalasila/pr-review-agent"
+OTHER_REPO = "prasadtalasila/other-repo"
 
 WORKERS = 8
 RUN_TOKENS = 1_000
@@ -48,22 +49,22 @@ def config():
     )
 
 
-def trigger(pr):
+def trigger(pr, repo=REPO):
     """One trigger per pull request, so the per-PR lease never serialises us."""
     return Trigger(
         kind=TriggerKind.PR_OPENED,
-        repo=REPO,
+        repo=repo,
         pr_number=pr,
         head_sha=f"sha{pr}",
         actor_id=114395272,
-        dedupe_key=f"pr_opened:{REPO}:{pr}:sha{pr}",
+        dedupe_key=f"pr_opened:{repo}:{pr}:sha{pr}",
     )
 
 
 def test_concurrent_workers_cannot_breach_a_window(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as seed:
-        queue = ReviewQueue(seed)
+        queue = ReviewQueue(seed, repo=REPO)
         for pr in range(WORKERS * 5):
             queue.enqueue(trigger(pr), now=NOON + timedelta(seconds=pr))
 
@@ -72,7 +73,7 @@ def test_concurrent_workers_cannot_breach_a_window(tmp_path):
         claimed = 0
         with SqliteStore(path) as store:
             governor = Governor(store, config())
-            queue = ReviewQueue(store)
+            queue = ReviewQueue(store, repo=REPO)
             while True:
                 claim = queue.claim(now=NOON, owner=name, admit=governor.admit)
                 if claim is None:
@@ -105,7 +106,7 @@ def test_a_sequential_drain_admits_the_same_number(tmp_path):
     """
     path = tmp_path / "state.db"
     with SqliteStore(path) as store:
-        queue = ReviewQueue(store)
+        queue = ReviewQueue(store, repo=REPO)
         for pr in range(WORKERS * 5):
             queue.enqueue(trigger(pr), now=NOON + timedelta(seconds=pr))
         governor = Governor(store, config())
@@ -117,3 +118,48 @@ def test_a_sequential_drain_admits_the_same_number(tmp_path):
             queue.complete(claim)
 
     assert admitted == ADMISSIBLE
+
+
+def test_two_repos_over_one_store_share_one_pool(tmp_path):
+    """The claim Phase 2 rests on: N daemons cannot collectively overspend.
+
+    Each repository runs its own process with its own queue, and the pool is
+    shared only because the ledger is. If either governed with its own copy
+    of the numbers the bound would be ADMISSIBLE *per repo* -- twice what the
+    plan actually funds -- so the assertion is that it stays ADMISSIBLE in
+    total, exactly as for one repository draining alone.
+    """
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as seed:
+        for repo in (REPO, OTHER_REPO):
+            queue = ReviewQueue(seed, repo=repo)
+            for pr in range(WORKERS * 5):
+                queue.enqueue(trigger(pr, repo), now=NOON + timedelta(seconds=pr))
+        # One authority publishes the pool arithmetic; the other complies.
+        seed.publish_budget_policy(BudgetPolicy(REPO, config().shared()), now=NOON)
+
+    def drain(worker):
+        name, repo = worker
+        claimed = 0
+        with SqliteStore(path) as store:
+            governor = Governor(store, config(), comply=repo != REPO)
+            queue = ReviewQueue(store, repo=repo)
+            while True:
+                claim = queue.claim(now=NOON, owner=name, admit=governor.admit)
+                if claim is None:
+                    return claimed
+                claimed += 1
+                queue.complete(claim)
+
+    workers = [(f"w{n}", REPO if n % 2 else OTHER_REPO) for n in range(WORKERS)]
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        admitted = sum(pool.map(drain, workers))
+
+    assert admitted == ADMISSIBLE
+
+    with sqlite3.connect(path) as conn:
+        reserved = conn.execute(
+            "SELECT COUNT(*), SUM(reserved_tokens) FROM ledger"
+        ).fetchone()
+    assert reserved == (ADMISSIBLE, ADMISSIBLE * RUN_TOKENS)
+    assert reserved[1] <= config().weekly_limit

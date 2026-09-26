@@ -222,8 +222,8 @@ class TimingOutEngine:
 class SpyQueue(ReviewQueue):
     """A queue that records the admit hook it was handed."""
 
-    def __init__(self, store: SqliteStore) -> None:
-        super().__init__(store)
+    def __init__(self, store: SqliteStore, *, repo: str = REPO) -> None:
+        super().__init__(store, repo=repo)
         self.admits: list[object] = []
 
     def claim(self, *, now, owner, admit=None):
@@ -283,7 +283,7 @@ def wired_fixture(tmp_path, workspace, git_remote):
     ):
         store = SqliteStore(tmp_path / "state.db")
         store.__enter__()
-        queue = queue_class(store)
+        queue = queue_class(store, repo=REPO)
         governor = Governor(store, config or budget())
         runs = RunStore(store)
         endpoints = RepoEndpoints("owner", "name")

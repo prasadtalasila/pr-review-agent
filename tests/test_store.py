@@ -7,7 +7,7 @@ from unittest import mock
 import pytest
 
 from pr_review_agent import store as store_module
-from pr_review_agent.store import SCHEMA_VERSION, SqliteStore
+from pr_review_agent.store import SCHEMA_VERSION, BudgetPolicy, SqliteStore
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 
@@ -131,7 +131,7 @@ def test_a_failed_transaction_rolls_back(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 9
+        assert store.schema_version == SCHEMA_VERSION == 10
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -341,3 +341,50 @@ def test_an_existing_database_adopts_the_breaker_state(tmp_path):
     with SqliteStore(path) as reopened, reopened.transaction() as conn:
         assert reopened.schema_version == SCHEMA_VERSION
         assert conn.execute("SELECT * FROM budget_state").fetchall() == []
+
+
+def test_the_budget_policy_arrives_with_the_schema(tmp_path):
+    """Where an authority publishes the pool arithmetic others adopt."""
+    with SqliteStore(tmp_path / "state.db") as store, store.transaction() as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(budget_policy)")}
+    assert columns == {"id", "authority_repo", "policy", "written_at"}
+
+
+def test_an_existing_database_adopts_the_budget_policy(tmp_path):
+    """A v9 store gains it, empty -- which is what "no authority yet" reads as."""
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store, store.transaction() as conn:
+        conn.execute("DROP TABLE budget_policy")
+        conn.execute("PRAGMA user_version = 9")
+
+    with SqliteStore(path) as reopened:
+        assert reopened.schema_version == SCHEMA_VERSION
+        assert reopened.budget_policy() is None
+
+
+def test_the_budget_policy_holds_one_row(tmp_path):
+    """A second policy would be a second opinion about one shared pool."""
+    with (
+        SqliteStore(tmp_path / "state.db") as store,
+        store.transaction() as conn,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        conn.execute(
+            "INSERT INTO budget_policy (id, authority_repo, policy, written_at) "
+            "VALUES (2, 'o/r', '{}', '2026-01-01T00:00:00+00:00')"
+        )
+
+
+def test_publishing_a_policy_replaces_the_previous_one(tmp_path):
+    """An authority republishes on every start and every reload."""
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with SqliteStore(tmp_path / "state.db") as store:
+        store.publish_budget_policy(
+            BudgetPolicy("o/r", {"weekly_tokens": 1_000}), now=now
+        )
+        store.publish_budget_policy(
+            BudgetPolicy("o/r", {"weekly_tokens": 2_000}), now=now
+        )
+        published = store.budget_policy()
+
+    assert published == BudgetPolicy("o/r", {"weekly_tokens": 2_000})

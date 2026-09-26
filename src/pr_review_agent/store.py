@@ -37,9 +37,11 @@ depends on.
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -146,6 +148,23 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS budget_state (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
+    );
+    """,
+    # The shared budget policy: whose configuration governs the pool when
+    # several daemons share this file. One row, held there by the CHECK,
+    # because a second row would be a second opinion about one allowance --
+    # and two daemons that disagree do not split the pool between them, they
+    # hand it to whichever was configured most permissively.
+    #
+    # Separate from `budget_state` even though both are one-row-ish scalars:
+    # that one is what the breaker *learned*, this is what an operator
+    # *declared*, and a reset of either must not touch the other.
+    """
+    CREATE TABLE IF NOT EXISTS budget_policy (
+        id             INTEGER PRIMARY KEY CHECK (id = 1),
+        authority_repo TEXT NOT NULL,
+        policy         TEXT NOT NULL,
+        written_at     TEXT NOT NULL
     );
     """,
 )
@@ -256,6 +275,50 @@ class SqliteStore:
         ).fetchone()
         return None if row is None else parse_timestamp(row[0])
 
+    def adopt_legacy_watermarks(
+        self, qualified: Mapping[str, str]
+    ) -> dict[str, datetime]:
+        """Rename pre-multi-repo watermark rows, once per store.
+
+        ``qualified`` maps each bare stem to the name it should take. A
+        database written before watermarks carried a repository holds bare
+        ``pull_requests`` and ``comments`` rows, and no schema migration can
+        rename them: the repository is named in ``config.yaml`` and is not in
+        the database at all.
+
+        **Once per store, not once per repository.** The rows are the first
+        repository's, so a second repository pointed at the same file must
+        not inherit them -- its watermark would start weeks in the past and
+        its whole open backlog would be enqueued and paid for. Adoption
+        therefore happens only while no qualified row exists anywhere, and
+        the legacy rows are deleted in the same transaction so that a later
+        arrival cannot adopt them. That trades a downgrade's watermark for a
+        bound on spending, which is the direction this project errs in.
+
+        Returns the names adopted, for the caller to log.
+        """
+        adopted: dict[str, datetime] = {}
+        with self.transaction() as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM watermarks WHERE name LIKE '%:%' LIMIT 1"
+                ).fetchone()
+                is not None
+            ):
+                return adopted
+            for stem, name in qualified.items():
+                row = conn.execute(
+                    "SELECT at FROM watermarks WHERE name = ?", (stem,)
+                ).fetchone()
+                if row is None:
+                    continue
+                conn.execute(
+                    "INSERT INTO watermarks (name, at) VALUES (?, ?)", (name, row[0])
+                )
+                adopted[name] = parse_timestamp(row[0])
+            conn.execute("DELETE FROM watermarks WHERE name NOT LIKE '%:%'")
+        return adopted
+
     def advance_watermark(self, name: str, at: datetime) -> datetime:
         """Move the ``name`` watermark forward to ``at``, never backwards.
 
@@ -272,6 +335,52 @@ class SqliteStore:
             (name, at.isoformat()),
         )
         return at
+
+    # -- Shared budget policy ---------------------------------------------
+
+    def budget_policy(self) -> BudgetPolicy | None:
+        """The published policy, or ``None`` if no authority has run yet."""
+        return read_budget_policy(self._conn)
+
+    def publish_budget_policy(self, policy: BudgetPolicy, *, now: datetime) -> None:
+        """Replace the published policy with ``policy``.
+
+        Unconditional, so an authority restarting or reloading republishes
+        rather than having to reconcile: its file is the declared truth, and
+        the row is only ever a copy of it.
+        """
+        self._conn.execute(
+            "INSERT INTO budget_policy (id, authority_repo, policy, written_at) "
+            "VALUES (1, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET authority_repo = excluded.authority_repo, "
+            "policy = excluded.policy, written_at = excluded.written_at",
+            (
+                policy.authority_repo,
+                json.dumps(policy.fields, sort_keys=True),
+                to_utc(now, "written_at").isoformat(),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class BudgetPolicy:
+    """The pool arithmetic one daemon published for the others to adopt."""
+
+    authority_repo: str
+    fields: dict[str, int | None]
+
+
+def read_budget_policy(conn: sqlite3.Connection) -> BudgetPolicy | None:
+    """The published policy, read on a caller's connection.
+
+    Takes a connection rather than a store so the governor can read it inside
+    the transaction its reservation is already being written in, which is what
+    lets an authority's change reach a running complier with no signal to it.
+    """
+    row = conn.execute(
+        "SELECT authority_repo, policy FROM budget_policy WHERE id = 1"
+    ).fetchone()
+    return None if row is None else BudgetPolicy(row[0], json.loads(row[1]))
 
 
 def to_utc(value: datetime, what: str) -> datetime:

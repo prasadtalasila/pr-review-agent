@@ -54,7 +54,9 @@ with every target made absolute and pinned to the tag being released.
 
 | Document | Answers |
 | :-- | :-- |
+| [docs/CLI.md](docs/CLI.md) | What commands exist? Every `<noun> <verb>`, its options, the exit codes and the environment variables |
 | [docs/CONFIG.md](docs/CONFIG.md) | What settings exist, what does each accept, and why are unknown keys an error? |
+| [docs/TOKENS.md](docs/TOKENS.md) | Where do credentials live? The GitHub PAT and its scope, one token per repository, the allowlist, and rotation |
 | [docs/SERVICE.md](docs/SERVICE.md) | How is it deployed? The systemd user unit, why a user unit and not a system one, the three paths that must be absolute, lingering, and what `systemctl reload` reloads |
 | [docs/DESIGN.md](docs/DESIGN.md) | Why does this exist and why is it shaped like this? The four constraints, every alternative considered and rejected, the billing-mode question that is still open, and how prompt injection is handled |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | What actually runs? The components, the path an event takes, the package layout, and which layer may import which |

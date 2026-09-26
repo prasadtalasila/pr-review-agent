@@ -32,6 +32,19 @@ A claim is refused while any *other* row for the same `(repo, pr_number)`
 holds a live lease. A maintainer's `@claude` arriving mid-review therefore
 waits for the run in flight rather than racing it.
 
+## 🪪 A queue belongs to one repository
+
+`ReviewQueue(store, repo=…)` is scoped, and `_CLAIMABLE` filters on it. When
+several daemons [share one store](BUDGET.md#-several-repositories-one-allowance)
+they share this table with it, and each holds a token for its own repository
+only — so an unscoped claim would hand a trigger to the one process that
+cannot act on it, which is the boundary the per-process split exists to draw.
+The sweep that abandons exhausted rows is scoped for the same reason: a
+daemon never writes to another repository's rows.
+
+Enqueueing is not filtered. A poller only ever sees its own repository, so
+there is nothing to exclude.
+
 The claim is a read that picks a row followed by a write that leases it.
 SQLite has no `SKIP LOCKED`, so the pair runs inside one `BEGIN IMMEDIATE`
 transaction — the write lock is taken up front, which is what makes it atomic

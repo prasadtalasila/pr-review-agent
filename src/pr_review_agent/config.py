@@ -7,7 +7,7 @@ at startup, not silently fall back to a default that spends tokens.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -214,6 +214,26 @@ def _cap(data: dict, key: str, default: int) -> int:
     return value
 
 
+#: What an authority publishes and a complier adopts: the pool arithmetic, and
+#: only that. Every one of these decides how much of the *shared* allowance is
+#: available, so two daemons disagreeing about one of them disagree about the
+#: same pool.
+#:
+#: Everything else in ``budget`` stays local, for two different reasons.
+#: ``enabled`` is the emergency brake, and a brake that could only be pulled
+#: fleet-wide could not stop one misbehaving repository. The diff-size caps and
+#: ``excluded_paths`` describe a *repository* -- what is worth reading in it --
+#: rather than the pool, and a vendored tree in one repository says nothing
+#: about another.
+SHARED_FIELDS = (
+    "session_tokens",
+    "weekly_tokens",
+    "max_run_tokens",
+    "reviewer_share_pct",
+    "per_contributor_pct",
+)
+
+
 @dataclass(frozen=True)
 class BudgetConfig:
     """The spending rails: what the plan is assumed to allow, and our share.
@@ -228,6 +248,13 @@ class BudgetConfig:
     two readings of a "kill switch" differ by catastrophe -- one is an
     emergency brake, the other is unbounded spend -- so the governor refuses
     every claim while it is false.
+
+    ``authority`` and ``comply`` decide *whose* numbers govern when several
+    daemons share one store, and so one pool. Exactly one configuration sets
+    ``authority: true`` and publishes the fields in :data:`SHARED_FIELDS`;
+    the rest adopt them. Without this each process would police the shared
+    pool using its own file, and two files that disagree do not split the
+    budget -- they hand it to whichever is most permissive.
     """
 
     # A configuration section is a flat list of keys. Splitting it to satisfy
@@ -239,6 +266,15 @@ class BudgetConfig:
     weekly_tokens: int
     max_run_tokens: int
     enabled: bool = True
+    #: Publishes :data:`SHARED_FIELDS` to the store for the others to adopt.
+    #: Defaults true, which is what makes a lone daemon govern its own store
+    #: with no extra key. A fleet sets it false on all but one, and getting
+    #: that wrong is loud rather than silent: a second authority on the same
+    #: store refuses to start.
+    authority: bool = True
+    #: Adopts what the authority published. Consulted only when ``authority``
+    #: is false, so an authority needs no second key to say it governs itself.
+    comply: bool = True
     reviewer_share_pct: int = DEFAULT_REVIEWER_SHARE_PCT
     max_changed_files: int = DEFAULT_MAX_CHANGED_FILES
     max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES
@@ -279,6 +315,21 @@ class BudgetConfig:
             return None
         return self.weekly_limit * self.per_contributor_pct // 100
 
+    def shared(self) -> dict[str, int | None]:
+        """The pool arithmetic, as an authority publishes it."""
+        return {name: getattr(self, name) for name in SHARED_FIELDS}
+
+    def adopt(self, shared: dict[str, int | None]) -> BudgetConfig:
+        """This file's local settings under the authority's pool arithmetic.
+
+        Needs no re-validation. Both cross-field invariants ``parse`` enforces
+        -- a run fitting inside the daily allowance, and inside one
+        contributor's -- are arithmetic over :data:`SHARED_FIELDS` alone, so
+        they were already checked against these values in the authority's own
+        file before it published them.
+        """
+        return replace(self, **shared)
+
     def _share(self, plan_tokens: int) -> int:
         return plan_tokens * self.reviewer_share_pct // 100
 
@@ -288,6 +339,12 @@ class BudgetConfig:
         enabled = data.get("enabled", True)
         if not isinstance(enabled, bool):
             raise ConfigError("budget.enabled must be true or false")
+        authority = data.get("authority", True)
+        if not isinstance(authority, bool):
+            raise ConfigError("budget.authority must be true or false")
+        comply = data.get("comply", True)
+        if not isinstance(comply, bool):
+            raise ConfigError("budget.comply must be true or false")
         share = data.get("reviewer_share_pct", DEFAULT_REVIEWER_SHARE_PCT)
         if isinstance(share, bool) or not isinstance(share, int):
             raise ConfigError("budget.reviewer_share_pct must be a whole percentage")
@@ -310,6 +367,8 @@ class BudgetConfig:
             weekly_tokens=_tokens(data, "weekly_tokens"),
             max_run_tokens=_tokens(data, "max_run_tokens"),
             enabled=enabled,
+            authority=authority,
+            comply=comply,
             reviewer_share_pct=share,
             max_changed_files=_cap(
                 data, "max_changed_files", DEFAULT_MAX_CHANGED_FILES
@@ -617,6 +676,8 @@ class Config:
                     "budget",
                     {
                         "enabled",
+                        "authority",
+                        "comply",
                         "session_tokens",
                         "weekly_tokens",
                         "max_run_tokens",

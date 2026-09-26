@@ -102,7 +102,8 @@ VALUES (:key, :kind, :repo, :pr, :sha, :actor, :pending, :now,
 # back by ``release``, so an exhausted trigger never lingers as "pending".
 _ABANDON_EXHAUSTED = """
 UPDATE queue SET status = :abandoned, leased_until = NULL, owner = NULL
-WHERE attempts >= :max_attempts
+WHERE repo = :repo
+  AND attempts >= :max_attempts
   AND (status = :pending OR (status = :claimed AND leased_until <= :now))
 """
 
@@ -120,7 +121,8 @@ _CLAIMABLE = """
 SELECT dedupe_key, kind, repo, pr_number, head_sha, actor_id, attempts,
        comment_id, comment_source
 FROM queue AS q
-WHERE q.attempts < :max_attempts
+WHERE q.repo = :repo
+  AND q.attempts < :max_attempts
   AND (q.status = :pending OR (q.status = :claimed AND q.leased_until <= :now))
   AND NOT EXISTS (
       SELECT 1 FROM queue AS other
@@ -167,16 +169,25 @@ WHERE dedupe_key = :key AND owner = :owner
 
 
 class ReviewQueue:
-    """Durable queue of accepted triggers, with one lease per pull request."""
+    """Durable queue of accepted triggers, with one lease per pull request.
+
+    Scoped to ``repo``: several daemons, one per repository, share a store so
+    they can share a budget, and the queue table is shared with it. A claim
+    that crossed repositories would hand a trigger to the one process that
+    does not hold a token for it -- each daemon holds only its own, which is
+    the trust boundary the per-process split exists to enforce.
+    """
 
     def __init__(
         self,
         store: SqliteStore,
         *,
+        repo: str,
         lease: timedelta = DEFAULT_LEASE,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ) -> None:
         self._store = store
+        self._repo = repo
         self._lease = lease
         self._max_attempts = max_attempts
 
@@ -219,6 +230,7 @@ class ReviewQueue:
         until = to_utc(now, "now") + self._lease
         common = {
             "now": _stamp(now, "now"),
+            "repo": self._repo,
             "max_attempts": self._max_attempts,
             "pending": str(QueueStatus.PENDING),
             "claimed": str(QueueStatus.CLAIMED),

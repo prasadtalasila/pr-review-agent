@@ -1,0 +1,67 @@
+# A systemd *user* template unit: one instance per repository.
+#
+# Use this instead of pr-review-agent.service when several repositories share
+# one token budget. Each instance gets its own config.yaml, its own GitHub
+# token and its own allowlist; they share a budget by pointing store.path at
+# one file. See docs/BUDGET.md for how that sharing is governed.
+#
+# `%i` is the instance name -- `systemctl --user start pr-review-agent@web`
+# reads .../pr-review-agent/web/config.yaml. The directory above it is
+# substituted at install time rather than written as %h/.config, because
+# XDG_CONFIG_HOME may point somewhere else entirely.
+#
+# Written by `pr-review-agent service install --instance NAME`, which also
+# creates that directory. See docs/SERVICE.md for the whole procedure.
+
+[Unit]
+Description=pr-review-agent -- LLM pull request reviewer (%i)
+Documentation=https://prasad.talasila.in/pr-review-agent/SERVICE.html
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart={executable} daemon start --config {config_root}/%i/config.yaml
+
+# daemon.py reloads the budget and publish sections on SIGHUP, so `systemctl
+# --user reload` re-reads them without dropping the queue or re-seeding the
+# poll watermarks, which a restart would. On the instance that owns
+# budget.authority this is also how a changed limit reaches every other one:
+# the reload republishes the shared policy, and the rest adopt it on their
+# next claim without being signalled at all.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# GITHUB_TOKEN, and nothing else. Mode 0600; never world-readable, and never
+# in ExecStart= where `systemctl show` and `ps` would both expose it.
+#
+# One file per instance, and that is the point of running a process per
+# repository: this instance never holds another repository's token, so no
+# bug in it can post as one.
+EnvironmentFile={config_root}/%i/token.env
+
+# How much the daemon says. DEBUG | INFO | WARNING | ERROR | CRITICAL.
+# `systemctl --user edit pr-review-agent@NAME` overrides it for one instance.
+Environment=PR_REVIEW_AGENT_LOG_LEVEL=INFO
+
+# Carries the instance, so `journalctl -t pr-review-agent@web` selects one
+# repository out of the fleet.
+SyslogIdentifier=pr-review-agent@%i
+
+# StandardOutput= and StandardError= are deliberately unset, for the reason
+# spelled out in pr-review-agent.service: setting either explicitly opens a
+# second journal stream and the priority prefix is silently dropped.
+
+# Restart=on-failure is what makes the start order of a fleet irrelevant. An
+# instance that is not the budget authority exits 3 while no authority has
+# published to the shared store yet, and is simply restarted until one has.
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+# $HOME stays writable, which is where the shared state database and this
+# instance's checkout cache live. ProtectHome= is deliberately NOT set: it
+# would hide both, and the `claude` login besides.
+ProtectSystem=strict
+
+[Install]
+WantedBy=default.target

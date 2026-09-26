@@ -322,6 +322,54 @@ def test_the_kill_switch_parses_off():
     assert Config.from_mapping(data).budget.enabled is False
 
 
+def test_a_lone_daemon_governs_its_own_store_by_default():
+    """A single deployment needs neither key, which is why both default true.
+
+    ``comply`` is consulted only when ``authority`` is false, so the pair
+    means "publish my own limits" until a fleet says otherwise.
+    """
+    budget = Config.from_mapping(VALID).budget
+    assert budget.authority is True
+    assert budget.comply is True
+
+
+@pytest.mark.parametrize("key", ["authority", "comply"])
+def test_the_policy_flags_reject_a_non_boolean(key):
+    data = {**VALID, "budget": {**BUDGET, key: "yes"}}
+    with pytest.raises(ConfigError, match=f"budget.{key} must be true or false"):
+        Config.from_mapping(data)
+
+
+def test_adopting_a_policy_takes_the_pool_and_leaves_the_rest():
+    """The split that makes a shared budget safe to run.
+
+    The pool arithmetic has to come from one place or the most permissive
+    file wins; everything else describes a repository rather than the
+    allowance, and ``enabled`` is the brake that must stay pullable per repo.
+    """
+    local = Config.from_mapping(
+        {
+            **VALID,
+            "budget": {
+                **BUDGET,
+                "enabled": False,
+                "max_changed_files": 7,
+                "excluded_paths": ["**/local.lock"],
+            },
+        }
+    ).budget
+    authority = Config.from_mapping(
+        {**VALID, "budget": {**BUDGET, "weekly_tokens": 9_000_000}}
+    ).budget
+
+    adopted = local.adopt(authority.shared())
+
+    assert adopted.weekly_tokens == 9_000_000
+    assert adopted.enabled is False
+    assert adopted.max_changed_files == 7
+    assert adopted.excluded_paths == ("**/local.lock",)
+
+
 def test_size_caps_default_to_the_pinned_values():
     """Asserted by value, not against the constants they come from.
 
@@ -623,6 +671,8 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
     assert set(data["triggers"]) == {"allowlist", "handle"}
     assert set(data["budget"]) == {
         "enabled",
+        "authority",
+        "comply",
         "session_tokens",
         "weekly_tokens",
         "max_run_tokens",
@@ -649,6 +699,8 @@ def test_the_comprehensive_example_states_the_real_defaults():
     defaults = Config.load(EXAMPLES / "config.minimal.example.yaml")
     assert shown.triggers.handle == defaults.triggers.handle
     assert shown.budget.enabled == defaults.budget.enabled
+    assert shown.budget.authority == defaults.budget.authority
+    assert shown.budget.comply == defaults.budget.comply
     assert shown.budget.reviewer_share_pct == defaults.budget.reviewer_share_pct
     assert shown.budget.max_changed_files == defaults.budget.max_changed_files
     assert shown.budget.max_changed_lines == defaults.budget.max_changed_lines

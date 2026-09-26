@@ -37,10 +37,15 @@ def mention(pr=7, comment_id=99):
     )
 
 
-@pytest.fixture(name="queue")
-def queue_fixture(tmp_path):
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        yield ReviewQueue(store)
+        yield store
+
+
+@pytest.fixture(name="queue")
+def queue_fixture(store):
+    return ReviewQueue(store, repo=REPO)
 
 
 def test_a_trigger_is_enqueued_once(queue):
@@ -164,7 +169,7 @@ def test_retries_are_bounded(tmp_path):
     # Without the bound, a trigger that crashes its worker every time is
     # re-reviewed forever, spending the allowance on each attempt.
     with SqliteStore(tmp_path / "state.db") as store:
-        queue = ReviewQueue(store, max_attempts=2)
+        queue = ReviewQueue(store, repo=REPO, max_attempts=2)
         queue.enqueue(opened(), now=NOON)
         moment = NOON
         for _ in range(2):
@@ -176,7 +181,7 @@ def test_retries_are_bounded(tmp_path):
 
 def test_a_released_trigger_is_abandoned_once_attempts_run_out(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        queue = ReviewQueue(store, max_attempts=1)
+        queue = ReviewQueue(store, repo=REPO, max_attempts=1)
         queue.enqueue(opened(), now=NOON)
         claim = queue.claim(now=NOON, owner="w1")
         assert claim is not None and queue.release(claim) is True
@@ -194,9 +199,9 @@ def test_the_oldest_trigger_is_claimed_first(queue):
 def test_the_queue_survives_a_restart(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as store:
-        ReviewQueue(store).enqueue(opened(), now=NOON)
+        ReviewQueue(store, repo=REPO).enqueue(opened(), now=NOON)
     with SqliteStore(path) as store:
-        queue = ReviewQueue(store)
+        queue = ReviewQueue(store, repo=REPO)
         assert queue.enqueue(opened(), now=NOON) is False
         assert queue.claim(now=NOON, owner="w1") is not None
 
@@ -206,9 +211,9 @@ def test_a_second_connection_cannot_double_lease(tmp_path):
     # the pair atomic against another writer on the same file.
     path = tmp_path / "state.db"
     with SqliteStore(path) as one, SqliteStore(path) as two:
-        ReviewQueue(one).enqueue(opened(), now=NOON)
-        assert ReviewQueue(one).claim(now=NOON, owner="w1") is not None
-        assert ReviewQueue(two).claim(now=NOON, owner="w2") is None
+        ReviewQueue(one, repo=REPO).enqueue(opened(), now=NOON)
+        assert ReviewQueue(one, repo=REPO).claim(now=NOON, owner="w1") is not None
+        assert ReviewQueue(two, repo=REPO).claim(now=NOON, owner="w2") is None
 
 
 def test_a_naive_timestamp_is_rejected(queue):
@@ -231,7 +236,7 @@ def test_admit_runs_inside_the_claim_transaction(tmp_path):
         return True
 
     with SqliteStore(tmp_path / "state.db") as store:
-        queue = ReviewQueue(store)
+        queue = ReviewQueue(store, repo=REPO)
         queue.enqueue(opened(), now=NOON)
         claim = queue.claim(now=NOON, owner="w", admit=admit)
         assert claim is not None
@@ -374,3 +379,54 @@ def test_holds_is_false_once_the_row_is_finished(queue):
     claim = queue.claim(now=NOON, owner="w1")
     queue.complete(claim)
     assert queue.holds(claim, now=NOON) is False
+
+
+OTHER_REPO = "someone-else/private-repo"
+
+
+def elsewhere(pr=7):
+    """A trigger from the repository this daemon holds no token for."""
+    return replace(
+        opened(pr=pr),
+        repo=OTHER_REPO,
+        dedupe_key=f"pr_opened:{OTHER_REPO}:{pr}:abc123",
+    )
+
+
+def test_a_claim_never_crosses_repositories(store):
+    """The trust boundary the per-process split exists to draw.
+
+    Several daemons share one store so they can share one budget, and the
+    queue table is shared along with it. Each daemon holds only its own
+    repository's token, so a trigger offered to the wrong process is a
+    review attempted with credentials for somewhere else.
+    """
+    ReviewQueue(store, repo=OTHER_REPO).enqueue(elsewhere(), now=NOON)
+    assert ReviewQueue(store, repo=REPO).claim(now=NOON, owner="w1") is None
+
+
+def test_the_other_daemon_still_claims_its_own(store):
+    """The complement: scoping must not strand the work it belongs to."""
+    ReviewQueue(store, repo=OTHER_REPO).enqueue(elsewhere(), now=NOON)
+    claim = ReviewQueue(store, repo=OTHER_REPO).claim(now=NOON, owner="w2")
+    assert claim is not None
+    assert claim.trigger.repo == OTHER_REPO
+
+
+def test_one_repos_sweep_does_not_abandon_anothers_rows(store):
+    """``claim`` sweeps exhausted rows before offering any; that is scoped too."""
+    other = ReviewQueue(store, repo=OTHER_REPO, max_attempts=1)
+    other.enqueue(elsewhere(), now=NOON)
+    attempt = other.claim(now=NOON, owner="w1")
+    assert attempt is not None
+    other.release(attempt)
+
+    # Repo A drains its own (empty) queue, running the sweep over the store.
+    assert ReviewQueue(store, repo=REPO).claim(now=NOON, owner="w2") is None
+
+    with store.transaction() as conn:
+        status = conn.execute(
+            "SELECT status FROM queue WHERE dedupe_key = ?",
+            (elsewhere().dedupe_key,),
+        ).fetchone()[0]
+    assert status == str(QueueStatus.PENDING)

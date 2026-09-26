@@ -46,7 +46,9 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Users:
+      - CLI reference: CLI.md
       - Configuration: CONFIG.md
+      - Tokens and credentials: TOKENS.md
       - Running as a service: SERVICE.md
       - Review output:
           - Report template: reporting/review-report.md
