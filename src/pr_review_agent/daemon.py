@@ -541,6 +541,9 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
                     runs=RunStore(store),
                     config=config.publish,
                     handle=config.triggers.handle,
+                    # The one credential this process holds. A review that
+                    # somehow read it must not be the thing that publishes it.
+                    secrets=(token,),
                 ),
                 config_path=config_path,
             )

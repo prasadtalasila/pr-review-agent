@@ -25,6 +25,7 @@ src/pr_review_agent/
 │   ├── cmd_host.py    # host check
 │   └── cmd_daemon.py  # daemon start
 ├── templates/         # the two config templates the wheel ships
+├── sanitise.py        # engine prose made inert before it is posted
 ├── queue.py           # claim protocol and per-pull-request leases
 ├── worker.py          # claim → review → settle → close the row
 ├── store.py           # SQLite: schema, watermarks, ETags, queue table

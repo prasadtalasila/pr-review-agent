@@ -176,6 +176,49 @@ of who the agent is — see
 [TRIGGERS.md](TRIGGERS.md#-the-agent-cannot-summon-itself) for what that
 bought and what it widened.
 
+## 🧯 Nothing it posts can act
+
+Closing the self-mention loop handles one handle: the agent's own. Everything
+else in a finding was still written through verbatim, and a comment posted by
+an account with a real token is not inert text. GitHub gives ordinary comment
+markdown four ways to act, and `sanitise.py` answers the first three:
+
+| In engine prose | What GitHub does with it | What is posted |
+| :-- | :-- | :-- |
+| `@someone`, `@org/team` | notifies that account or team, **from the agent** | `&#64;someone` |
+| `#123`, `owner/repo#123` | cross-references that issue, from the agent | `&#35;123` |
+| `GH-123` | the same, in the other spelling | `GH&#45;123` |
+| `<sub>`, `<!-- -->` | renders — a forged trailer, or text hidden from a reader | `&lt;sub>` |
+
+Escaped rather than stripped: a reader still sees `@someone` and `#123`,
+because "see #123" is saying something worth reading. What it stops being is a
+link the agent pulled. And prose only, for the same two reasons `neutralise`
+gives — GitHub does not mention, cross-reference or render HTML inside a code
+span or a fence either, and an entity there would show the reader `&#64;` in
+what is meant to be a code sample. `strip_non_prose` is shared between the two
+modules, so they cannot disagree about where prose is.
+
+Bare commit shas are **not** escaped. They auto-link to a commit in the
+repository the review is posted on: a link, not a notification and not a
+cross-reference somewhere else.
+
+**The fourth way is length.** GitHub rejects a body over 65 536 characters
+with a `422` — *after* the review was paid for — and the worker would then
+re-offer the same body on every claim forever. `render` caps at
+`MAX_BODY_CHARS` (60 000, with the margin absorbing the header, the trailer
+and the entities escaping adds) and drops whole sections to get there,
+**lowest severity first**, because `SECTIONS` is already in the order a reader
+needs them. Only when the highest-severity section alone is over the limit is
+prose cut mid-sentence. Either way the body says so, so a reader is never
+shown a partial review that looks complete.
+
+**And a canary.** Before anything is posted, the body is searched for the
+values in `Publisher.secrets` — the live `GITHUB_TOKEN`, today. On a hit the
+publish is refused (`PublishOutcome.REFUSED`), logged at ERROR *without* the
+body, and stamped so it is not offered again: re-running would spend again to
+render the same comment. The canary cannot catch an encoded secret. It catches
+the straightforward one, and turns a silent leak into an alert.
+
 ## 💾 A paid review is kept until it can be posted
 
 The engine is the only irreversible step, so the order after it is fixed:

@@ -33,6 +33,15 @@ reader still sees ``@claude``, and the raw body a later poll reads back has
 no ``@`` for ``has_mention`` to match. This is where the loop is closed, and
 it is why the classifier needs no notion of who the agent is.
 
+**Nothing it posts can act.** Closing the self-mention loop was the first
+half of that; ``sanitise`` is the rest. A finding is model prose over an
+untrusted tree, and GitHub lets ordinary comment text notify an account,
+cross-reference an issue and render HTML -- all attributed to the agent. So
+every engine-authored title and body is escaped before assembly, the
+rendered body is capped below the limit GitHub rejects a comment at, and a
+body carrying a known secret is refused rather than posted. See
+:mod:`pr_review_agent.sanitise`.
+
 **This module cannot approve anything.** ``DESIGN.md`` names three
 prompt-injection mitigations and this is the third: whatever a review
 concludes, the agent takes no approval action and no merge action. That is
@@ -57,6 +66,7 @@ from .engine import Finding, Severity
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
 from .runs import RecordedRun, RunStore
+from .sanitise import leaks, sanitise
 from .triggers.mention import neutralise
 from .triggers.models import PayloadError, Trigger
 
@@ -96,6 +106,19 @@ TRAILER = (
     "beyond this comment.</sub>"
 )
 
+#: How long a rendered body may be. GitHub rejects a comment over 65 536
+#: characters with a 422 -- *after* the review was paid for -- and the
+#: worker would then re-offer the same body on every claim forever. The
+#: margin absorbs the header, the trailer and the entities escaping adds.
+MAX_BODY_CHARS = 60_000
+
+#: Said in place of the sections that did not fit, so a reader is never
+#: shown a partial review that looks complete.
+TRUNCATION_NOTE = (
+    "_Some findings were omitted: this review did not fit a GitHub comment. "
+    "The lowest-severity sections were dropped first._"
+)
+
 
 class PublishOutcome(StrEnum):
     """How an attempt to publish ended.
@@ -109,6 +132,9 @@ class PublishOutcome(StrEnum):
     PUBLISHED = "published"
     SUPERSEDED = "superseded"
     DRY_RUN = "dry_run"
+    #: The body carried a credential, so nothing was posted and nothing
+    #: will be: re-running would produce the same body at the same price.
+    REFUSED = "refused"
 
 
 @dataclass(frozen=True)
@@ -133,6 +159,10 @@ class Publisher:
     #: ``triggers`` needs a restart -- so the handle cannot move under a
     #: running process.
     handle: str
+    #: Values that must never appear in a posted body -- the GitHub token,
+    #: today. Empty by default so a test constructing a publisher need not
+    #: invent one; the daemon passes the live token.
+    secrets: tuple[str, ...] = ()
 
     def reload(self, config: PublishConfig) -> None:
         """Adopt ``config``, so ``SIGHUP`` needs no restart to take effect."""
@@ -190,6 +220,15 @@ class Publisher:
             commits=commits,
             handle=self.handle,
         )
+        if leaks(body, self.secrets):
+            # Not retried, and not logged with the body: re-running would
+            # spend again to produce the same comment, and an ERROR that
+            # quotes the leak is a second copy of it.
+            logger.error(
+                "%s rendered a review containing a credential; refusing to post it",
+                run.dedupe_key,
+            )
+            return self._stamp(run, comment_id=None, outcome=PublishOutcome.REFUSED)
         if self.config.dry_run:
             # The whole rendered review body on every run is a DEBUG-sized
             # record, so INFO keeps only the one line saying it happened --
@@ -293,12 +332,13 @@ def render(
     here is a copy that can drift -- in the one direction where drift means
     the agent summons itself.
 
-    Finding titles and bodies are engine output over an untrusted tree, and
-    are written through verbatim, save for the handle itself. They are
-    rendered as Markdown by GitHub inside the agent's own comment, which is
-    the same trust boundary any human comment has -- what keeps them harmless
-    is that this module can take no action they could ask for. See
-    ``docs/reporting/review-report.md`` for the contract this implements.
+    Finding titles and bodies are engine output over an untrusted tree, so
+    every one of them goes through ``sanitise`` before it is assembled:
+    what a reader sees is unchanged, and what GitHub would have *done* with
+    it -- notify an account, cross-reference an issue, render HTML -- it no
+    longer does. The trailer is the only HTML in the result, and it is ours.
+    See ``docs/reporting/review-report.md`` for the contract this
+    implements.
     """
     header = (
         f"## Review: PR #{pr_number} — round {round_number} "
@@ -307,28 +347,60 @@ def render(
     if not findings:
         return neutralise(f"{header}\n\nNo issues found.\n\n{TRAILER}", handle)
     ordered = sorted(findings, key=_order)
-    parts = [header]
+    sections = []
     for heading, severities in SECTIONS:
         section = [f for f in ordered if f.severity in severities]
         if not section:
             continue
-        parts.append(f"## {heading}")
-        parts.append(_prose(section) if heading == "Nits" else _items(section))
+        rendered = _prose(section) if heading == "Nits" else _items(section)
+        sections.append(f"## {heading}\n\n{rendered}")
+    return neutralise(_fit(header, sections), handle)
+
+
+def _fit(header: str, sections: list[str]) -> str:
+    """The body, trimmed to ``MAX_BODY_CHARS`` if it does not fit.
+
+    Whole sections go first, lowest severity first, because ``SECTIONS`` is
+    already in descending order of how much the reader needs them -- so the
+    cut is principled rather than wherever the character count landed. Only
+    when the *highest*-severity section alone is over the limit is prose cut
+    mid-sentence, and it is still marked.
+    """
+    kept = list(sections)
+    while True:
+        body = _assemble(header, kept, truncated=len(kept) < len(sections))
+        if len(body) <= MAX_BODY_CHARS:
+            return body
+        if len(kept) == 1:
+            break
+        kept.pop()
+    room = MAX_BODY_CHARS - len(_assemble(header, [""], truncated=True))
+    return _assemble(header, [kept[0][: max(room, 0)].rstrip()], truncated=True)
+
+
+def _assemble(header: str, sections: list[str], *, truncated: bool) -> str:
+    """Header, sections, the truncation note if one is owed, then the trailer."""
+    parts = [header, *sections]
+    if truncated:
+        parts.append(TRUNCATION_NOTE)
     parts.append(TRAILER)
-    return neutralise("\n\n".join(parts), handle)
+    return "\n\n".join(parts)
 
 
 def _items(findings: list[Finding]) -> str:
     """Numbered entries: bold headline, then the body indented beneath it."""
     return "\n\n".join(
-        f"{finding.number}. **{finding.title}**\n\n{_indent(finding.body)}"
+        f"{finding.number}. **{sanitise(finding.title)}**\n\n"
+        f"{_indent(sanitise(finding.body))}"
         for finding in findings
     )
 
 
 def _prose(findings: list[Finding]) -> str:
     """Nits, run together as sentences. One that needs an entry is not a nit."""
-    return " ".join(f"{finding.title} {finding.body}".strip() for finding in findings)
+    return " ".join(
+        sanitise(f"{finding.title} {finding.body}".strip()) for finding in findings
+    )
 
 
 def _indent(body: str) -> str:
