@@ -125,6 +125,19 @@ jobs:
           path: coverage.xml
           retention-days: 1
 
+      # The lock file is what CI installs, so the lock file is what gets
+      # audited -- frozen out of the venv rather than re-resolved, so this
+      # answers "is what we just ran vulnerable" and not "would a fresh
+      # resolution be". pip-audit goes in a venv of its own: installed
+      # alongside the project it would audit its own dependency tree too,
+      # and `--skip-editable` still fails `--strict` on this package.
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          poetry run python -m pip freeze --exclude-editable > audit-requirements.txt
+          .venv/bin/python -m venv .audit
+          .audit/bin/python -m pip install --quiet --upgrade pip pip-audit
+          .audit/bin/pip-audit --strict --desc --requirement audit-requirements.txt
+
   build:
     name: Build package
     needs: [test, quality]

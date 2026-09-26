@@ -365,6 +365,47 @@ bootstraps Poetry into `.venv` exactly as the Setup section does.
   direct-URL dependencies in the built metadata, and installs the wheel to
   check the command it ships actually runs.
 
+`quality` also runs [pip-audit](https://pypi.org/project/pip-audit/) over the
+dependencies, and a known vulnerability **fails the build**. The agent runs a
+metered credential and posts under a real account, so a vulnerable `httpx`,
+`PyYAML` or `click` should stop a merge rather than wait for somebody to
+notice. Two details are deliberate:
+
+- **The lock file is what gets audited**, frozen out of the venv CI just
+  installed rather than re-resolved. That answers "is what we ran vulnerable",
+  not "would a fresh resolution be" — which are different questions, and only
+  the first one is about this build.
+- **pip-audit runs from a venv of its own.** Installed alongside the project
+  it would audit its own dependency tree as well, and `--skip-editable` still
+  fails `--strict` on this package.
+
+To reproduce a CI audit locally:
+
+```bash
+poetry run python -m pip freeze --exclude-editable > audit-requirements.txt
+.venv/bin/python -m venv .audit
+.audit/bin/python -m pip install --upgrade pip pip-audit
+.audit/bin/pip-audit --strict --desc --requirement audit-requirements.txt
+```
+
+If a finding genuinely cannot be fixed, `--ignore-vuln <ID>` is the escape
+hatch and the justification belongs in the workflow beside it — not in a
+commit message where nobody rereads it.
+
+## 🤖 Dependency updates
+
+_.github/dependabot.yml_ opens the pull requests; CI decides. Nothing is
+bumped automatically, and that is the point — the same five checks a human
+change goes through are what say whether an upgrade is safe.
+
+Two ecosystems, weekly, because this repository has two kinds of pinned
+dependency and they fail differently. Actions are pinned by commit SHA, which
+is the right pin and also the one nothing renews; `poetry.lock` is refreshed
+by hand and otherwise not at all. `pip` updates are grouped into **runtime**
+and **dev** rather than one pull request: a runtime bump changes what the
+daemon executes against a real token, a dev bump changes only what checks it,
+and reviewing both in one diff makes the second hide the first.
+
 Everything CI runs can be run locally with the same `poetry run ...` command,
 which is deliberate: a CI failure should always be reproducible on a laptop.
 
@@ -380,3 +421,7 @@ poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
 poetry run pyright src tests
 poetry build
 ```
+
+The dependency audit is not in that list because it needs the network and a
+throwaway venv; run it when you touch _poetry.lock_, with the four commands
+in [Continuous integration](#-continuous-integration).
