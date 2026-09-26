@@ -270,9 +270,13 @@ def test_an_instance_install_writes_the_template_unit(home):
 
     service = parsed(instance_unit_at(home).read_text(encoding="utf-8"))["Service"]
     # `%i` must survive .format(): it is systemd's to expand, per instance,
-    # long after this command has exited.
-    assert service["ExecStart"].endswith("/pr-review-agent/%i/config.yaml")
-    assert service["EnvironmentFile"].endswith("/pr-review-agent/%i/token.env")
+    # long after this command has exited. Compared as path components because
+    # the template joins with "/" while an installed config_root carries the
+    # host's own separator, which is "\" on the Windows runner.
+    config = Path(service["ExecStart"].rsplit(" ", 1)[-1])
+    assert config.parts[-3:] == ("pr-review-agent", "%i", "config.yaml")
+    token_env = Path(service["EnvironmentFile"])
+    assert token_env.parts[-3:] == ("pr-review-agent", "%i", "token.env")
 
 
 def test_the_instance_unit_leaves_no_placeholder_behind(home):
@@ -288,9 +292,16 @@ def test_an_instance_gets_its_own_config_and_token(home):
     base = home / ".config" / "pr-review-agent" / "web"
     assert base.is_dir()
     assert (base / "token.env").read_text(encoding="utf-8") == "GITHUB_TOKEN=\n"
-    # The point of a process per repository: this instance never holds
-    # another repository's token, so no bug in it can post as one.
-    assert stat.S_IMODE((base / "token.env").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no POSIX mode bits")
+def test_an_instances_token_file_is_not_readable_by_anyone_else(home):
+    """The point of a process per repository: this instance never holds
+    another repository's token, so no bug in it can post as one."""
+    assert install("--instance", "web").exit_code == 0
+
+    token_env = home / ".config" / "pr-review-agent" / "web" / "token.env"
+    assert stat.S_IMODE(token_env.stat().st_mode) == 0o600
 
 
 def test_instances_share_a_store_but_never_a_checkout_cache(home):
