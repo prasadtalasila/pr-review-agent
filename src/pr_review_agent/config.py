@@ -7,7 +7,7 @@ at startup, not silently fall back to a default that spends tokens.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -53,14 +53,30 @@ DEFAULT_WORKERS = 1
 MAX_WORKERS = 4
 
 
-def _section(data: dict, name: str, allowed: set[str]) -> dict:
-    """Return section ``name``, rejecting unknown keys inside it."""
+def _keys(schema: type) -> set[str]:
+    """The YAML keys a section accepts: exactly its dataclass fields.
+
+    Spelling the set out beside the dataclass made the two drift in either
+    direction, and both directions are silent. A field added without its key
+    is rejected as unknown; a key kept after its field is removed is accepted
+    and ignored -- which is precisely the failure unknown-key rejection is
+    documented in ``docs/CONFIG.md`` to prevent. Deriving it means a section
+    accepts what it can hold, by construction.
+
+    A YAML key that has to differ from its field name therefore cannot be
+    added silently: it would need an alias here, deliberately.
+    """
+    return {field.name for field in fields(schema)}
+
+
+def _section(data: dict, name: str, schema: type) -> dict:
+    """Return section ``name``, rejecting keys ``schema`` cannot hold."""
     value = data.get(name)
     if value is None:
         raise ConfigError(f"missing required section: {name!r}")
     if not isinstance(value, dict):
         raise ConfigError(f"section {name!r} must be a mapping")
-    unknown = sorted(set(value) - allowed)
+    unknown = sorted(set(value) - _keys(schema))
     if unknown:
         raise ConfigError(f"unknown keys in {name!r}: {unknown}")
     return value
@@ -655,100 +671,53 @@ class Config:
         """Validate an already-parsed YAML document."""
         if not isinstance(data, dict):
             raise ConfigError("configuration root must be a mapping")
-        unknown = sorted(
-            set(data)
-            - {
-                "github",
-                "triggers",
-                "budget",
-                "store",
-                "workspace",
-                "worker",
-                "publish",
-                "logging",
-                "engine",
-            }
-        )
+        unknown = sorted(set(data) - _keys(cls))
         if unknown:
             raise ConfigError(f"unknown top-level sections: {unknown}")
         return cls(
-            github=GitHubConfig.parse(_section(data, "github", {"repo"})),
-            triggers=TriggerConfig.parse(
-                _section(data, "triggers", {"allowlist", "handle"})
-            ),
+            github=GitHubConfig.parse(_section(data, "github", GitHubConfig)),
+            triggers=TriggerConfig.parse(_section(data, "triggers", TriggerConfig)),
             # Required, token counts and all, even when `enabled` is false:
             # every one of them is a guess the operator has to make, and a
             # guess that ships as a default is a spending ceiling nobody
             # chose. Requiring them unconditionally also means flipping the
             # kill switch back on over SIGHUP cannot fail on a key that was
             # never supplied.
-            budget=BudgetConfig.parse(
-                _section(
-                    data,
-                    "budget",
-                    {
-                        "enabled",
-                        "authority",
-                        "comply",
-                        "session_tokens",
-                        "weekly_tokens",
-                        "max_run_tokens",
-                        "reviewer_share_pct",
-                        "per_contributor_pct",
-                        "max_changed_files",
-                        "max_changed_lines",
-                        "excluded_paths",
-                    },
-                )
-            ),
+            budget=BudgetConfig.parse(_section(data, "budget", BudgetConfig)),
             # The only optional section: its default cannot spend anything,
             # because cold-start seeding bounds a fresh database to the
             # moment the daemon started. Unknown keys inside it are still
             # rejected, so a typo in a path is not silently ignored.
             store=StoreConfig.parse(
-                _section(data, "store", {"path"}) if "store" in data else {}
+                _section(data, "store", StoreConfig) if "store" in data else {}
             ),
             # Optional for the same reason as `store`, though not the same
             # argument: it holds a path and nothing else, because the cap
             # that could spend lives in `budget`.
             workspace=WorkspaceConfig.parse(
-                _section(data, "workspace", {"cache_dir", "git"})
+                _section(data, "workspace", WorkspaceConfig)
                 if "workspace" in data
                 else {}
             ),
             # Optional, and its default is the safe one: a single worker
             # holds a single reservation.
             worker=WorkerConfig.parse(
-                _section(data, "worker", {"count"}) if "worker" in data else {}
+                _section(data, "worker", WorkerConfig) if "worker" in data else {}
             ),
             # Optional, and its default is to post. A dry run spends exactly
             # what a real review spends, so defaulting to one would burn the
             # allowance and show nobody the result.
             publish=PublishConfig.parse(
-                _section(data, "publish", {"dry_run"}) if "publish" in data else {}
+                _section(data, "publish", PublishConfig) if "publish" in data else {}
             ),
             # Optional, like `store` and `workspace`, and for the same
             # reason: its default is a level, which cannot spend anything.
             logging=LoggingConfig.parse(
-                _section(data, "logging", {"level", "format"})
-                if "logging" in data
-                else {}
+                _section(data, "logging", LoggingConfig) if "logging" in data else {}
             ),
             # Required: there is no model an operator could be assumed to
             # have chosen, and every key here decides a cost.
-            engine=EngineConfig.parse(
-                _section(
-                    data,
-                    "engine",
-                    {
-                        "binary",
-                        "model",
-                        "timeout_seconds",
-                        "standards_paths",
-                        "expected_version",
-                    },
-                )
-            ),
+            engine=EngineConfig.parse(_section(data, "engine", EngineConfig)),
         )
 
     @classmethod
