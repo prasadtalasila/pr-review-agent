@@ -114,7 +114,9 @@ linked.
       `publish.dry_run: true`.
 - [x] **Every posted comment is traceable** to a ledger row recording engine,
       model, mode, token usage and `usage_confidence`: `runs.dedupe_key` joins
-      the queue row and the ledger rows that paid for it.
+      the queue row and the ledger rows that paid for it, and the
+      `ledger_open` index keeps at most one of those rows open at a time, so
+      a settle can never be ambiguous about which reservation it closes.
 - [ ] **Operates entirely outbound:** no inbound port opened on the host,
       verified end to end from the target server.
 - [ ] **Retention behaves as specified:** review content is purged after a pull

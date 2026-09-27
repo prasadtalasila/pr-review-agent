@@ -16,6 +16,9 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from pr_review_agent._time import stamp
 from pr_review_agent.budget import MENTION_ONLY_AT, Governor
 from pr_review_agent.config import BudgetConfig
 from pr_review_agent.queue import ReviewQueue
@@ -163,3 +166,74 @@ def test_two_repos_over_one_store_share_one_pool(tmp_path):
         ).fetchone()
     assert reserved == (ADMISSIBLE, ADMISSIBLE * RUN_TOKENS)
     assert reserved[1] <= config().weekly_limit
+
+
+# What each trigger's crashed predecessor reserved. Deliberately tiny: these
+# rows are about identity, not arithmetic, and forty of them must not move
+# the rung that `ADMISSIBLE` is derived from.
+STALE_TOKENS = 1
+
+
+def _reserve(conn, key, tokens, owner="crashed"):
+    """One open ledger row, written the way ``Governor.admit`` writes it."""
+    conn.execute(
+        "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
+        "reserved_tokens, reserved_at) "
+        "VALUES (:key, :owner, 114395272, 'full', :tokens, :at)",
+        {"key": key, "owner": owner, "tokens": tokens, "at": stamp(NOON)},
+    )
+
+
+def test_a_stale_reservation_is_closed_exactly_once_under_contention(tmp_path):
+    """Issue #70's shape, at the scale the write lock has to hold it.
+
+    Every trigger here already carries an open reservation, as a generation
+    of crashed workers would have left behind. So each admission has to
+    close a predecessor *and* write its own row inside the claim's one
+    transaction. ``ledger_open`` is what makes a second open row for a key
+    something the daemon cannot write, rather than an ambiguity nobody sees
+    until a settle matches two rows and the paid-for review is discarded.
+    """
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as seed:
+        queue = ReviewQueue(seed, repo=REPO)
+        for pr in range(WORKERS * 5):
+            queue.enqueue(trigger(pr), now=NOON + timedelta(seconds=pr))
+        with seed.transaction() as conn:
+            for pr in range(WORKERS * 5):
+                _reserve(conn, trigger(pr).dedupe_key, STALE_TOKENS)
+
+    def drain(name):
+        claimed = 0
+        with SqliteStore(path) as store:
+            governor = Governor(store, config())
+            queue = ReviewQueue(store, repo=REPO)
+            while True:
+                claim = queue.claim(now=NOON, owner=name, admit=governor.admit)
+                if claim is None:
+                    return claimed
+                claimed += 1
+                queue.complete(claim)
+
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        admitted = sum(pool.map(drain, [f"w{n}" for n in range(WORKERS)]))
+
+    assert admitted == ADMISSIBLE
+
+    with sqlite3.connect(path) as conn:
+        # The invariant, stated over the file the threads have just been
+        # hammering: no key anywhere holds two open reservations.
+        assert conn.execute(
+            "SELECT COUNT(*) FROM (SELECT dedupe_key FROM ledger "
+            "WHERE settled_at IS NULL GROUP BY dedupe_key HAVING COUNT(*) > 1)"
+        ).fetchone() == (0,)
+        # Each admission closed exactly one predecessor, and closed it at
+        # the whole of what that predecessor had reserved -- what a worker
+        # that never settled really spent is unknowable.
+        assert conn.execute(
+            "SELECT COUNT(*), SUM(used_tokens) FROM ledger WHERE stop_reason = 'lost'"
+        ).fetchone() == (ADMISSIBLE, ADMISSIBLE * STALE_TOKENS)
+        # And it is the schema holding it, not the order the threads
+        # happened to run in: a second open row is refused outright.
+        with pytest.raises(sqlite3.IntegrityError):
+            _reserve(conn, trigger(0).dedupe_key, RUN_TOKENS)

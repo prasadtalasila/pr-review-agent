@@ -141,6 +141,9 @@ CREATE TABLE ledger (
     repo             TEXT,            -- NULL before migration 11
     pr_number        INTEGER          -- NULL before migration 11; the pacer reads both
 );
+-- The one index here that is a constraint rather than a lookup aid: it is
+-- what makes "one open reservation per trigger" a rule the schema holds.
+CREATE UNIQUE INDEX ledger_open ON ledger (dedupe_key) WHERE settled_at IS NULL;
 CREATE TABLE runs (
     dedupe_key        TEXT PRIMARY KEY, -- the queue row and ledger rows it joins
     repo              TEXT NOT NULL,
@@ -208,6 +211,24 @@ deleting a row would silently hand back allowance that was genuinely spent.
 The retention split is *purge content, retain metrics*. See
 [DESIGN.md](DESIGN.md#-retention).
 
+**A reservation is identified by its `dedupe_key` while it is open**, and
+`ledger_open` is what says so. `Governor.settle` matches on the key *and* the
+`owner`, but those two clauses answer different questions: uniqueness — is
+there exactly one open reservation for this trigger? — is the index's job,
+and entitlement — is it *ours*? — is the owner's, which is how a worker whose
+lease lapsed learns to discard a result it may no longer post.
+
+Without the index they were the same clause, and wrongly. `daemon.supervise`
+restarts a crashed worker with the same `owner`, so an attempt that died
+holding a reservation and then re-claimed the row wrote a *second* open row
+with the identical pair. One settle matched both, updated both, reported no
+single reservation, and the worker threw away a review it had already paid
+for — while the crashed attempt's ceiling was overwritten by the retry's
+actual usage, under-counting the spend. `admit` now closes the predecessor as
+[`lost`](BUDGET.md#a-lost-reservation-is-closed-by-the-next-admission) inside
+the claim's own transaction, so there is never a second open row to be
+ambiguous about.
+
 Two columns it deliberately does **not** have. There is no `state`, because a
 row is reserved exactly when `settled_at IS NULL`. There is no `expires_at`,
 because an unsettled reservation stays charged until it ages out of its
@@ -228,10 +249,10 @@ enter the fit.
 `usage_confidence`'s how far its recorded cost can be trusted. Without it a
 run killed on the wall clock and one whose envelope would not parse are the
 same row: both `unavailable`, both charged the full reservation, and nothing
-to say which control bound the run. A bounded set — `completed`, `truncated`,
-`failed`, `timeout`, `engine_error`, `engine_unavailable`, `refused`,
-`closed`, `infrastructure`, `usage_limit` — rather than free text, because it
-is read by an operator
+to say which control bound the run. One of eleven values — `completed`,
+`truncated`, `failed`, `timeout`, `engine_error`, `engine_unavailable`,
+`refused`, `closed`, `lost`, `infrastructure`, `usage_limit` — rather than
+free text, because it is read by an operator
 and, later, by the circuit breaker, and `GROUP BY stop_reason` has to mean
 something. Rows written before the column existed keep a NULL: nothing
 recorded why they stopped, and inventing a reason would put fiction in the
@@ -258,7 +279,26 @@ comment a mention was written in; version 8 adds `runs`; version 9 adds
 `ledger.repo`, `ledger.pr_number` and the `(repo, pr_number, reserved_at)`
 index the [pacer](BUDGET.md#-the-pacer-one-pull-requests-rate) reads; version
 12 adds `runs.publish_outcome`; version 13 adds `runs.publish_attempts` and
-`runs.publish_failed_at`; version 14 adds `agent_comments`.
+`runs.publish_failed_at`; version 14 adds `agent_comments`; version 15 adds
+the `ledger_open` unique index.
+
+**Version 15 cleans up before it constrains, and that order is the whole
+migration.** A unique index cannot be created over a table that already
+violates it, and a store that will not migrate is a daemon that will not
+start — so a live database holding duplicate open rows would be bricked by
+the index alone. The migration therefore settles the duplicates first: for
+every `dedupe_key` with more than one open row it keeps the newest, which is
+the one a running worker may still settle, and closes the older ones at their
+full `reserved_tokens` with `stop_reason = 'lost'` and `usage_confidence =
+'unavailable'`. Their `settled_at` is their own `reserved_at`, because
+nothing was learned about those runs after the instant they opened and a
+later timestamp would imply otherwise. Both statements are one migration
+tuple, so the cleanup and the constraint commit together — a crash between
+them cannot leave a database with duplicates and no index.
+
+No allowance is handed back by that cleanup. Those rows were counting their
+whole reservation while they sat open and they count exactly the same
+afterwards; what changes is that the charge now says why it exists.
 
 Version 13's counter starts at **zero on every row written before it**, which
 is the honest reading: nothing counted those posts. A run carrying a stamp is

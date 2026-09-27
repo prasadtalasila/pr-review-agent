@@ -9,7 +9,7 @@ import asyncio
 import logging
 import sys
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -45,7 +45,7 @@ from pr_review_agent.engine.models import Outcome, ReviewResult
 from pr_review_agent.poller.client import GitHubClient, GitHubClientError
 from pr_review_agent.poller.endpoints import RepoEndpoints
 from pr_review_agent.publisher import Publisher
-from pr_review_agent.queue import Claim, QueueStatus, ReviewQueue
+from pr_review_agent.queue import DEFAULT_LEASE, Claim, QueueStatus, ReviewQueue
 from pr_review_agent.runs import RecordedRun, RunStore, publication_of
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import CommentSource, Trigger, TriggerKind
@@ -903,6 +903,68 @@ async def test_a_lapsed_worker_settles_nothing(wired):
 
     (row,) = ledger_rows(fixture.store)
     assert row[3] is None  # used_tokens: still unsettled, still charged
+
+
+# -- the worker that crashed and came back as itself ---------------------
+
+
+async def test_a_crashed_worker_reclaiming_its_own_row_still_publishes(
+    wired, monkeypatch
+):
+    """Issue #70: one identity, two attempts, two unambiguous ledger rows.
+
+    ``daemon.supervise`` restarts a crashed worker with the same ``owner``,
+    so the retry reserved under the same ``(dedupe_key, owner)`` the crashed
+    attempt had. Both open rows then matched one settle: it updated both,
+    reported no single reservation, and the worker discarded a review it had
+    already paid for -- a lost comment, now that every review posts its own
+    rather than editing one in place.
+    """
+    reserved = 5_000
+    fixture = wired(config=budget(max_run_tokens=reserved))
+    fixture.queue.enqueue(opened(), now=NOW)
+    claim = fixture.queue.claim(now=NOW, owner="worker-1", admit=fixture.governor.admit)
+    assert claim is not None
+
+    def died(*_args, **_kwargs):
+        raise RuntimeError("the worker died holding its reservation")
+
+    # After the engine, so the tokens really are spent, and of a type the
+    # failure taxonomy has no answer for -- which is what makes it reach the
+    # supervisor rather than being handed back as another attempt.
+    record = fixture.runs.record
+    monkeypatch.setattr(fixture.runs, "record", died)
+    with pytest.raises(RuntimeError):
+        await fixture.worker.run_one(claim)
+    # Put it back by hand: `monkeypatch.undo()` would also undo the
+    # `GIT_SSL_CAINFO` the workspace fixture set, and the retry needs it.
+    monkeypatch.setattr(fixture.runs, "record", record)
+
+    # The row is still claimed under a live lease and the reservation is
+    # still open: that is the state the restarted worker walks back into.
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.CLAIMED
+    assert [row[3] for row in ledger_rows(fixture.store)] == [None]
+
+    retry = fixture.queue.claim(
+        now=NOW + DEFAULT_LEASE + timedelta(seconds=1),
+        owner="worker-1",
+        admit=fixture.governor.admit,
+    )
+    assert retry is not None and retry.owner == claim.owner
+
+    await fixture.worker.run_one(retry)
+
+    # The review it paid for is posted, not thrown away.
+    assert posted_comment(fixture.store, opened().dedupe_key) == 555
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+    # One settled row per attempt. The crashed one is charged its whole
+    # ceiling -- nobody can say what it spent -- and the one that ran is
+    # charged what the engine reported, so neither overwrites the other.
+    assert [(row[2], row[3]) for row in ledger_rows(fixture.store)] == [
+        (reserved, reserved),
+        (reserved, 1_000),
+    ]
+    assert stop_reasons(fixture.store) == [str(StopReason.LOST), "completed"]
 
 
 # -- the loop ------------------------------------------------------------

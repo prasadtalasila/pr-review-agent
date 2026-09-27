@@ -528,9 +528,60 @@ control the pessimistic direction is the safe one.
 The happy consequence: the ledger needs no `expires_at`, no `state` column and
 no sweeper.
 
+### A lost reservation is closed by the next admission
+
+**What identifies a reservation, while it is open, is its `dedupe_key`.** The
+ledger says so with a unique partial index —
+[`ledger_open`](STORAGE.md#-schema) — rather than only by convention, and the
+convention alone was not enough.
+
+`settle` matches on the key *and* the `owner`, and both clauses stay, because
+they answer different questions. Uniqueness — is there exactly one open
+reservation for this trigger? — is the index's job. Entitlement — is it
+*ours*? — is the owner's, and it is what makes a worker whose lease lapsed
+get `False` from `settle` and discard a result it is no longer allowed to
+post.
+
+Without the index they collided. `daemon.supervise` restarts a crashed worker
+*as the same worker*: `owner` is minted once at startup, so an attempt that
+died holding a reservation and then re-claimed the row once its lease lapsed
+reserved again under the identical `(dedupe_key, owner)`. One settle then
+matched two open rows, updated both, reported no single reservation, and the
+worker logged "no reservation to settle" and threw the review away —
+unpublished, unfinished, and already paid for. Since every review
+[posts its own comment](PUBLISHER.md), that is a lost comment rather than a
+skipped edit.
+
+So `admit` closes the predecessor before it reserves, inside the claim's own
+transaction, at the **full** `reserved_tokens` it had taken:
+
+| stop_reason | settles at | why |
+| :-- | :-- | :-- |
+| `refused` | zero | no engine ran, and that is provable |
+| `engine_unavailable` | zero | the subprocess never started |
+| `lost` | the whole reservation | nobody knows what it spent |
+
+`lost` is pessimistic on purpose, for the reason the rest of this section is:
+a crashed worker may have spent anything, and for a spending control the
+pessimistic direction is the safe one. It is the same rule the worker already
+applies to a failure at or after the engine call.
+
+**It hands back no allowance.** The row was counting its whole reservation
+while it sat open and counts exactly the same once closed; the change is that
+the charge is now explicit. To an operator, a `lost` row reads as *this was
+paid for and nobody knows what it bought* — one is a crash, a run of them is
+a worker dying mid-review — and what they charge is a ceiling rather than a
+measurement, so the windows they fill are tighter than the real spend, never
+looser. They are countable:
+
+```sql
+SELECT COUNT(*) FROM ledger WHERE stop_reason = 'lost';
+```
+
 ### A caught failure settles at what is knowable
 
-A *lost* worker's reservation stays charged, as above. A worker that caught
+A *lost* worker's reservation stays charged, as above, and is closed as
+`lost` by whatever admits that trigger next. A worker that caught
 an exception is not lost, and settles — but at what? The spend is unknowable
 for an engine killed mid-run, so the rule splits on whether the engine had
 started: a failure before it settles at zero, a failure in or after it
@@ -711,6 +762,13 @@ cases in `tests/test_queue.py`:
   does **not** block a maintainer's `@claude` behind it in the queue;
 - a refusal costs no attempt and leaves the row `pending`;
 - an unsettled reservation counts in full, and keeps counting past its lease;
+- one trigger cannot hold two open reservations, under eight concurrent
+  workers or by hand, and re-admitting a trigger closes the reservation a
+  crash left open as `lost` at its full ceiling without handing any
+  allowance back;
+- a worker that crashes after its engine ran, and then re-claims its own row
+  under the same `owner` once the lease lapses, publishes the second review
+  instead of discarding it, and leaves one settled row per attempt;
 - `settle` releases the remainder and records engine, model and confidence;
 - `budget.enabled: false` admits nothing, and `SIGHUP` flips it without a
   restart;

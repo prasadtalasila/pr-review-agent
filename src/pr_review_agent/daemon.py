@@ -482,7 +482,14 @@ async def supervise(worker: ReviewWorker, stop: asyncio.Event) -> None:
     persistent, so the accumulated delay is not earned.
 
     Because a worker holds no state between runs, re-entering the loop *is* a
-    fresh worker; nothing is rebuilt.
+    fresh worker -- with one exception, and it is the one to remember:
+    ``owner``. It is minted once in :func:`build_workers`, so a restarted
+    worker re-claims under the same identity its crashed self reserved
+    allowance under, and the ledger keys a reservation on
+    ``(dedupe_key, owner)``. What keeps that from meaning two open
+    reservations for one trigger is the ``ledger_open`` index and
+    :meth:`~pr_review_agent.budget.Governor.admit` settling the predecessor,
+    not anything here.
 
     A poison pull request cannot drive this. An uncaught crash never releases
     the row, so it stays claimed under a live lease: the worker takes other
