@@ -11,7 +11,8 @@ locally-hosted PR review agent.
 ## GOALS
 
 - Produce clean, readable, and maintainable code
-- Keep functions below 25 lines and files below 250 lines
+- Keep functions below 25 lines of code and files below 250 (see
+  RESTRICTIONS for what counts as a line)
 - Follow recognised best practice and industry standards
 - Provide clear explanations and documentation
 - Support users in improving technical understanding
@@ -56,7 +57,13 @@ src/pr_review_agent/          importable package (src layout)
   _time.py                    the aware-UTC clock and the SQLite stamp format
   bootstrap.py                pre-flight egress checks for a new host
   budget.py                   rolling windows, ladder, reserve-then-settle
-  config.py                   config.yaml loader and validation
+  config/                     config.yaml loader, one module per section group
+    __init__.py               the document: which sections exist, and Config
+    _sections.py              ConfigError, and unknown-key rejection per section
+    github_triggers.py        which repository, and whose requests
+    budget.py                 every key that decides what may be spent
+    engine.py                 which tool reviews, and under what clock
+    runtime.py                store, workspace, worker, publish, logging
   daemon.py                   the poll-classify-enqueue loop and entry point
   logs.py                     one level and one format, resolved from three layers
   numbering.py                finding numbers that survive a re-review
@@ -128,8 +135,14 @@ commit.
 - Explicit approval is required before introducing breaking changes.
 - Unnecessary dependencies should not be added.
 - Existing codebase patterns and conventions should be respected.
-- Files should remain under 250 lines.
-- Functions should remain under 25 lines.
+- Files should remain under 250 lines of code, and functions under 25.
+  **Code** means what is left after blank lines, comments and docstrings are
+  excluded. This repository explains itself at length on purpose, and a limit
+  that counted prose would be met by deleting the explanations -- which is the
+  opposite of what it is for. Measured this way the limit says what it means:
+  this much behaviour in one place, and no more.
+  `tests/test_module_size.py` enforces both on every file under `src/`, so
+  neither is a matter of judgement.
 - Implementations should be tested when practical.
 - Real credentials, tokens and account identifiers never enter the repository.
   `config.yaml` is gitignored; change `config.example.yaml` and
