@@ -60,9 +60,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 
+from ._compat import StrEnum
 from ._time import now as _now
 from ._time import wait_until
-from .budget import Governor, StopReason, Usage, UsageConfidence
+from .budget import Governor, Mode, StopReason, Usage, UsageConfidence
 from .engine import (
     EngineTimeout,
     EngineUnavailable,
@@ -78,9 +79,20 @@ from .poller.endpoints import RepoEndpoints
 from .poller.pulls import fetch_pull_request_facts
 from .publisher import Publisher, PublishOutcome
 from .queue import Claim, ReviewQueue
-from .runs import RecordedRun, RunStore, publication_of, published_run_key
+from .runs import (
+    PullRequestHistory,
+    RecordedRun,
+    RunStore,
+    publication_of,
+    published_run_key,
+)
 from .triggers.models import PayloadError, TriggerKind
-from .workspace import PullRequestTooLarge, Workspace, WorkspaceError
+from .workspace import (
+    PullRequestFacts,
+    PullRequestTooLarge,
+    Workspace,
+    WorkspaceError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +112,94 @@ _REASON_FOR = {
     Outcome.TRUNCATED: StopReason.TRUNCATED,
     Outcome.FAILED: StopReason.FAILED,
 }
+
+
+class Finish(StrEnum):
+    """Which queue verb closes a row, named rather than bound.
+
+    A name is what lets :func:`classify_failure` stay a pure function over
+    an exception: the verbs themselves are methods on one worker's queue,
+    and a table of bound methods could not be read, compared or tested
+    without one.
+    """
+
+    COMPLETE = "complete"
+    RELEASE = "release"
+    RELEASE_UNATTEMPTED = "release_unattempted"
+    ABANDON = "abandon"
+
+
+@dataclass(frozen=True)
+class RunEnd:
+    """How one run ended: what it cost, why it stopped, what closes its row.
+
+    ``reviewed`` and ``reviewed_lines`` are set only by a run that finished
+    a review -- the recorded findings to post, and the line count the
+    pre-flight estimate is fitted against.
+    """
+
+    usage: Usage
+    reason: StopReason
+    finish: Finish
+    reviewed: RecordedRun | None = None
+    reviewed_lines: int | None = None
+
+
+@dataclass
+class _Spend:
+    """What a failure would settle at, as the run moves past the engine.
+
+    Mutable and passed down on purpose: the answer changes at exactly one
+    line -- the one before the engine call -- and the caller has to know
+    which side of it a raised exception came from. Before it nothing reached
+    an engine and the zero is provable; at or after it a killed adapter may
+    have spent anything, and pessimism is the safe direction for a spending
+    control.
+    """
+
+    usage: Usage
+
+
+def _log_start(claim: Claim, mode: Mode) -> None:
+    """The start of a review, here rather than in the engine adapter.
+
+    The adapter's line fires only once the pull request facts and the
+    checkout have both succeeded, and a cold clone is the slow part -- so a
+    run that stalls there would be indistinguishable from one that never
+    started. Held to the moment the lease is confirmed and nothing slow has
+    been attempted, this is the record that makes *started and still going*
+    a different thing from *never started*.
+    """
+    logger.info(
+        "reviewing %s#%d as %s (mode=%s)",
+        claim.trigger.repo,
+        claim.trigger.pr_number,
+        claim.trigger.dedupe_key,
+        mode,
+        extra={
+            "repo": claim.trigger.repo,
+            "pr": claim.trigger.pr_number,
+            "mode": mode,
+        },
+    )
+
+
+def _log_reviewed(claim: Claim, result: ReviewResult, usage: Usage) -> None:
+    """What the review produced and what it cost."""
+    logger.info(
+        "reviewed %s: %s, %d findings, %d tokens",
+        claim.trigger.dedupe_key,
+        result.outcome,
+        len(result.findings),
+        usage.tokens,
+        extra={
+            "repo": claim.trigger.repo,
+            "pr": claim.trigger.pr_number,
+            "outcome": result.outcome,
+            "findings": len(result.findings),
+            "tokens": usage.tokens,
+        },
+    )
 
 
 class EngineError(RuntimeError):
@@ -123,6 +223,77 @@ class EngineError(RuntimeError):
     def __init__(self, message: str, reason: StopReason) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+#: Every failure the taxonomy has an answer for. Anything else is a bug in
+#: the worker rather than a review that went wrong, and propagates to the
+#: supervisor instead of being retried three times in silence.
+_FAILURES = (
+    PullRequestTooLarge,
+    PayloadError,
+    UsageLimited,
+    EngineUnavailable,
+    EngineError,
+    GitHubClientError,
+    WorkspaceError,
+)
+
+
+def classify_failure(exc: Exception, reserved: Usage) -> RunEnd:
+    """What a caught failure cost, why it stopped, and how its row closes.
+
+    Pure, so each arm is a table row a test can state directly. Ordered by
+    specificity rather than by likelihood: ``PullRequestTooLarge`` subclasses
+    ``WorkspaceError``, so it is matched first or it would be retried.
+
+    ``reserved`` is what the run would settle at if the failure says nothing
+    more precise -- zero before the engine was reached, the reserved ceiling
+    after it.
+    """
+    if isinstance(exc, PullRequestTooLarge | PayloadError):
+        # Deterministic: attempt two fails identically, having reserved
+        # allowance again to do it.
+        return RunEnd(reserved, StopReason.INFRASTRUCTURE, Finish.ABANDON)
+    if isinstance(exc, UsageLimited):
+        # Knowable, in both of its shapes: measured if the engine printed an
+        # envelope, zero if it was refused before doing any work. And
+        # unattempted -- the bound caps what one poison trigger may drain,
+        # and this one drained nothing; the account was already out when it
+        # arrived.
+        return RunEnd(
+            exc.usage or Usage(0, UsageConfidence.EXACT),
+            StopReason.USAGE_LIMIT,
+            Finish.RELEASE_UNATTEMPTED,
+        )
+    if isinstance(exc, EngineUnavailable):
+        # No process was created, so the zero is provable and the ceiling
+        # would write tokens that were never spent into all three rolling
+        # windows. Still counted, unlike a usage limit: this clears when an
+        # operator acts, not when a window rolls, so the attempt bound is
+        # what stops a misconfigured host retrying every trigger forever.
+        return RunEnd(
+            replace(reserved, tokens=0), StopReason.ENGINE_UNAVAILABLE, Finish.RELEASE
+        )
+    if isinstance(exc, EngineError):
+        # The only arm that narrows the reason: the adapter already told us
+        # whether its own wall clock stopped it.
+        return RunEnd(reserved, exc.reason, Finish.RELEASE)
+    return RunEnd(reserved, StopReason.INFRASTRUCTURE, Finish.RELEASE)
+
+
+def _finish_for(outcome: Outcome) -> Finish:
+    """Which queue verb closes a row whose run ended this way.
+
+    ``TRUNCATED`` is a run cut off with work outstanding, so another attempt
+    is worth its allowance; ``FAILED`` is anything else that went wrong,
+    which is not. The engine has already been paid for either way -- the
+    outcome decides the row's fate, never whether it settles.
+    """
+    if outcome is Outcome.COMPLETED:
+        return Finish.COMPLETE
+    if outcome is Outcome.TRUNCATED:
+        return Finish.RELEASE
+    return Finish.ABANDON
 
 
 @dataclass
@@ -189,9 +360,9 @@ class ReviewWorker:
     async def run_one(self, claim: Claim) -> None:
         """Review one claim, settle it, and finish its row.
 
-        The exception handlers are the retry taxonomy. A transient failure --
-        a 5xx, a rate limit, a failed fetch, an engine that died -- hands the
-        row back for another attempt, bounded by ``max_attempts``. A
+        The failure taxonomy is :func:`classify_failure`: a transient failure
+        -- a 5xx, a rate limit, a failed fetch, an engine that died -- hands
+        the row back for another attempt, bounded by ``max_attempts``. A
         deterministic one abandons it: an oversized pull request and an
         unusable payload will fail identically on attempt two, having
         reserved allowance again to do it.
@@ -213,183 +384,130 @@ class ReviewWorker:
         # beat a review that takes minutes, and it is what makes an adaptive
         # poll interval feel like an answer rather than a silence.
         await self.publisher.acknowledge(claim.trigger)
-        # The start of a review, here rather than in the engine adapter. The
-        # adapter's line fires only once the pull request facts and the
-        # checkout have both succeeded, and a cold clone is the slow part --
-        # so a run that stalls there would be indistinguishable from one that
-        # never started. Held to the moment the lease is confirmed and
-        # nothing slow has been attempted, this is the record that makes
-        # *started and still going* a different thing from *never started*.
-        logger.info(
-            "reviewing %s#%d as %s (mode=%s)",
-            claim.trigger.repo,
-            claim.trigger.pr_number,
-            claim.trigger.dedupe_key,
-            mode,
-            extra={
-                "repo": claim.trigger.repo,
-                "pr": claim.trigger.pr_number,
-                "mode": mode,
-            },
-        )
+        _log_start(claim, mode)
 
-        usage = Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name)
-        # Everything that can fail before the engine starts is infrastructure,
-        # so it stands as the answer until something narrows it.
-        reason = StopReason.INFRASTRUCTURE
-        finish = self.queue.complete
-        reviewed: RecordedRun | None = None
-        reviewed_lines: int | None = None
+        # Everything that can fail before the engine starts is provably
+        # free, so the run would settle at nothing until `_attempt` reaches
+        # the engine and raises the floor to the ceiling it reserved.
+        spend = _Spend(Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name))
         try:
-            facts = await fetch_pull_request_facts(
-                self.client, self.endpoints, claim.trigger.pr_number
-            )
-            config = self.governor.config
-            # Read before the engine runs, so the reviewer can be shown what
-            # the last round found. Costs one query on a table the worker
-            # already writes; spends nothing and reaches no engine.
-            history = self.runs.history(claim.trigger.repo, claim.trigger.pr_number)
-            async with self.workspace.checkout(
-                facts,
-                max_changed_files=config.max_changed_files,
-                max_changed_lines=config.max_changed_lines,
-                excluded_paths=config.excluded_paths,
-            ) as checkout:
-                # Captured here because the checkout is torn down by the time
-                # the run settles, and it is the worker's own number rather
-                # than the adapter's: see `Governor.settle`.
-                handed_over = checkout.reviewed.lines
-                if not self.governor.preflight(claim, handed_over, _now()):
-                    # The last free refusal, and it released the reservation
-                    # inside that call -- so this path must not settle again.
-                    # Deterministic for this head, so the row ends here.
-                    self.queue.abandon(claim)
-                    return
-                # From here on a failure may have cost tokens, so it settles
-                # at the ceiling it reserved. The assignment sits on the line
-                # before the call for exactly that reason.
-                usage = replace(usage, tokens=config.max_run_tokens)
-                result = await self._review(
-                    ReviewRequest(
-                        checkout=checkout,
-                        facts=facts,
-                        trigger=claim.trigger,
-                        mode=mode,
-                        prior=history.prior,
-                    )
+            end = await self._attempt(claim, mode, spend)
+        except _FAILURES as exc:
+            end = self._failed(claim, exc, spend.usage)
+        if end is None:
+            return
+        await self._settle_publish_and_finish(claim, end)
+
+    async def _attempt(self, claim: Claim, mode: Mode, spend: _Spend) -> RunEnd | None:
+        """Run one review; ``None`` when the pre-flight ended the row itself."""
+        facts = await fetch_pull_request_facts(
+            self.client, self.endpoints, claim.trigger.pr_number
+        )
+        config = self.governor.config
+        # Read before the engine runs, so the reviewer can be shown what the
+        # last round found. Costs one query on a table the worker already
+        # writes; spends nothing and reaches no engine.
+        history = self.runs.history(claim.trigger.repo, claim.trigger.pr_number)
+        async with self.workspace.checkout(
+            facts,
+            max_changed_files=config.max_changed_files,
+            max_changed_lines=config.max_changed_lines,
+            excluded_paths=config.excluded_paths,
+        ) as checkout:
+            # Captured here because the checkout is torn down by the time the
+            # run settles, and it is the worker's own number rather than the
+            # adapter's: see `Governor.settle`.
+            lines = checkout.reviewed.lines
+            if not self.governor.preflight(claim, lines, _now()):
+                # The last free refusal, and it released the reservation
+                # inside that call -- so this path must not settle again.
+                # Deterministic for this head, so the row ends here.
+                self.queue.abandon(claim)
+                return None
+            # From here on a failure may have cost tokens, so it settles at
+            # the ceiling it reserved. The assignment sits on the line before
+            # the call for exactly that reason.
+            spend.usage = replace(spend.usage, tokens=config.max_run_tokens)
+            result = await self._review(
+                ReviewRequest(
+                    checkout=checkout,
+                    facts=facts,
+                    trigger=claim.trigger,
+                    mode=mode,
+                    prior=history.prior,
                 )
-            usage, finish = result.usage, self._finish_for(result.outcome)
-            reason = _REASON_FOR[result.outcome]
-            if result.outcome is Outcome.COMPLETED:
-                self.completed += 1
+            )
+        return self._reviewed(claim, result, facts=facts, history=history, lines=lines)
+
+    def _reviewed(
+        self,
+        claim: Claim,
+        result: ReviewResult,
+        *,
+        facts: PullRequestFacts,
+        history: PullRequestHistory,
+        lines: int,
+    ) -> RunEnd:
+        """Record what a finished review produced, and say how the run ended."""
+        end = RunEnd(
+            usage=result.usage,
+            reason=_REASON_FOR[result.outcome],
+            finish=_finish_for(result.outcome),
+        )
+        if result.outcome is Outcome.COMPLETED:
+            self.completed += 1
+            # Numbered here rather than at render time so the numbers are
+            # durable: the high-water mark is read back out of this column,
+            # and a finding recorded without one would let a retired number
+            # come back on something else.
+            result = replace(
+                result, findings=assign(result.findings, history.high_water)
+            )
+            end = replace(
+                end,
+                # Recorded before the settle so the content outlives any
+                # failure after it. Only a completed run has publishable
+                # findings -- the seam enforces that -- so only one is kept.
+                reviewed=self.runs.record(
+                    claim.trigger, head_sha=facts.head_sha, result=result, now=_now()
+                ),
                 # Only a finished review is a sample of what reviewing this
                 # many lines costs. A truncated or failed run spent less than
                 # a whole one over the same lines, and a usage-limited run
                 # settles at *exact* zero -- all three fit a rate lower than
                 # the truth, which is the direction that under-refuses.
-                reviewed_lines = handed_over
-                # Numbered here rather than at render time so the numbers are
-                # durable: the high-water mark is read back out of this
-                # column, and a finding recorded without one would let a
-                # retired number come back on something else.
-                result = replace(
-                    result, findings=assign(result.findings, history.high_water)
-                )
-                # Recorded before the settle so the content outlives any
-                # failure after it. Only a completed run has publishable
-                # findings -- the seam enforces that -- so only one is kept.
-                reviewed = self.runs.record(
-                    claim.trigger,
-                    head_sha=facts.head_sha,
-                    result=result,
-                    now=_now(),
-                )
-            logger.info(
-                "reviewed %s: %s, %d findings, %d tokens",
-                claim.trigger.dedupe_key,
-                result.outcome,
-                len(result.findings),
-                usage.tokens,
-                extra={
-                    "repo": claim.trigger.repo,
-                    "pr": claim.trigger.pr_number,
-                    "outcome": result.outcome,
-                    "findings": len(result.findings),
-                    "tokens": usage.tokens,
-                },
+                reviewed_lines=lines,
             )
-        # PullRequestTooLarge subclasses WorkspaceError, so it is caught
-        # first or it would be retried.
-        except (PullRequestTooLarge, PayloadError):
-            logger.error(
-                "giving up on %s permanently", claim.trigger.dedupe_key, exc_info=True
-            )
-            finish = self.queue.abandon
-        except UsageLimited as limited:
+        _log_reviewed(claim, result, end.usage)
+        return end
+
+    def _failed(self, claim: Claim, exc: Exception, reserved: Usage) -> RunEnd:
+        """Say what went wrong in its own vocabulary, and classify the cost.
+
+        The classification is pure and lives in :func:`classify_failure`;
+        what is left here is the part that is not -- the log line an operator
+        reads, and the breaker an account-wide limit trips.
+        """
+        key = claim.trigger.dedupe_key
+        end = classify_failure(exc, reserved)
+        if isinstance(exc, UsageLimited):
             # The wall is the account's, not this run's, so retrying reaches
             # it again having spent to get there. The breaker refuses every
             # claim instead, and the row waits behind it.
-            logger.error("%s hit the account's usage limit", claim.trigger.dedupe_key)
+            logger.error("%s hit the account's usage limit", key)
             self.governor.trip(_now())
-            # Knowable, in both of its shapes: measured if the engine printed
-            # an envelope, zero if it was refused before doing any work. So
-            # this settles at what happened rather than at the ceiling.
-            usage = limited.usage or Usage(0, UsageConfidence.EXACT)
-            reason = StopReason.USAGE_LIMIT
-            # Unattempted, for the reason `_publish_recorded` gives: the
-            # bound caps what one poison trigger may drain, and this trigger
-            # drained nothing -- the account was already out when it arrived.
-            finish = self.queue.release_unattempted
-        except EngineUnavailable:
+        elif end.finish is Finish.ABANDON:
+            logger.error("giving up on %s permanently", key, exc_info=True)
+        elif isinstance(exc, EngineUnavailable):
             logger.error(
                 "%s could not start %s and will be retried",
-                claim.trigger.dedupe_key,
+                key,
                 self.engine.name,
                 exc_info=True,
             )
-            # The reservation was raised to the ceiling on the line before
-            # `_review`, because a run that reached the engine may have spent
-            # anything. This one did not reach it: no process was created, so
-            # the zero is provable and the ceiling would write tokens that
-            # were never spent into all three rolling windows.
-            usage = replace(usage, tokens=0)
-            reason = StopReason.ENGINE_UNAVAILABLE
-            # Still `release`, still counted. Unlike a usage limit, this does
-            # not clear when a window rolls -- it clears when an operator
-            # acts -- so the attempt bound is what eventually stops a
-            # misconfigured host retrying every trigger forever.
-            finish = self.queue.release
-        except EngineError as exc:
-            logger.error(
-                "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
-            )
-            # The only handler that narrows the reason: the adapter already
-            # told us whether its own wall clock stopped it.
-            reason = exc.reason
-            finish = self.queue.release
-        except (GitHubClientError, WorkspaceError):
-            logger.error(
-                "%s failed and will be retried", claim.trigger.dedupe_key, exc_info=True
-            )
-            finish = self.queue.release
-
-        await self._settle_publish_and_finish(
-            claim, usage, reason, finish, reviewed, reviewed_lines=reviewed_lines
-        )
-
-    def _finish_for(self, outcome: Outcome) -> Callable[[Claim], bool]:
-        """Which queue verb closes a row whose run ended this way.
-
-        ``TRUNCATED`` is a run cut off with work outstanding, so another
-        attempt is worth its allowance; ``FAILED`` is anything else that went
-        wrong, which is not. The engine has already been paid for either way
-        -- the outcome decides the row's fate, never whether it settles.
-        """
-        if outcome is Outcome.COMPLETED:
-            return self.queue.complete
-        if outcome is Outcome.TRUNCATED:
-            return self.queue.release
-        return self.queue.abandon
+        else:
+            logger.error("%s failed and will be retried", key, exc_info=True)
+        return end
 
     async def _review(self, request: ReviewRequest) -> ReviewResult:
         """Run the engine, converting any failure of it into ``EngineError``."""
@@ -452,16 +570,7 @@ class ReviewWorker:
         else:
             self.queue.release_unattempted(claim)
 
-    async def _settle_publish_and_finish(
-        self,
-        claim: Claim,
-        usage: Usage,
-        reason: StopReason,
-        finish: Callable[[Claim], bool],
-        reviewed: RecordedRun | None,
-        *,
-        reviewed_lines: int | None,
-    ) -> None:
+    async def _settle_publish_and_finish(self, claim: Claim, end: RunEnd) -> None:
         """Record what the run cost, post it, then close its row.
 
         All three are guarded on the owner. A worker whose lease lapsed
@@ -470,15 +579,16 @@ class ReviewWorker:
         now with teeth, because the thing being discarded is a comment under
         the agent's own account.
 
-        ``reviewed_lines`` is what the pre-flight estimate is fitted against,
-        and it is ``None`` for every run that did not finish a review.
+        ``end.reviewed_lines`` is what the pre-flight estimate is fitted
+        against, and it is ``None`` for every run that did not finish a
+        review.
         """
         if not self.governor.settle(
             claim,
-            usage,
+            end.usage,
             now=_now(),
-            stop_reason=reason,
-            reviewed_lines=reviewed_lines,
+            stop_reason=end.reason,
+            reviewed_lines=end.reviewed_lines,
         ):
             logger.warning(
                 "no reservation to settle for %s: discarding the run",
@@ -504,6 +614,7 @@ class ReviewWorker:
                 "mode": headroom.mode,
             },
         )
+        reviewed = end.reviewed
         if reviewed is not None and not await self._published(claim, reviewed):
             # The review itself is done and must not be run again, so this
             # row is completed and what remains -- the posting -- is enqueued
@@ -511,7 +622,16 @@ class ReviewWorker:
             # the next claim for this pull request a republication wearing a
             # review trigger's name.
             self.queue.enqueue(publication_of(claim.trigger, reviewed), now=_now())
-        finish(claim)
+        self._verb(end.finish)(claim)
+
+    def _verb(self, finish: Finish) -> Callable[[Claim], bool]:
+        """The queue method that closes a row this way."""
+        return {
+            Finish.COMPLETE: self.queue.complete,
+            Finish.RELEASE: self.queue.release,
+            Finish.RELEASE_UNATTEMPTED: self.queue.release_unattempted,
+            Finish.ABANDON: self.queue.abandon,
+        }[finish]
 
     async def _published(self, claim: Claim, run: RecordedRun) -> bool:
         """Post ``run``; ``False`` if the row should be handed back.

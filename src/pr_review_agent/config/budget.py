@@ -1,0 +1,289 @@
+"""The ``budget`` section: every key that decides what may be spent.
+
+Separate from the arithmetic in :mod:`pr_review_agent.budget`, which reads
+what an operator declared here and turns it into windows and a ladder.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+
+from ._sections import ConfigError
+
+#: BUDGET.md's human-headroom default: the agent may use this percentage of
+#: each plan window, never the whole allowance.
+DEFAULT_REVIEWER_SHARE_PCT = 40
+
+#: BUDGET.md layer 2's diff-size caps. Unlike the plan token counts these do
+#: have defaults: a plan's allowance is unpublished, so any default would be
+#: a fabricated ceiling, whereas a diff-size cap is an ordinary engineering
+#: choice. `tests/test_config.py` pins both by value.
+DEFAULT_MAX_CHANGED_FILES = 100
+DEFAULT_MAX_CHANGED_LINES = 5000
+
+#: Paths excluded from both the size gate and the diff the engine is shown.
+#: The four categories BUDGET.md layer 2 names -- lockfiles, vendored trees,
+#: generated code, minified bundles -- where reviewing a line is close to
+#: worthless while the line still counts against a cap.
+#:
+#: A default rather than a fixed list, because a repository that genuinely
+#: reviews its lockfiles exists; and reloadable on ``SIGHUP``, like every
+#: other key in this section, so an operator who finds the agent blind to
+#: something can fix it without a restart.
+DEFAULT_EXCLUDED_PATHS: tuple[str, ...] = (
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/poetry.lock",
+    "**/Cargo.lock",
+    "**/Gemfile.lock",
+    "**/composer.lock",
+    "**/go.sum",
+    "**/vendor/**",
+    "**/node_modules/**",
+    "**/third_party/**",
+    "**/*.pb.go",
+    "**/*_pb2.py",
+    "**/*.generated.*",
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.map",
+)
+
+
+def _tokens(data: dict, key: str) -> int:
+    """Read a required positive token count from the ``budget`` section.
+
+    ``bool`` is excluded explicitly because it is a subclass of ``int``, so
+    ``budget.weekly_tokens: true`` would otherwise validate as ``1`` -- a
+    spending ceiling of one token, arrived at silently.
+    """
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"budget.{key} must be a positive number of tokens")
+    return value
+
+
+def _excluded_paths(data: dict) -> tuple[str, ...]:
+    """Read the optional list of excluded path patterns.
+
+    A pattern may not begin with ``:``. ``exclusions.py`` builds a
+    ``:(exclude,glob)`` prefix in front of each one, and a pattern free to
+    open magic of its own -- ``:(attr:...)``, or a bare ``:`` re-anchoring
+    the path -- is not something an operator can predict from reading their
+    own configuration file. It cannot reach outside the argument it sits in;
+    it can make that argument mean something else.
+    """
+    value = data.get("excluded_paths")
+    if value is None:
+        return DEFAULT_EXCLUDED_PATHS
+    if not isinstance(value, list):
+        raise ConfigError("budget.excluded_paths must be a list of path patterns")
+    for pattern in value:
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise ConfigError(
+                f"budget.excluded_paths entries must be non-empty patterns, "
+                f"got {pattern!r}"
+            )
+        if pattern.startswith(":"):
+            raise ConfigError(
+                f"budget.excluded_paths entry {pattern!r} may not begin with ':': "
+                "the pathspec magic is supplied by the agent"
+            )
+    return tuple(value)
+
+
+def _cap(data: dict, key: str, default: int) -> int:
+    """Read an optional positive diff-size cap from the ``budget`` section."""
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"budget.{key} must be a positive integer")
+    return value
+
+
+#: What an authority publishes and a complier adopts: the pool arithmetic, and
+#: only that. Every one of these decides how much of the *shared* allowance is
+#: available, so two daemons disagreeing about one of them disagree about the
+#: same pool.
+#:
+#: Everything else in ``budget`` stays local, for two different reasons.
+#: ``enabled`` is the emergency brake, and a brake that could only be pulled
+#: fleet-wide could not stop one misbehaving repository. The diff-size caps and
+#: ``excluded_paths`` describe a *repository* -- what is worth reading in it --
+#: rather than the pool, and a vendored tree in one repository says nothing
+#: about another.
+SHARED_FIELDS = (
+    "session_tokens",
+    "weekly_tokens",
+    "max_run_tokens",
+    "reviewer_share_pct",
+    "per_contributor_pct",
+)
+
+
+@dataclass(frozen=True)
+class BudgetConfig:
+    """The spending rails: what the plan is assumed to allow, and our share.
+
+    ``session_tokens`` and ``weekly_tokens`` are the operator's estimate of
+    the *plan's* limits, because a subscription publishes no quota. The
+    agent's own ceiling is that times ``reviewer_share_pct``, which is what
+    keeps a runaway agent from locking a maintainer out of interactive Claude
+    Code.
+
+    ``enabled: false`` **stops reviewing**; it does not stop checking. The
+    two readings of a "kill switch" differ by catastrophe -- one is an
+    emergency brake, the other is unbounded spend -- so the governor refuses
+    every claim while it is false.
+
+    ``authority`` and ``comply`` decide *whose* numbers govern when several
+    daemons share one store, and so one pool. Exactly one configuration sets
+    ``authority: true`` and publishes the fields in :data:`SHARED_FIELDS`;
+    the rest adopt them. Without this each process would police the shared
+    pool using its own file, and two files that disagree do not split the
+    budget -- they hand it to whichever is most permissive.
+    """
+
+    # A configuration section is a flat list of keys. Splitting it to satisfy
+    # the attribute count would scatter the spending rails across two types,
+    # which is exactly what keeping them in one section is for.
+    # pylint: disable=too-many-instance-attributes
+
+    session_tokens: int
+    weekly_tokens: int
+    max_run_tokens: int
+    enabled: bool = True
+    #: Publishes :data:`SHARED_FIELDS` to the store for the others to adopt.
+    #: Defaults true, which is what makes a lone daemon govern its own store
+    #: with no extra key. A fleet sets it false on all but one, and getting
+    #: that wrong is loud rather than silent: a second authority on the same
+    #: store refuses to start.
+    authority: bool = True
+    #: Adopts what the authority published. Consulted only when ``authority``
+    #: is false, so an authority needs no second key to say it governs itself.
+    comply: bool = True
+    reviewer_share_pct: int = DEFAULT_REVIEWER_SHARE_PCT
+    max_changed_files: int = DEFAULT_MAX_CHANGED_FILES
+    max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES
+    excluded_paths: tuple[str, ...] = DEFAULT_EXCLUDED_PATHS
+    #: Optional, and off by default: on a one-person allowlist any cap below
+    #: 100 % would block the only account that can trigger anything.
+    per_contributor_pct: int | None = None
+
+    @property
+    def session_limit(self) -> int:
+        """The agent's share of the plan's rolling five-hour window."""
+        return self._share(self.session_tokens)
+
+    @property
+    def weekly_limit(self) -> int:
+        """The agent's share of the plan's rolling weekly window."""
+        return self._share(self.weekly_tokens)
+
+    @property
+    def daily_limit(self) -> int:
+        """A flat seventh of the weekly limit, over a trailing 24 hours.
+
+        A rolling weekly window never resets, so the ``weekly_remaining /
+        days_remaining`` pacing BUDGET.md describes has no divisor to use.
+        A seventh needs no week anchor and is stricter: an agent idle since
+        Monday cannot burn four days' allowance on Friday.
+        """
+        return self._share(self.weekly_tokens) // 7
+
+    @property
+    def per_contributor_limit(self) -> int | None:
+        """One contributor's share of the agent's weekly allowance.
+
+        ``None`` when the key is unset, which is how "no per-contributor
+        cap" is spelled: the window is simply not measured.
+        """
+        if self.per_contributor_pct is None:
+            return None
+        return self.weekly_limit * self.per_contributor_pct // 100
+
+    def shared(self) -> dict[str, int | None]:
+        """The pool arithmetic, as an authority publishes it."""
+        return {name: getattr(self, name) for name in SHARED_FIELDS}
+
+    def adopt(self, shared: dict[str, int | None]) -> BudgetConfig:
+        """This file's local settings under the authority's pool arithmetic.
+
+        Needs no re-validation. Both cross-field invariants ``parse`` enforces
+        -- a run fitting inside the daily allowance, and inside one
+        contributor's -- are arithmetic over :data:`SHARED_FIELDS` alone, so
+        they were already checked against these values in the authority's own
+        file before it published them.
+        """
+        return replace(self, **shared)
+
+    def _share(self, plan_tokens: int) -> int:
+        return plan_tokens * self.reviewer_share_pct // 100
+
+    @classmethod
+    def parse(cls, data: dict) -> BudgetConfig:
+        """Validate the ``budget`` section."""
+        enabled = data.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigError("budget.enabled must be true or false")
+        authority = data.get("authority", True)
+        if not isinstance(authority, bool):
+            raise ConfigError("budget.authority must be true or false")
+        comply = data.get("comply", True)
+        if not isinstance(comply, bool):
+            raise ConfigError("budget.comply must be true or false")
+        share = data.get("reviewer_share_pct", DEFAULT_REVIEWER_SHARE_PCT)
+        if isinstance(share, bool) or not isinstance(share, int):
+            raise ConfigError("budget.reviewer_share_pct must be a whole percentage")
+        if not 1 <= share <= 100:
+            # Zero would make every limit zero and utilisation an undefined
+            # 0/0; an operator who wants the agent stopped has `enabled`.
+            raise ConfigError("budget.reviewer_share_pct must be between 1 and 100")
+        per_contributor = data.get("per_contributor_pct")
+        if per_contributor is not None and (
+            isinstance(per_contributor, bool)
+            or not isinstance(per_contributor, int)
+            or not 1 <= per_contributor <= 100
+        ):
+            raise ConfigError(
+                "budget.per_contributor_pct must be a whole percentage "
+                "between 1 and 100, or absent for no cap"
+            )
+        config = cls(
+            session_tokens=_tokens(data, "session_tokens"),
+            weekly_tokens=_tokens(data, "weekly_tokens"),
+            max_run_tokens=_tokens(data, "max_run_tokens"),
+            enabled=enabled,
+            authority=authority,
+            comply=comply,
+            reviewer_share_pct=share,
+            max_changed_files=_cap(
+                data, "max_changed_files", DEFAULT_MAX_CHANGED_FILES
+            ),
+            max_changed_lines=_cap(
+                data, "max_changed_lines", DEFAULT_MAX_CHANGED_LINES
+            ),
+            per_contributor_pct=per_contributor,
+            excluded_paths=_excluded_paths(data),
+        )
+        if (
+            config.per_contributor_limit is not None
+            and config.per_contributor_limit < config.max_run_tokens
+        ):
+            # The same trap as the daily check below, one window further: a
+            # cap this low admits nobody, including the only contributor on
+            # a one-person allowlist.
+            raise ConfigError(
+                f"budget.max_run_tokens ({config.max_run_tokens}) exceeds one "
+                f"contributor's allowance ({config.per_contributor_limit}); "
+                "no run could ever be admitted"
+            )
+        if config.daily_limit < config.max_run_tokens:
+            # The daily window is the tightest of the three, so a run that
+            # cannot fit inside it can never be admitted at all -- a config
+            # that reviews nothing, arrived at by arithmetic nobody did.
+            raise ConfigError(
+                f"budget.max_run_tokens ({config.max_run_tokens}) exceeds the daily "
+                f"allowance ({config.daily_limit}); no run could ever be admitted"
+            )
+        return config

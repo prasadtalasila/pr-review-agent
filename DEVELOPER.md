@@ -13,12 +13,20 @@ made, and [AGENTS.md](AGENTS.md) the coding conventions.
 ```text
 src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
+├── _subprocess.py     # run a child under a clock; terminate, then kill
+├── _time.py           # the aware-UTC clock and the SQLite stamp format
 ├── _startup.py        # token and config, each loadable on its own
 ├── _subprocess.py     # a child process under a clock: terminate, then kill
 ├── _time.py           # the aware-UTC clock and the SQLite stamp format
 ├── bootstrap.py       # pre-flight egress checks for a new host
 ├── budget.py          # rolling windows, the ladder, reserve-then-settle
-├── config.py          # config.yaml → frozen dataclasses
+├── config/
+│   ├── __init__.py    # the document: which sections exist, and `Config`
+│   ├── _sections.py   # ConfigError, and unknown-key rejection per section
+│   ├── github_triggers.py  # which repository, and whose requests
+│   ├── budget.py      # every key that decides what may be spent
+│   ├── engine.py      # which tool reviews, and under what clock
+│   └── runtime.py     # store, workspace, worker, publish, logging
 ├── daemon.py          # the poll-classify-enqueue loop
 ├── logs.py            # one level and one format, resolved from three layers
 ├── numbering.py       # finding numbers that survive a re-review
@@ -342,14 +350,17 @@ in agreement for the common cases — a local `.claude/`, a built `site/`,
 `dist/` — so the habit of typing `.` does not bury you in errors from files the
 repository does not own.
 
-`src` currently scores 9.97/10 and `tests` 9.37/10 under pylint 4.0, both well
-above the 9.0 gate. Every deduction in `src` is a size heuristic — `R0902`
+`src` currently scores 9.98/10 and `tests` 9.39/10 under pylint 4.0, both well
+above the 9.0 gate. Every remaining deduction in `src` is `R0902`
 (too-many-instance-attributes) on the config, the daemon and the two trigger
-models, `R0914`/`R0915` on the worker's one run and `R0913` on the worker and
-the publisher. None is worth the indirection that would silence it: a
-dataclass with seven fields instead of nine buys nothing. The `R0801`
-(`duplicate-code`) that used to sit on the terminate-then-kill helper is gone:
-`engine/cli.py` and `workspace/gitcmd.py` now share `_subprocess.py`.
+models, plus `R0913` on the publisher. None is worth the indirection that
+would silence it: a dataclass with seven fields instead of nine buys nothing.
+
+The two that *were* worth it are gone. `R0801` (`duplicate-code`) sat on the
+terminate-then-kill helper until `engine/cli.py` and `workspace/gitcmd.py`
+came to share `_subprocess.py`; `R0914`/`R0915` sat on `ReviewWorker.run_one`
+until its exception taxonomy became `classify_failure`. Both were the size
+heuristic pointing at something real, which is the case the rule exists for.
 
 Quote the score from the pinned pylint rather than from whatever is on your
 `PATH`. The two disagree: 3.3 rated this same tree 9.95, and a number from the
