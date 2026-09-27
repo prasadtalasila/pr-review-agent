@@ -31,6 +31,8 @@ import os
 import re
 from pathlib import Path
 
+from .._subprocess import communicate
+
 logger = logging.getLogger(__name__)
 
 #: The release that added ``GIT_CONFIG_GLOBAL`` / ``GIT_CONFIG_SYSTEM``.
@@ -52,10 +54,6 @@ ALLOWED_PROTOCOL = "https"
 GIT = "git"
 
 GIT_TIMEOUT_SECONDS = 300.0
-
-#: How long a terminated git gets to clean up before the kill. It removes
-#: its own ``*.lock`` files on SIGTERM and cannot on SIGKILL.
-TERMINATE_GRACE_SECONDS = 5.0
 
 #: Passed through because production needs them. ``PATH`` is what finds
 #: ``git-remote-https``; the proxy and CA variables are what a host behind a
@@ -169,9 +167,8 @@ async def run_git(
         raise GitCommandError(argv, -1, str(exc)) from exc
 
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+        stdout, stderr = await communicate(process, timeout=timeout)
     except (TimeoutError, asyncio.TimeoutError) as exc:
-        await _stop(process)
         raise GitCommandError(argv, -1, f"timed out after {timeout}s") from exc
 
     if process.returncode:
@@ -179,23 +176,6 @@ async def run_git(
             argv, process.returncode, stderr.decode(errors="replace").strip()
         )
     return stdout.decode(errors="replace")
-
-
-async def _stop(process: asyncio.subprocess.Process) -> None:
-    """Terminate, then kill.
-
-    ``kill()`` is SIGKILL, and git cannot remove its ``*.lock`` files under
-    it -- a killed fetch can wedge the mirror until an operator deletes the
-    lock by hand. SIGTERM first costs a few seconds and avoids that.
-    """
-    if process.returncode is not None:
-        return
-    process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), TERMINATE_GRACE_SECONDS)
-    except (TimeoutError, asyncio.TimeoutError):
-        process.kill()
-        await process.wait()
 
 
 async def git_version() -> tuple[int, int]:

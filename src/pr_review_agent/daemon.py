@@ -28,16 +28,17 @@ loses the trigger permanently.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import signal
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from ._startup import StartupError
+from ._time import now as utcnow
+from ._time import wait_until
 from .budget import Governor
 from .config import Config, ConfigError
 from .engine import ReviewEngine
@@ -175,7 +176,7 @@ class Daemon:
         if budget.authority:
             self.store.publish_budget_policy(
                 BudgetPolicy(self.config.github.repo, budget.shared()),
-                now=datetime.now(timezone.utc),
+                now=utcnow(),
             )
         if budget.comply and not budget.authority:
             # A complier's own token counts are inert, so reporting them as
@@ -233,7 +234,7 @@ class Daemon:
     async def run_once(self) -> CycleSummary:
         """Poll every endpoint once, and enqueue what the classifier accepts."""
         cycle = await self.poller.poll_once()
-        return self._process(cycle, now=datetime.now(timezone.utc))
+        return self._process(cycle, now=utcnow())
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         """Cycle until ``stop`` is set.
@@ -249,7 +250,7 @@ class Daemon:
                 await self.run_once()
             except GitHubClientError as exc:
                 logger.error("poll cycle failed, retrying after the interval: %s", exc)
-            await _wait(stop, self.poller.interval.seconds)
+            await wait_until(stop, self.poller.interval.seconds)
 
     def _process(self, cycle: PollCycle, *, now: datetime) -> CycleSummary:
         changed = cycle.changed_items()
@@ -480,18 +481,8 @@ async def supervise(worker: ReviewWorker, stop: asyncio.Event) -> None:
             logger.exception("review worker %s crashed; restarting it", worker.owner)
             if worker.completed > before:
                 backoff = RESPAWN_BACKOFF
-            await _wait(stop, backoff)
+            await wait_until(stop, backoff)
             backoff = min(backoff * 2, RESPAWN_BACKOFF_MAX)
-
-
-async def _wait(stop: asyncio.Event, seconds: float) -> None:
-    """Wait ``seconds``, or until ``stop`` is set -- whichever comes first.
-
-    A plain sleep would make a ``SIGTERM`` arriving early in a 600 s idle
-    interval hang a service restart for the remainder of it.
-    """
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(stop.wait(), timeout=seconds)
 
 
 def _install_signal_handlers(stop: asyncio.Event, reload_config: Callable) -> None:
@@ -537,7 +528,7 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
             # Before anything can spend: whose limits govern this store's
             # pool. Raises rather than guessing when the answer is not
             # settled, because guessing means guessing about money.
-            comply = resolve_budget(store, config, now=datetime.now(timezone.utc))
+            comply = resolve_budget(store, config, now=utcnow())
             daemon = Daemon(
                 config=config,
                 poller=Poller(client=client, endpoints=endpoints, etags=store),
@@ -560,7 +551,7 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
                 config_path=config_path,
             )
             _install_signal_handlers(stop, daemon.reload_config)
-            daemon.seed_watermarks(now=datetime.now(timezone.utc))
+            daemon.seed_watermarks(now=utcnow())
             # Startup is the only safe moment to clear what a crashed run
             # left behind: no git of ours is running yet.
             await workspace.sweep()

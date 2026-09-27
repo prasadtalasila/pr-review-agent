@@ -4,7 +4,7 @@ from .client import GitHubClient, GitHubClientError, PollResult, RateLimit
 from .endpoints import Endpoint, RepoEndpoints
 from .etag_store import ETagCache, ETagStore
 from .interval import AdaptiveInterval
-from .payloads import comments, parse_timestamp, pull_requests
+from .payloads import comments, pull_requests
 from .poller import PollCycle, Poller
 
 __all__ = [
@@ -20,6 +20,5 @@ __all__ = [
     "RateLimit",
     "RepoEndpoints",
     "comments",
-    "parse_timestamp",
     "pull_requests",
 ]

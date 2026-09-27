@@ -39,8 +39,9 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
+from ._time import stamp
 from .engine import Finding, Outcome, ReviewResult, Severity
-from .store import SqliteStore, to_utc
+from .store import SqliteStore
 from .triggers.models import Trigger
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,7 @@ class RunStore:
                     "sha": head_sha,
                     "outcome": str(result.outcome),
                     "findings": _dump(result.findings),
-                    "now": _stamp(now),
+                    "now": stamp(now, "run timestamp"),
                 },
             )
         return RecordedRun(
@@ -254,7 +255,11 @@ class RunStore:
             return (
                 conn.execute(
                     _MARK_PUBLISHED,
-                    {"key": dedupe_key, "comment": comment_id, "now": _stamp(now)},
+                    {
+                        "key": dedupe_key,
+                        "comment": comment_id,
+                        "now": stamp(now, "run timestamp"),
+                    },
                 ).rowcount
                 == 1
             )
@@ -277,7 +282,8 @@ class RunStore:
         """
         with self._store.transaction() as conn:
             return conn.execute(
-                _PURGE, {"repo": repo, "pr": pr_number, "now": _stamp(now)}
+                _PURGE,
+                {"repo": repo, "pr": pr_number, "now": stamp(now, "run timestamp")},
             ).rowcount
 
 
@@ -330,8 +336,3 @@ def _run(row: tuple) -> RecordedRun:
         findings=_load(row[5]),
         comment_id=row[6],
     )
-
-
-def _stamp(value: datetime) -> str:
-    """Format a timestamp for storage, rejecting a naive one."""
-    return to_utc(value, "run timestamp").isoformat()

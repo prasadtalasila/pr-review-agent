@@ -260,61 +260,8 @@ jobs:
 
           echo "OK: no direct-URL dependencies in wheel or sdist metadata."
 
-      # The wheel imported cleanly for twelve releases while shipping no
-      # command at all, because `[project.scripts]` was absent and nothing
-      # the unit suite can reach knows whether a console script exists. It
-      # then shipped a quickstart that copied a config template the wheel did
-      # not contain, for the same reason: every unit test reads the templates
-      # off the source tree, where they have always been. So this does not
-      # stop at `--help`. It walks the documented first-run path against the
-      # installed artefact, which is the only place either gap is visible.
-      - name: Install the wheel and walk the documented first run
-        run: |
-          set -o pipefail
-
-          python -m venv /tmp/wheel-check
-          /tmp/wheel-check/bin/pip install --quiet dist/*.whl
-          /tmp/wheel-check/bin/pr-review-agent --help
-
-          mkdir -p /tmp/wheel-run
-          cd /tmp/wheel-run
-          /tmp/wheel-check/bin/pr-review-agent config generate
-
-          # A generated config must NOT be runnable: it names `owner/name`,
-          # and a template that runs as shipped is a template that polls and
-          # posts against somebody else's repository. Exit 3 is the contract.
-          if /tmp/wheel-check/bin/pr-review-agent config validate; then
-            echo "::error::The shipped template validates unedited."
-            exit 1
-          fi
-
-          sed -i 's|owner/name|example/repo|' config.yaml
-          /tmp/wheel-check/bin/pr-review-agent config validate
-
-          /tmp/wheel-check/bin/pr-review-agent config generate --full --force
-          sed -i 's|owner/name|example/repo|' config.yaml
-          /tmp/wheel-check/bin/pr-review-agent config validate
-
-          echo "OK: the installed wheel ships a template that must be edited."
-
-      # Same failure mode one file over: the unit is data, so only a real
-      # install proves `service install` can read it. XDG_* keeps it out of
-      # the runner's own home.
-      - name: Install the wheel's systemd unit
-        run: |
-          set -o pipefail
-
-          export XDG_CONFIG_HOME=/tmp/unit-check/config
-          export XDG_STATE_HOME=/tmp/unit-check/state
-          export XDG_CACHE_HOME=/tmp/unit-check/cache
-          /tmp/wheel-check/bin/pr-review-agent service install
-
-          unit="$XDG_CONFIG_HOME/systemd/user/pr-review-agent.service"
-          test -s "$unit"
-          systemd-analyze --user verify "$unit" || {
-            echo "::error::the shipped unit does not parse"; exit 1; }
-
-          echo "OK: the installed wheel ships a unit systemd accepts."
+      - name: Check the built wheel
+        uses: ./.github/actions/check-wheel
 
       - name: Name the artefact after the version it contains
         id: dist

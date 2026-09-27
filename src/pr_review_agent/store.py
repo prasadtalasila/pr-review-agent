@@ -42,8 +42,10 @@ import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+
+from ._time import parse, stamp, to_utc
 
 # Applied in order; the file's ``user_version`` records how many have run.
 #
@@ -273,7 +275,7 @@ class SqliteStore:
         row = self._conn.execute(
             "SELECT at FROM watermarks WHERE name = ?", (name,)
         ).fetchone()
-        return None if row is None else parse_timestamp(row[0])
+        return None if row is None else parse(row[0])
 
     def adopt_legacy_watermarks(
         self, qualified: Mapping[str, str]
@@ -315,7 +317,7 @@ class SqliteStore:
                 conn.execute(
                     "INSERT INTO watermarks (name, at) VALUES (?, ?)", (name, row[0])
                 )
-                adopted[name] = parse_timestamp(row[0])
+                adopted[name] = parse(row[0])
             conn.execute("DELETE FROM watermarks WHERE name NOT LIKE '%:%'")
         return adopted
 
@@ -357,7 +359,7 @@ class SqliteStore:
             (
                 policy.authority_repo,
                 json.dumps(policy.fields, sort_keys=True),
-                to_utc(now, "written_at").isoformat(),
+                stamp(now, "written_at"),
             ),
         )
 
@@ -381,20 +383,3 @@ def read_budget_policy(conn: sqlite3.Connection) -> BudgetPolicy | None:
         "SELECT authority_repo, policy FROM budget_policy WHERE id = 1"
     ).fetchone()
     return None if row is None else BudgetPolicy(row[0], json.loads(row[1]))
-
-
-def to_utc(value: datetime, what: str) -> datetime:
-    """Normalise an aware datetime to UTC, rejecting a naive one.
-
-    A naive datetime is refused at the boundary for the same reason
-    ``Classifier.since`` refuses one: compared against a GitHub ``...Z``
-    timestamp it raises ``TypeError`` at the worst possible moment.
-    """
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"{what} must be timezone-aware (UTC)")
-    return value.astimezone(timezone.utc)
-
-
-def parse_timestamp(value: str) -> datetime:
-    """Read back a timestamp written by :func:`to_utc`."""
-    return datetime.fromisoformat(value).astimezone(timezone.utc)

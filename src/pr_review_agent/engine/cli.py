@@ -23,13 +23,11 @@ from abc import ABC, abstractmethod
 from hashlib import sha256
 from pathlib import Path
 
+from .._subprocess import communicate
 from ..budget import Usage
 from .models import Capabilities, ReviewRequest, ReviewResult
 
 logger = logging.getLogger(__name__)
-
-#: How long a terminated agent gets to exit before the kill.
-TERMINATE_GRACE_SECONDS = 5.0
 
 #: The wall clock on the two probes that run *before* the timed review:
 #: ``--version`` and ``--help``. Neither does any work, so 30 s is generous
@@ -38,7 +36,6 @@ TERMINATE_GRACE_SECONDS = 5.0
 #: that hangs on a network update check would block the worker until the
 #: lease lapsed and nothing claimed the pull request again until a restart.
 PROBE_TIMEOUT_SECONDS = 30.0
-
 #: Passed to every adapter's child. ``PATH`` is what finds the binary;
 #: ``HOME`` is where a subscription credential lives. Nothing else is
 #: inherited, and an adapter that needs more names it explicitly.
@@ -183,11 +180,10 @@ class CliEngine(ABC):
         """
         process = await self._start(argv, cwd)
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(prompt.encode()), self.timeout_seconds
+            stdout, stderr = await communicate(
+                process, prompt.encode(), timeout=self.timeout_seconds
             )
         except (TimeoutError, asyncio.TimeoutError) as exc:
-            await self._stop(process)
             raise EngineTimeout(
                 f"{self.name} exceeded {self.timeout_seconds}s and was killed"
             ) from exc
@@ -234,18 +230,6 @@ class CliEngine(ABC):
             # of exactly that failure to the wrong subsystem entirely.
             raise EngineUnavailable(f"cannot run {argv[0]!r} in {cwd}: {exc}") from exc
 
-    @staticmethod
-    async def _stop(process: asyncio.subprocess.Process) -> None:
-        """Terminate, then kill, so the tool can close what it opened."""
-        if process.returncode is not None:
-            return
-        process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), TERMINATE_GRACE_SECONDS)
-        except (TimeoutError, asyncio.TimeoutError):
-            process.kill()
-            await process.wait()
-
     async def version(self) -> str:
         """Whatever ``<binary> --version`` prints, stripped."""
         return await self._probe("--version")
@@ -278,11 +262,8 @@ class CliEngine(ABC):
         except OSError as exc:
             raise EngineUnavailable(f"cannot run {self.binary!r}: {exc}") from exc
         try:
-            stdout, _ = await asyncio.wait_for(
-                process.communicate(), PROBE_TIMEOUT_SECONDS
-            )
+            stdout, _ = await communicate(process, timeout=PROBE_TIMEOUT_SECONDS)
         except (TimeoutError, asyncio.TimeoutError) as exc:
-            await self._stop(process)
             raise EngineUnavailable(
                 f"{self.binary!r} {flag} did not answer within {PROBE_TIMEOUT_SECONDS}s"
             ) from exc

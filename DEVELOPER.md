@@ -14,6 +14,8 @@ made, and [AGENTS.md](AGENTS.md) the coding conventions.
 src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
 ├── _startup.py        # token and config, each loadable on its own
+├── _subprocess.py     # a child process under a clock: terminate, then kill
+├── _time.py           # the aware-UTC clock and the SQLite stamp format
 ├── bootstrap.py       # pre-flight egress checks for a new host
 ├── budget.py          # rolling windows, the ladder, reserve-then-settle
 ├── config.py          # config.yaml → frozen dataclasses
@@ -344,11 +346,10 @@ repository does not own.
 above the 9.0 gate. Every deduction in `src` is a size heuristic — `R0902`
 (too-many-instance-attributes) on the config, the daemon and the two trigger
 models, `R0914`/`R0915` on the worker's one run and `R0913` on the worker and
-the publisher — plus one `R0801` (`duplicate-code`) on the terminate-then-kill
-helper that `engine/cli.py` and `workspace/gitcmd.py` each spell out for their
-own subprocess. None is worth the indirection that would silence it: a
-dataclass with seven fields instead of nine, or one shared process-killer
-imported into two modules that otherwise share nothing.
+the publisher. None is worth the indirection that would silence it: a
+dataclass with seven fields instead of nine buys nothing. The `R0801`
+(`duplicate-code`) that used to sit on the terminate-then-kill helper is gone:
+`engine/cli.py` and `workspace/gitcmd.py` now share `_subprocess.py`.
 
 Quote the score from the pinned pylint rather than from whatever is on your
 `PATH`. The two disagree: 3.3 rated this same tree 9.95, and a number from the

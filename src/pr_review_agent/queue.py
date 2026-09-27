@@ -49,7 +49,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ._compat import StrEnum
-from .store import SqliteStore, to_utc
+from ._time import stamp, to_utc
+from .store import SqliteStore
 from .triggers.models import CommentSource, Trigger, TriggerKind
 
 #: The budget governor's hook into :meth:`ReviewQueue.claim`. It is handed
@@ -203,7 +204,7 @@ class ReviewQueue:
             "comment_id": trigger.comment_id,
             "comment_source": _text(trigger.comment_source),
             "pending": str(QueueStatus.PENDING),
-            "now": _stamp(now, "enqueued_at"),
+            "now": stamp(now, "enqueued_at"),
         }
         with self._store.transaction() as conn:
             return conn.execute(_ENQUEUE, params).rowcount == 1
@@ -229,7 +230,7 @@ class ReviewQueue:
         """
         until = to_utc(now, "now") + self._lease
         common = {
-            "now": _stamp(now, "now"),
+            "now": stamp(now, "now"),
             "repo": self._repo,
             "max_attempts": self._max_attempts,
             "pending": str(QueueStatus.PENDING),
@@ -291,7 +292,7 @@ class ReviewQueue:
             "key": claim.trigger.dedupe_key,
             "owner": claim.owner,
             "claimed": str(QueueStatus.CLAIMED),
-            "now": _stamp(now, "now"),
+            "now": stamp(now, "now"),
         }
         with self._store.transaction() as conn:
             return conn.execute(_HOLDS, params).fetchone() is not None
@@ -363,17 +364,3 @@ def _claim(row: tuple, *, owner: str, leased_until: datetime) -> Claim:
 def _text(source: CommentSource | None) -> str | None:
     """A comment source as it is stored, or ``None`` when there is none."""
     return None if source is None else str(source)
-
-
-def _stamp(value: datetime, what: str) -> str:
-    """Format a timestamp for storage, and for comparison *inside* SQL.
-
-    Every value goes through ``to_utc`` first, so each one carries the same
-    ``+00:00`` suffix and the same widths down to the second. The fractional
-    part is the one variable-width field, and it is harmless: ``+`` sorts
-    before ``.``, so a whole second still precedes the same second with a
-    fraction. ISO-8601 therefore sorts lexicographically in the order the
-    instants occur, which is what lets the lease-expiry predicates be plain
-    SQL comparisons rather than a read-and-compare in Python.
-    """
-    return to_utc(value, what).isoformat()

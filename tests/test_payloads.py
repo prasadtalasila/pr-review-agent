@@ -3,7 +3,7 @@ are dropped before the classifier ever sees them."""
 
 from datetime import datetime, timezone
 
-from pr_review_agent.poller.payloads import comments, parse_timestamp, pull_requests
+from pr_review_agent.poller.payloads import comments, pull_requests
 from pr_review_agent.triggers.models import CommentSource
 
 REPO = "o/r"
@@ -116,12 +116,6 @@ def test_comment_with_a_ghost_author_is_skipped():
 def test_comment_with_a_null_body_becomes_empty_prose():
     (comment,) = comments(REPO, [issue_comment(body=None)])
     assert comment.body == ""
-
-
-def test_parse_timestamp_accepts_the_z_suffix():
-    assert parse_timestamp("2026-09-17T07:11:00Z") == datetime(
-        2026, 9, 17, 7, 11, tzinfo=timezone.utc
-    )
 
 
 # -- which endpoint a comment came from ----------------------------------

@@ -37,8 +37,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Iterator
-from datetime import datetime, timezone
 
+from .._time import parse
 from ..triggers.models import (
     Actor,
     Comment,
@@ -50,15 +50,6 @@ from ..triggers.models import (
 logger = logging.getLogger(__name__)
 
 
-def parse_timestamp(value: str) -> datetime:
-    """Parse a GitHub ISO-8601 timestamp into an aware UTC datetime.
-
-    GitHub writes the ``Z`` suffix, which ``datetime.fromisoformat`` does not
-    accept before Python 3.11.
-    """
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-
-
 def pull_requests(repo: str, items: Iterable[dict]) -> Iterator[PullRequest]:
     """Map the ``/pulls?state=open`` payload, skipping unusable items."""
     for item in items:
@@ -68,7 +59,7 @@ def pull_requests(repo: str, items: Iterable[dict]) -> Iterator[PullRequest]:
                 number=int(item["number"]),
                 head_sha=item["head"]["sha"],
                 author=Actor.from_api(item.get("user")),
-                created_at=parse_timestamp(item["created_at"]),
+                created_at=parse(item["created_at"]),
                 is_draft=bool(item.get("draft", False)),
             )
         except (PayloadError, KeyError, TypeError, ValueError) as exc:
@@ -98,7 +89,7 @@ def comments(repo: str, items: Iterable[dict]) -> Iterator[Comment]:
                 comment_id=int(item["id"]),
                 author=Actor.from_api(item.get("user")),
                 body=item.get("body") or "",
-                updated_at=parse_timestamp(item["updated_at"]),
+                updated_at=parse(item["updated_at"]),
                 source=_source(item),
             )
         except (PayloadError, AttributeError, KeyError, TypeError, ValueError) as exc:
