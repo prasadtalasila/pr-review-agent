@@ -81,6 +81,13 @@ refusals abandon a perfectly good one. So it correctly stays at the head of a
 FIFO queue, and without skipping it would block the maintainer's mention
 behind it until the window rolled: days.
 
+The same skip is what makes the
+[pacer](BUDGET.md#-the-pacer-one-pull-requests-rate) a *deferral* rather than
+a drop: a pull request reviewed too recently is refused here, keeps its
+`pending` row and its attempt count, and is claimed on a later pass once the
+interval has elapsed — by which time it is reviewed against whatever the head
+is then.
+
 Every other condition in `_CLAIMABLE` is a fact about the row, which SQLite can
 already exclude on. A budget refusal is the first decision it cannot express,
 because it depends on the ledger, the rung and the trigger's kind.
@@ -149,6 +156,30 @@ fail again — an oversized pull request, an unusable payload. See
 `complete`, `release` and `abandon` are the three verbs a worker closes a row
 with, and all three are guarded on the owner.
 
+## 🧺 One review answers what was waiting
+
+The agent posts [one comment per pull request](PUBLISHER.md#-one-comment-per-pull-request)
+and edits it in place. So three maintainers mentioning it on one pull request
+asked **one** question: reviewing each mention separately would pay three
+times to overwrite the same comment twice.
+
+After a review records its findings, the worker calls `fold`, which closes
+every other row for that pull request that
+
+- was already `pending` when the review started — anything enqueued *during*
+  it may be asking about something the review never read;
+- named no other commit (`head_sha IS NULL`, which every mention is, or the
+  same sha the review actually read);
+- is not a `publish` item — that names a recorded run of its own.
+
+Folded rows end `done`, and the count is logged. They are never acknowledged
+with 👀, because the acknowledgement happens at claim time and they were
+never claimed.
+
+Fold is the other half of the pacer. Without it, a burst deferred by the
+interval would simply be drained one review per interval afterwards; with it,
+the review the burst was waiting for answers the whole burst.
+
 ## 🔭 What the queue does *not* do
 
 `Claim.trigger.head_sha` is the head observed when the trigger was
@@ -157,15 +188,15 @@ carry one ([POLLER.md](POLLER.md#-mapping-a-payload-to-a-pull-request)).
 
 It is what the review runs against, but it is **not** what makes the review
 safe to post. The [publisher](PUBLISHER.md#-the-head-is-re-read-immediately-before-posting)
-re-reads the live head immediately before posting and discards a review of a
-superseded commit. The queue cannot do that check itself: it would have to be
+re-reads the live head immediately before posting and marks a review of a
+superseded commit as describing that commit. The queue cannot do that check itself: it would have to be
 a GitHub read, and it has to happen at publish time rather than claim time to
 be worth anything.
 
-The queue also does not know that a run has been *paid for but not posted*.
-That lives in `runs`. The worker's `admit` predicate consults it, and admits
-such a claim without reserving anything — publishing reaches no engine, so
+The queue also does not know which recorded run is still owed a comment.
+That lives in `runs`, and the outstanding posting is a `publish` **row of its
+own** — admitted without reserving, because publishing reaches no engine and
 weighing it against a budget window would be refusing to spend nothing. Such
-a claim is also handed back with `release_unattempted` if the post fails,
+a claim is handed back with `release_unattempted` if the post fails,
 because `max_attempts` bounds allowance drained and this drains none. See
 [PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).

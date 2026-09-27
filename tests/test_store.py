@@ -131,7 +131,7 @@ def test_a_failed_transaction_rolls_back(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 10
+        assert store.schema_version == SCHEMA_VERSION == 12
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -153,6 +153,9 @@ def test_an_existing_database_adopts_the_ledger(tmp_path):
             # every later migration, and an ALTER cannot run twice.
             conn.execute("ALTER TABLE queue DROP COLUMN comment_id")
             conn.execute("ALTER TABLE queue DROP COLUMN comment_source")
+            # Migration 12's column goes too, for the same reason.
+            # Migration 11's went with the table above.
+            conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
             conn.execute("PRAGMA user_version = 2")
 
     with SqliteStore(path) as reopened:
@@ -178,6 +181,13 @@ def test_an_existing_database_adopts_the_contributor_index(tmp_path):
         conn.execute("ALTER TABLE ledger DROP COLUMN stop_reason")
         conn.execute("ALTER TABLE queue DROP COLUMN comment_id")
         conn.execute("ALTER TABLE queue DROP COLUMN comment_source")
+        # Migrations 11 and 12 go too, for the reason above: a rewound
+        # version replays every later migration, and an ALTER cannot
+        # run twice.
+        conn.execute("DROP INDEX ledger_by_pr")
+        conn.execute("ALTER TABLE ledger DROP COLUMN repo")
+        conn.execute("ALTER TABLE ledger DROP COLUMN pr_number")
+        conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("PRAGMA user_version = 3")
 
     with SqliteStore(path) as reopened:
@@ -204,6 +214,13 @@ def test_an_existing_database_adopts_the_reviewed_lines_column(tmp_path):
             "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
             "reserved_tokens, reserved_at) VALUES ('k', 'w', 1, 'full', 10, 'x')"
         )
+        # Migrations 11 and 12 go too, for the reason above: a rewound
+        # version replays every later migration, and an ALTER cannot
+        # run twice.
+        conn.execute("DROP INDEX ledger_by_pr")
+        conn.execute("ALTER TABLE ledger DROP COLUMN repo")
+        conn.execute("ALTER TABLE ledger DROP COLUMN pr_number")
+        conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("PRAGMA user_version = 4")
 
     with SqliteStore(path) as reopened:
@@ -227,6 +244,13 @@ def test_an_existing_database_adopts_the_stop_reason_column(tmp_path):
         # Migration 7's columns go with it, for the reason above.
         conn.execute("ALTER TABLE queue DROP COLUMN comment_id")
         conn.execute("ALTER TABLE queue DROP COLUMN comment_source")
+        # Migrations 11 and 12 go too, for the reason above: a rewound
+        # version replays every later migration, and an ALTER cannot
+        # run twice.
+        conn.execute("DROP INDEX ledger_by_pr")
+        conn.execute("ALTER TABLE ledger DROP COLUMN repo")
+        conn.execute("ALTER TABLE ledger DROP COLUMN pr_number")
+        conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("PRAGMA user_version = 5")
         conn.execute(
             "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
@@ -318,6 +342,13 @@ def test_an_existing_database_adopts_the_comment_columns(tmp_path):
             "status, enqueued_at) VALUES ('k', 'mention', 'o/r', 1, 9, "
             "'pending', 'x')"
         )
+        # Migrations 11 and 12 go too, for the reason above: a rewound
+        # version replays every later migration, and an ALTER cannot
+        # run twice.
+        conn.execute("DROP INDEX ledger_by_pr")
+        conn.execute("ALTER TABLE ledger DROP COLUMN repo")
+        conn.execute("ALTER TABLE ledger DROP COLUMN pr_number")
+        conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("PRAGMA user_version = 6")
 
     with SqliteStore(path) as reopened:
@@ -343,6 +374,12 @@ def test_an_existing_database_adopts_the_runs_table(tmp_path):
         store.advance_watermark("comments", datetime(2026, 1, 1, tzinfo=timezone.utc))
         with store.transaction() as conn:
             conn.execute("DROP TABLE runs")
+            # Migrations 11 and 12 go too, for the reason above: a rewound
+            # version replays every later migration, and an ALTER cannot
+            # run twice.
+            conn.execute("DROP INDEX ledger_by_pr")
+            conn.execute("ALTER TABLE ledger DROP COLUMN repo")
+            conn.execute("ALTER TABLE ledger DROP COLUMN pr_number")
             conn.execute("PRAGMA user_version = 7")
 
     with SqliteStore(path) as reopened:
@@ -362,6 +399,13 @@ def test_an_existing_database_adopts_the_breaker_state(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as store, store.transaction() as conn:
         conn.execute("DROP TABLE budget_state")
+        # Migrations 11 and 12 go too, for the reason above: a rewound
+        # version replays every later migration, and an ALTER cannot
+        # run twice.
+        conn.execute("DROP INDEX ledger_by_pr")
+        conn.execute("ALTER TABLE ledger DROP COLUMN repo")
+        conn.execute("ALTER TABLE ledger DROP COLUMN pr_number")
+        conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("PRAGMA user_version = 8")
 
     with SqliteStore(path) as reopened, reopened.transaction() as conn:
@@ -381,6 +425,13 @@ def test_an_existing_database_adopts_the_budget_policy(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as store, store.transaction() as conn:
         conn.execute("DROP TABLE budget_policy")
+        # Migrations 11 and 12 go too, for the reason above: a rewound
+        # version replays every later migration, and an ALTER cannot
+        # run twice.
+        conn.execute("DROP INDEX ledger_by_pr")
+        conn.execute("ALTER TABLE ledger DROP COLUMN repo")
+        conn.execute("ALTER TABLE ledger DROP COLUMN pr_number")
+        conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("PRAGMA user_version = 9")
 
     with SqliteStore(path) as reopened:

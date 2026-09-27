@@ -129,6 +129,22 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 | `max_changed_files` | integer | no (default `100`) | A pull request touching more *reviewable* files is refused before a worktree exists. |
 | `max_changed_lines` | integer | no (default `5000`) | The same, for additions plus deletions. |
 | `excluded_paths` | list of glob patterns | no (defaults below) | Paths counted against neither cap and not shown to the reviewer. |
+| `min_review_interval_seconds` | integer ≥ 0 | no (default `900`) | How long one pull request waits between reviews. A trigger arriving sooner is **deferred**, not dropped. `0` disables it. |
+| `mention_min_review_interval_seconds` | integer ≥ 0 | no (default `300`) | The same, for a `@claude`: a person is waiting, so it is shorter. May not exceed `min_review_interval_seconds`. |
+| `max_reviews_per_pull_request` | integer ≥ 1 | no (default: **no cap**) | The most reviews one pull request may have in a trailing 24 hours. |
+
+**The two intervals ship enabled**, unlike the caps above them, because what
+they bound is not a guess: a pull request reviewed twice in a minute was
+reviewed twice for one question, whatever the plan's allowance turns out to
+be. They bound a *rate* where the windows bound a *total*, and neither
+replaces the other — a window cannot tell one pull request consuming the day
+from thirty sharing it. [BUDGET.md](BUDGET.md#-the-pacer-one-pull-requests-rate)
+has the reasoning, including why this is not the contributor window again.
+
+A deferred trigger keeps its queue row, spends no attempt and is claimed once
+the interval passes, so nothing is lost; what changes is *when*, and which
+head gets reviewed. Nothing is posted to say the agent is waiting — a
+deferral is a `WARNING` log line.
 
 **The three token counts have no defaults, deliberately.** A subscription
 publishes no quota, so every one of them is a guess the operator has to
@@ -360,6 +376,7 @@ See [ENGINE.md](ENGINE.md) for the argv these keys produce.
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
 | `dry_run` | boolean | no (default `false`) | Run the whole pipeline and post nothing, logging the comment that would have been written. |
+| `post_superseded` | boolean | no (default `true`) | Post a review whose commit stopped being the head while it ran, marked as describing that commit. `false` records it and posts nothing. |
 
 Optional, and the default is to post. Unlike the plan token counts this is
 not a guess an operator has to make: a dry run spends exactly what a real
@@ -370,6 +387,14 @@ nobody the result.
 non-empty string is truthy in Python, so `dry_run: "no"` would read as "post
 for real" under a cast and as "post nothing" under YAML's own boolean rules;
 refusing both is the only answer that cannot surprise an operator.
+
+`post_superseded` defaults to posting because the tokens are spent before
+the head is re-read: discarding the review saves nothing and shows nobody
+anything. The agent keeps one comment per pull request and edits it in place,
+so a review of the previous commit is replaced by the next round rather than
+left beside it — what the reader needs is to know which commit the text
+describes, which the header says. See
+[PUBLISHER.md](PUBLISHER.md#-a-head-that-moved-under-the-review).
 
 Reloadable on `SIGHUP` — see [Reload](#-reload) — and described in full in
 [PUBLISHER.md](PUBLISHER.md#-publishdry_run).

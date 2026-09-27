@@ -374,6 +374,9 @@ class ReviewWorker:
             await self._publish_recorded(claim)
             return
 
+        # The fold boundary: every trigger for this pull request already
+        # waiting at this moment is answered by the review about to run.
+        started = _now()
         mode = self.governor.admitted_mode(claim)
         if mode is None:
             # The lease lapsed and somebody else holds this row. Touching
@@ -397,6 +400,27 @@ class ReviewWorker:
         if end is None:
             return
         await self._settle_publish_and_finish(claim, end)
+        if end.reviewed is not None:
+            self._fold(claim, started, end.reviewed.head_sha)
+
+    def _fold(self, claim: Claim, started: datetime, head_sha: str) -> None:
+        """Close the triggers this review answered, and say how many.
+
+        Only a run that recorded findings folds anything. Its comment is
+        either posted or owed by a publication item naming durable findings,
+        so the waiting triggers have their answer either way -- whereas a run
+        that recorded nothing has nothing to answer them with.
+        """
+        folded = self.queue.fold(claim, before=started, head_sha=head_sha)
+        if folded:
+            logger.info(
+                "folded %d waiting trigger(s) on %s#%d into %s",
+                folded,
+                claim.trigger.repo,
+                claim.trigger.pr_number,
+                claim.trigger.dedupe_key,
+                extra={"repo": claim.trigger.repo, "pr": claim.trigger.pr_number},
+            )
 
     async def _attempt(self, claim: Claim, mode: Mode, spend: _Spend) -> RunEnd | None:
         """Run one review; ``None`` when the pre-flight ended the row itself."""

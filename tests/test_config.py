@@ -1,7 +1,7 @@
 """Config loading: reject anything that could silently weaken a safety rule."""
 
 from dataclasses import fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import get_type_hints
 
@@ -311,6 +311,60 @@ def test_a_run_larger_than_a_contributor_allowance_is_rejected():
     """
     data = {**VALID, "budget": {**BUDGET, "per_contributor_pct": 1}}
     with pytest.raises(ConfigError, match="no run could ever be admitted"):
+        Config.from_mapping(data)
+
+
+def test_the_pacer_ships_on_with_a_shorter_wait_for_a_mention():
+    """A default an operator does not have to discover to be protected by."""
+    budget = Config.from_mapping(VALID).budget
+    assert budget.min_review_interval_seconds == 900
+    assert budget.mention_min_review_interval_seconds == 300
+    assert budget.review_interval(mention=True) == timedelta(seconds=300)
+    assert budget.review_interval(mention=False) == timedelta(seconds=900)
+
+
+@pytest.mark.parametrize("key", ["min_review", "mention_min_review"])
+@pytest.mark.parametrize("value", [-1, "900", 1.5, True])
+def test_an_unusable_review_interval_is_rejected(key, value):
+    name = f"{key}_interval_seconds"
+    data = {**VALID, "budget": {**BUDGET, name: value}}
+    with pytest.raises(ConfigError, match=name):
+        Config.from_mapping(data)
+
+
+def test_a_mention_may_not_wait_longer_than_an_ordinary_trigger():
+    """Far likelier to be a transposition than a policy anybody wanted."""
+    data = {
+        **VALID,
+        "budget": {
+            **BUDGET,
+            "min_review_interval_seconds": 60,
+            "mention_min_review_interval_seconds": 120,
+        },
+    }
+    with pytest.raises(ConfigError, match="wait longer"):
+        Config.from_mapping(data)
+
+
+def test_the_per_pull_request_review_cap_is_off_by_default():
+    assert Config.from_mapping(VALID).budget.max_reviews_per_pull_request is None
+
+
+@pytest.mark.parametrize("value", [0, -1, "5", 1.5, True])
+def test_an_unusable_per_pull_request_cap_is_rejected(value):
+    data = {**VALID, "budget": {**BUDGET, "max_reviews_per_pull_request": value}}
+    with pytest.raises(ConfigError, match="max_reviews_per_pull_request"):
+        Config.from_mapping(data)
+
+
+def test_superseded_reviews_are_posted_by_default():
+    """The tokens are spent before the head is re-read; discarding shows nobody."""
+    assert Config.from_mapping(VALID).publish.post_superseded is True
+
+
+def test_an_unusable_post_superseded_is_rejected():
+    data = {**VALID, "publish": {"post_superseded": "no"}}
+    with pytest.raises(ConfigError, match="post_superseded"):
         Config.from_mapping(data)
 
 

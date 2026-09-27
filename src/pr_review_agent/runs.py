@@ -64,7 +64,8 @@ WHERE dedupe_key = :key
 """
 
 _MARK_PUBLISHED = """
-UPDATE runs SET published_at = :now, comment_id = :comment
+UPDATE runs SET published_at = :now, comment_id = :comment,
+                publish_outcome = :outcome
 WHERE dedupe_key = :key AND published_at IS NULL
 """
 
@@ -249,13 +250,22 @@ class RunStore:
         return keys.index(dedupe_key) + 1 if dedupe_key in keys else 1
 
     def mark_published(
-        self, dedupe_key: str, *, comment_id: int | None, now: datetime
+        self,
+        dedupe_key: str,
+        *,
+        comment_id: int | None,
+        now: datetime,
+        outcome: str,
     ) -> bool:
         """Record that this run needs publishing no longer.
 
         ``comment_id`` is ``None`` for a dry run, which posted nothing but
         still ran the pipeline: an unstamped run would be re-offered on
         every claim for the lifetime of the database.
+
+        ``outcome`` says *how* it ended, which ``published_at`` cannot: a
+        posted review and one discarded because the head moved both need
+        stamping, and only the column tells them apart afterwards.
 
         ``False`` when the run was already stamped.
         """
@@ -267,6 +277,7 @@ class RunStore:
                         "key": dedupe_key,
                         "comment": comment_id,
                         "now": stamp(now, "run timestamp"),
+                        "outcome": outcome,
                     },
                 ).rowcount
                 == 1

@@ -180,6 +180,25 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )
         """,
     ),
+    # Which pull request a reservation was made for. The ledger is the
+    # record of what reached an engine, so it is the only place that can
+    # answer "how recently, and how often, has this pull request been
+    # reviewed" about *every* run rather than only the ones that produced
+    # findings -- a failed run spent tokens too. Both columns are NULL on
+    # every row written before this migration, which the pacer reads as "no
+    # history", the same answer it gives a pull request nobody has reviewed.
+    (
+        "ALTER TABLE ledger ADD COLUMN repo TEXT",
+        "ALTER TABLE ledger ADD COLUMN pr_number INTEGER",
+        "CREATE INDEX IF NOT EXISTS ledger_by_pr "
+        "ON ledger (repo, pr_number, reserved_at)",
+    ),
+    # How publishing a run ended, rather than only whether it is still owed
+    # a comment. `published_at` answers "does this still need posting"; it
+    # cannot distinguish a review that was posted from one discarded because
+    # the head moved, and both have to be stamped or the row is offered for
+    # publication for the lifetime of the database.
+    ("ALTER TABLE runs ADD COLUMN publish_outcome TEXT",),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

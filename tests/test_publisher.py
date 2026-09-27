@@ -168,12 +168,14 @@ def runs_fixture(tmp_path):
         yield RunStore(store)
 
 
-def make_publisher(runs, transport, dry_run=False, secrets=()) -> Publisher:
+def make_publisher(
+    runs, transport, dry_run=False, secrets=(), post_superseded=True
+) -> Publisher:
     return Publisher(
         client=GitHubClient(token="t", transport=httpx.MockTransport(transport)),
         endpoints=ENDPOINTS,
         runs=runs,
-        config=PublishConfig(dry_run=dry_run),
+        config=PublishConfig(dry_run=dry_run, post_superseded=post_superseded),
         handle="claude",
         secrets=secrets,
     )
@@ -228,11 +230,43 @@ async def test_a_dry_run_still_acknowledges(runs):
 # -- the head re-check ---------------------------------------------------
 
 
-async def test_a_superseded_head_posts_nothing(runs):
+async def test_a_superseded_head_is_posted_and_says_so(runs):
+    """The tokens are spent by the time the head is re-read.
+
+    Discarding the review saves nothing and shows nobody anything, so it is
+    posted with a line naming the commit it actually describes.
+    """
     transport = Transport(head="a-newer-commit")
     outcome = await make_publisher(runs, transport).publish(recorded(runs))
     assert outcome.outcome is PublishOutcome.SUPERSEDED
+    body = json.loads(transport.writes[0].content)["body"]
+    assert "no longer the head" in body
+    assert "a-newer" in body
+
+
+async def test_post_superseded_false_restores_the_discard(runs):
+    transport = Transport(head="a-newer-commit")
+    publisher = make_publisher(runs, transport, post_superseded=False)
+    outcome = await publisher.publish(recorded(runs))
+    assert outcome.outcome is PublishOutcome.SUPERSEDED
     assert transport.writes == []
+
+
+@pytest.mark.parametrize("post_superseded", [True, False])
+async def test_a_superseded_run_is_stamped_and_never_offered_again(
+    runs, post_superseded
+):
+    """Issue #68: the discard path used to leave `published_at` NULL forever.
+
+    An unstamped run is a run the queue keeps offering for publication, and
+    every claim that took the offer re-read the same moved head. Whether the
+    review was posted or discarded, the run is finished.
+    """
+    transport = Transport(head="a-newer-commit")
+    publisher = make_publisher(runs, transport, post_superseded=post_superseded)
+    run = recorded(runs)
+    await publisher.publish(run)
+    assert runs.unpublished(run.dedupe_key) is None
 
 
 async def test_a_matching_head_publishes(runs):
