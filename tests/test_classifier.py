@@ -159,8 +159,8 @@ def test_a_body_the_publisher_neutralised_never_loops():
     """The loop the deleted self checks guarded, closed at the other end.
 
     A review body is engine prose and can contain the handle -- reviewing
-    *this* repository all but guarantees it -- and the comment is edited in
-    place on re-review, so it comes back fresh. What stops it summoning
+    *this* repository all but guarantees it -- and a comment the agent posts
+    comes back to the poller on the next cycle. What stops it summoning
     another review is that `publisher.render` ran it through `neutralise`
     first. The raw body is asserted too, because without it this test would
     pass on any body at all and prove nothing.
@@ -172,6 +172,42 @@ def test_a_body_the_publisher_neutralised_never_loops():
     assert classifier.classify_comment(make_comment(author=AGENT, body=raw)).accepted
     posted = make_comment(author=AGENT, body=neutralise(raw, "claude"))
     assert classifier.classify_comment(posted).reason == "no_mention"
+
+
+def test_a_comment_the_agent_posted_is_never_a_trigger():
+    """Issue #108: the structural half, which needs no escaping to work.
+
+    The body here is a mention the publisher's `neutralise` somehow let
+    through -- the case the id set exists for. Nothing about the account is
+    consulted: this is the same comment, not the same author.
+    """
+    classifier = Classifier(
+        allowlist=Allowlist.from_config([AGENT.user_id, ALICE.user_id]),
+        since=SINCE,
+        posted_comment_ids=frozenset({555}),
+    )
+    mine = make_comment(author=AGENT, comment_id=555, body="@claude review")
+    assert classifier.classify_comment(mine).reason == "self_comment"
+
+
+def test_a_contributors_comment_on_the_same_pull_request_still_triggers():
+    """The set rejects one comment, not a pull request and not an account."""
+    classifier = Classifier(
+        allowlist=Allowlist.from_config([ALICE.user_id]),
+        since=SINCE,
+        posted_comment_ids=frozenset({555}),
+    )
+    assert classifier.classify_comment(make_comment(comment_id=556)).accepted
+
+
+def test_an_empty_set_rejects_nothing():
+    """A first run has posted nothing, which is not a reason to drop work."""
+    classifier = Classifier(
+        allowlist=Allowlist.from_config([ALICE.user_id]),
+        since=SINCE,
+        posted_comment_ids=frozenset(),
+    )
+    assert classifier.classify_comment(make_comment(comment_id=555)).accepted
 
 
 def test_pr_dedupe_key_is_stable_for_unchanged_head_sha(classifier):

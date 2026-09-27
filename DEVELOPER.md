@@ -33,6 +33,7 @@ src/pr_review_agent/
 ├── pacing.py          # how often one pull request may be reviewed
 ├── publisher.py       # the 👀, the head re-check, one comment per review
 ├── queue.py           # claim protocol and per-pull-request leases
+├── comments.py        # the ids the agent posted, so it cannot answer itself
 ├── runs.py            # what a paid review produced, so publishing can retry
 ├── sanitise.py        # engine prose made inert before it is posted
 ├── store.py           # SQLite: schema, watermarks, ETags, queue table

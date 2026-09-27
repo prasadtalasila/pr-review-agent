@@ -24,6 +24,7 @@ from pr_review_agent.budget import (
     Usage,
     UsageConfidence,
 )
+from pr_review_agent.comments import AgentComments
 from pr_review_agent.config import (
     DEFAULT_MAX_PUBLISH_ATTEMPTS,
     BudgetConfig,
@@ -332,6 +333,7 @@ def wired_fixture(tmp_path, workspace, git_remote):
                 client=resolved,
                 endpoints=endpoints,
                 runs=runs,
+                posted=AgentComments(store),
                 config=PublishConfig(
                     dry_run=dry_run, max_publish_attempts=max_publish_attempts
                 ),
@@ -1125,6 +1127,9 @@ async def test_a_completed_review_is_recorded_then_published(wired):
 
     assert fixture.github.comments[0].method == "POST"
     assert posted_comment(fixture.store, opened().dedupe_key) == 555
+    # And the agent knows the comment is its own, so the next poll cycle
+    # cannot read it back as somebody asking for a review (issue #108).
+    assert AgentComments(fixture.store).ids_for(REPO) == frozenset({555})
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
 
 

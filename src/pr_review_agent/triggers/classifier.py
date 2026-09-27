@@ -4,15 +4,17 @@ Exactly two events qualify: a freshly opened pull request by an allowlisted
 author, and a comment mentioning the agent from an allowlisted commenter.
 Pushes to an existing pull request are deliberately ignored.
 
-**There is no check on who the agent is.** The loop this module used to
-defend against -- the agent answering its own review comment forever -- is
-closed upstream instead: ``publisher.render`` runs every body it posts
-through ``mention.neutralise``, so the agent's own comment cannot satisfy
-``has_mention`` whichever account posted it. That is the stronger place for
-it. An identity check rejected an *account*, which made a deployment sharing
-one account between the reviewer and the reviewed unable to trigger anything
-at all; neutralising the output rejects the *text*, which is what the loop
-was ever made of.
+**There is no check on who the agent is, and there is one on what it
+said.** The loop this module used to defend against -- the agent answering
+its own review comment forever -- is closed in two places, neither of them an
+identity check. ``publisher.render`` runs every body through
+``mention.neutralise``, so the agent's own comment cannot satisfy
+``has_mention`` whichever account posted it; and ``posted_comment_ids`` names
+the comments this agent actually posted, which is the same question asked of
+the *comment* rather than the account. An identity check rejected an
+*account*, which made a deployment sharing one account between the reviewer
+and the reviewed unable to trigger anything at all (issue #36). Neither of
+these can be misconfigured, because neither is configured.
 """
 
 from __future__ import annotations
@@ -50,12 +52,21 @@ class Classifier:
     poll. ``None`` means no sweep has reported one yet and the filter is
     off: failing open costs a few ``DEBUG`` lines, whereas failing closed
     would silently drop every mention.
+
+    ``posted_comment_ids`` is every comment id the agent has posted on this
+    repository. It is the structural half of the self-review defence: until
+    1.3.0 the agent rewrote one comment per pull request, so its id never
+    changed and the dedupe key bounded the loop to one extra paid review;
+    posting a comment per review made every round mint a new id, and this is
+    what replaces that bound (issue #108). Empty means "this agent has posted
+    nothing here", which is true of a first run and reads the same way.
     """
 
     allowlist: Allowlist
     since: datetime
     handle: str = "claude"
     open_pull_requests: frozenset[int] | None = None
+    posted_comment_ids: frozenset[int] = frozenset()
 
     def __post_init__(self) -> None:
         """Reject a naive watermark.
@@ -130,6 +141,11 @@ class Classifier:
             return Decision(None, "pr_not_open")
         if comment.author.is_bot:
             return Decision(None, "bot_commenter")
+        # Before the mention test rather than after: a body that reached here
+        # carrying a live `@handle` is `neutralise` having failed, and this
+        # is the line that keeps that from costing a review.
+        if comment.comment_id in self.posted_comment_ids:
+            return Decision(None, "self_comment")
         if not has_mention(comment.body, self.handle):
             return Decision(None, "no_mention")
         if not self.allowlist.allows(comment.author):

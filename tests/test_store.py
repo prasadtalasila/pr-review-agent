@@ -131,7 +131,7 @@ def test_a_failed_transaction_rolls_back(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 13
+        assert store.schema_version == SCHEMA_VERSION == 14
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -506,3 +506,22 @@ def test_an_existing_database_adopts_the_publish_attempt_columns(tmp_path):
         assert conn.execute(
             "SELECT publish_attempts, publish_failed_at FROM runs"
         ).fetchall() == [(0, None)]
+
+
+def test_the_agent_comment_table_arrives_with_the_schema(tmp_path):
+    """What stops the agent answering its own review comment."""
+    with SqliteStore(tmp_path / "state.db") as store, store.transaction() as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_comments)")}
+    assert columns == {"repo", "comment_id", "posted_at"}
+
+
+def test_an_existing_database_adopts_the_agent_comment_table(tmp_path):
+    """A v13 store gains it, empty -- which is what a first run reads as."""
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store, store.transaction() as conn:
+        conn.execute("DROP TABLE agent_comments")
+        conn.execute("PRAGMA user_version = 13")
+
+    with SqliteStore(path) as reopened, reopened.transaction() as conn:
+        assert reopened.schema_version == SCHEMA_VERSION
+        assert conn.execute("SELECT * FROM agent_comments").fetchall() == []

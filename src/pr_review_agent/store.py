@@ -209,6 +209,23 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "ALTER TABLE runs ADD COLUMN publish_attempts INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE runs ADD COLUMN publish_failed_at TEXT",
     ),
+    # Which comments the agent itself posted. A table of its own rather than
+    # a column on `runs`: `runs` holds reviews, and the set has to cover
+    # every comment the agent posts whether or not a review is behind it --
+    # otherwise the first comment posted from some other path is a comment
+    # the classifier will accept as somebody else's. Kept forever, like the
+    # ledger, so a retention sweep over `runs` cannot erase what the agent
+    # said.
+    (
+        """
+        CREATE TABLE IF NOT EXISTS agent_comments (
+            repo       TEXT NOT NULL,
+            comment_id INTEGER NOT NULL,
+            posted_at  TEXT NOT NULL,
+            PRIMARY KEY (repo, comment_id)
+        )
+        """,
+    ),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

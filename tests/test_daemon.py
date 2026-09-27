@@ -11,6 +11,7 @@ import pytest
 
 from pr_review_agent._startup import StartupError
 from pr_review_agent.budget import Governor
+from pr_review_agent.comments import AgentComments
 from pr_review_agent.config import Config, GitHubConfig, WorkerConfig
 from pr_review_agent.daemon import (
     COMMENTS,
@@ -148,6 +149,7 @@ def make_daemon(tmp_path, handler, config=CONFIG, store=None) -> Daemon:
             client=client,
             endpoints=endpoints,
             runs=RunStore(store),
+            posted=AgentComments(store),
             config=config.publish,
             handle=config.triggers.handle,
         ),
@@ -301,6 +303,66 @@ async def test_both_comment_endpoints_share_one_watermark(tmp_path):
 
     assert summary.enqueued == 2
     assert daemon.store.watermark(COMMENTS_WM) == RECENT
+
+
+# -- the agent's own comments ---------------------------------------------
+#
+# There is no check on which account the agent posts as (issue #36). What
+# stops it answering itself is the set of comment ids it recorded when it
+# posted them, which this leg reads once per cycle (issue #108).
+
+
+async def test_a_comment_the_agent_posted_is_not_enqueued(tmp_path):
+    """Even carrying a live mention: this is the case `neutralise` misses."""
+    daemon = make_daemon(
+        tmp_path,
+        responder(
+            pulls=[pr_item(12, OLD)],
+            issue_comments=[issue_comment(11, RECENT)],
+        ),
+    )
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
+    AgentComments(daemon.store).record(CONFIG.github.repo, 11, now=RECENT)
+
+    summary = await daemon.run_once()
+
+    assert summary.enqueued == 0
+    assert queued(daemon) == 0
+
+
+async def test_a_contributors_comment_in_the_same_cycle_is_enqueued(tmp_path):
+    """The set rejects the agent's comment, not the pull request it is on."""
+    daemon = make_daemon(
+        tmp_path,
+        responder(
+            pulls=[pr_item(12, OLD)],
+            issue_comments=[issue_comment(11, RECENT), issue_comment(13, RECENT)],
+        ),
+    )
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
+    AgentComments(daemon.store).record(CONFIG.github.repo, 11, now=RECENT)
+
+    summary = await daemon.run_once()
+
+    assert summary.enqueued == 1
+
+
+async def test_another_repositorys_recorded_comment_does_not_apply(tmp_path):
+    """One store backs several repositories; a comment id is not unique."""
+    daemon = make_daemon(
+        tmp_path,
+        responder(
+            pulls=[pr_item(12, OLD)],
+            issue_comments=[issue_comment(11, RECENT)],
+        ),
+    )
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+    daemon.store.advance_watermark(COMMENTS_WM, OLD)
+    AgentComments(daemon.store).record("other/repo", 11, now=RECENT)
+
+    assert (await daemon.run_once()).enqueued == 1
 
 
 # -- comments on closed pull requests -------------------------------------
