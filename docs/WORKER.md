@@ -26,6 +26,7 @@ daemon.
 claim(admit=governor.admit)        the lease and the reservation, one commit
   → publisher.acknowledge(...)     the 👀, before anything slow is attempted
   → GET /pulls/{n}                 head_sha for a mention, and the size counts
+  → facts.is_open?                 merged or closed: abandon before the checkout
   → runs.history(repo, pr)         what the last round found, and its numbers
   → workspace.checkout(...)        the tree, the merge-base diff, exclusions
   → governor.preflight(...)        the last free refusal -- releases its own hold
@@ -77,6 +78,44 @@ stored findings, so a run recorded without numbers would let a retired number
 come back on something else in a later round. Numbering at render time would
 be too late. See [PUBLISHER.md](PUBLISHER.md) for what the numbers mean to a
 reader.
+
+### The closed pull request is refused before the checkout
+
+`facts.is_open` is read the moment `GET /pulls/{n}` returns and before
+`workspace.checkout`, and a pull request that is merged or closed ends the
+row there: settle at zero with `stop_reason = closed`, `abandon`, return.
+
+The gap it closes is a timing one. A trigger is enqueued while the pull
+request is open; it waits its turn behind other work, or behind the
+[pacer](BUDGET.md#-the-per-pull-request-pacer); and by the time a worker
+claims it the pull request has been merged. Nothing between the enqueue and
+the claim asks GitHub anything, so without this check the agent clones the
+tree, runs the engine and posts a review on a pull request nobody will read —
+at full price. The state is already in the response the worker fetches for
+`head_sha`, so reading it costs no extra request.
+
+It settles at **zero**, alongside a pre-flight refusal and
+`EngineUnavailable`: no engine ran, which is provable rather than assumed. It
+is a **distinct** stop reason rather than `refused` because an operator
+running `GROUP BY stop_reason` is asking two different questions — `refused`
+is a limit that may want raising, `closed` is a queue draining more slowly
+than the repository moves. And it **abandons** rather than releases, for the
+same reason the pre-flight refusal does: the answer is deterministic, and
+another attempt would reserve allowance only to read the same state back.
+
+**A reopened pull request does not get its trigger back.** The row is
+abandoned and its dedupe key blocks a second enqueue; every trigger in this
+design is gated on a timestamp that has already passed — `pr_opened` on
+`created_at`, a mention on the comment's `updated_at` — so reopening produces
+nothing new to classify. A fresh `@claude` comment after the reopen does
+work, and it is the only thing that does, which is why the `INFO` line for a
+`closed` (as opposed to merged) pull request says so rather than leaving an
+operator to find out. A merged pull request gets no such advice: GitHub will
+not reopen it.
+
+The check is deliberately **not** repeated in the publisher. By then the
+tokens are spent, and a check that runs after the money has gone protects
+nothing that matters.
 
 ### The pre-flight estimate
 
@@ -142,6 +181,7 @@ engine had started.
 | Where it failed | Settles at | Why |
 | :-- | :-- | :-- |
 | before `engine.review` | `0`, `unavailable` | Nothing reached an engine. Provable, not assumed. |
+| merged or closed, before the checkout | `0`, `exact` | Refused before anything was cloned, so the zero is measured rather than inferred. |
 | `EngineUnavailable` | `0`, `unavailable` | The subprocess never started, so no process existed to spend. Provable, like the row above it. |
 | in or after `engine.review` | the full reservation | Anything may have been spent, and the governor cannot find out. |
 | `UsageLimited` | `0` or the envelope's figure, `exact` | The one failure where the spend **is** knowable. |
@@ -191,6 +231,7 @@ A failed run has two possible fates and they are not interchangeable.
 | `Outcome.TRUNCATED` | `release` | The run was cut off with work outstanding; another attempt may finish it |
 | `Outcome.FAILED` | `abandon` | Anything else that went wrong inside a run that still answered |
 | pre-flight refusal | `abandon` | Deterministic for this head, and already settled at zero |
+| merged or closed pull request | `abandon` | Settled at zero before the checkout; a reopen re-triggers nothing, a fresh `@claude` does |
 | `GitHubClientError` | `release` | 5xx, rate limit, network — transient by construction |
 | `WorkspaceError`, `GitCommandError` | `release` | A failed fetch is a failed network call |
 | the engine raises anything | `release` | May succeed next time; bounded by `max_attempts` |

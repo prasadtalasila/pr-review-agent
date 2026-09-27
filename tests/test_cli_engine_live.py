@@ -50,6 +50,7 @@ async def test_a_real_run_returns_findings_and_a_token_count(tmp_path):
             additions=2,
             deletions=0,
             changed_files=1,
+            state="open",
         ),
         trigger=Trigger(
             kind=TriggerKind.PR_OPENED,

@@ -31,6 +31,7 @@ def facts(remote, **overrides) -> PullRequestFacts:
         "additions": 2,
         "deletions": 0,
         "changed_files": 1,
+        "state": "open",
     }
     values.update(overrides)
     return PullRequestFacts(**values)

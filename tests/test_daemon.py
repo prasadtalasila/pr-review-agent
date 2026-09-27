@@ -25,7 +25,7 @@ from pr_review_agent.daemon import (
 )
 from pr_review_agent.engine.claude import ClaudeCliEngine
 from pr_review_agent.poller.client import GitHubClient
-from pr_review_agent.poller.endpoints import RepoEndpoints
+from pr_review_agent.poller.endpoints import Endpoint, RepoEndpoints
 from pr_review_agent.poller.interval import AdaptiveInterval
 from pr_review_agent.poller.poller import Poller
 from pr_review_agent.publisher import Publisher
@@ -185,6 +185,54 @@ async def test_seeding_sets_both_watermarks(tmp_path):
     daemon.seed_watermarks(now=NOW)
     assert daemon.store.watermark(PULLS_WM) == NOW
     assert daemon.store.watermark(COMMENTS_WM) == NOW
+
+
+async def test_seeding_forgets_the_pulls_etag(tmp_path):
+    # The set of open pull requests is in memory and a restart empties it;
+    # the ETag that would refill it is in SQLite and a restart does not.
+    # Left alone, the daemon sends the stored ETag, gets a 304, and runs
+    # with the comment filter off until some open pull request changes.
+    daemon = make_daemon(
+        tmp_path,
+        responder(pulls=[pr_item(1, RECENT)], issue_comments=[]),
+    )
+    await daemon.run_once()
+    pulls_path = daemon.poller.endpoints.path(Endpoint.OPEN_PULLS)
+    assert daemon.store.get(pulls_path) is not None
+
+    daemon.seed_watermarks(now=NOW)
+
+    assert daemon.store.get(pulls_path) is None
+    assert daemon.store.get(daemon.poller.endpoints.path(Endpoint.ISSUE_COMMENTS))
+
+
+async def test_a_restart_fills_the_open_set_before_the_first_304(tmp_path):
+    """What the forgotten ETag buys: the filter is on from the first cycle.
+
+    The restarted daemon is given a store that already holds every ETag,
+    and a GitHub that answers 304 to anything conditional. Without the
+    forget, the open set would stay ``None`` -- the filter off -- for as
+    long as no open pull request changed.
+    """
+    store = SqliteStore(tmp_path / "state.db")
+    first = make_daemon(tmp_path, responder(pulls=[pr_item(1, RECENT)]), store=store)
+    await first.run_once()
+
+    def only_unconditional(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("if-none-match"):
+            return httpx.Response(304)
+        return httpx.Response(200, json=[pr_item(1, RECENT)], headers={"etag": '"e"'})
+
+    restarted = make_daemon(tmp_path, only_unconditional, store=store)
+    restarted.seed_watermarks(now=NOW)
+
+    await restarted.run_once()
+    assert restarted.open_pull_requests == frozenset({1})
+
+    # The second cycle is conditional again and answers 304, and the set
+    # survives it: a 304 means unchanged, not unknown.
+    await restarted.run_once()
+    assert restarted.open_pull_requests == frozenset({1})
 
 
 async def test_seeding_does_not_rewind_an_existing_watermark(tmp_path):

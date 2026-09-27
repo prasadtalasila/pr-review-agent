@@ -228,13 +228,21 @@ enter the fit.
 `usage_confidence`'s how far its recorded cost can be trusted. Without it a
 run killed on the wall clock and one whose envelope would not parse are the
 same row: both `unavailable`, both charged the full reservation, and nothing
-to say which control bound the run. One of seven values — `completed`,
-`truncated`, `failed`, `timeout`, `engine_error`, `refused`,
-`infrastructure` — rather than free text, because it is read by an operator
+to say which control bound the run. A bounded set — `completed`, `truncated`,
+`failed`, `timeout`, `engine_error`, `engine_unavailable`, `refused`,
+`closed`, `infrastructure`, `usage_limit` — rather than free text, because it
+is read by an operator
 and, later, by the circuit breaker, and `GROUP BY stop_reason` has to mean
 something. Rows written before the column existed keep a NULL: nothing
 recorded why they stopped, and inventing a reason would put fiction in the
 one table that is never pruned.
+
+Three of those values settle at **zero**, and they are kept apart on purpose:
+`refused` is the pre-flight estimate saying no, `engine_unavailable` is a
+subprocess that never started, and `closed` is a pull request merged or
+closed before the claim reached a checkout. No engine ran in any of the
+three, but the operator action differs in each — a limit, a host, or a queue
+that is too slow.
 
 ## 🔢 Migrations
 

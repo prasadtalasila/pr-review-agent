@@ -42,6 +42,35 @@ The ETag cache is keyed by request path. Losing it costs one extra full GET
 per endpoint, not correctness; see [STORAGE.md](STORAGE.md) for where it is
 kept.
 
+### One ETag is thrown away at every startup
+
+`Poller.forget_etag(Endpoint.OPEN_PULLS)` runs from `Daemon.seed_watermarks`,
+before the first poll of a new process. It is the one place the cache is
+deliberately made worse, and the reason is that a `200` from `/pulls` carries
+something the `304` cannot replace.
+
+That payload is what fills the daemon's set of open pull request numbers —
+the filter that drops `@claude` on a pull request closed weeks ago, described
+in [TRIGGERS.md](TRIGGERS.md#comments-are-filtered-to-open-pull-requests). The
+set lives in memory and dies with the process. The ETag lives in SQLite and
+does not. So a restarted daemon used to send the stored ETag, receive a `304`,
+keep an empty set — and an empty set reads as *unknown*, which switches the
+filter **off**. It stayed off until some open pull request happened to change,
+which on a quiet repository is days, and every comment on every closed pull
+request in that window was accepted and reviewed at full price.
+
+Dropping the ETag forces that first response to be a `200`, so the set is
+populated before the first comment is classified. From the second cycle on the
+endpoint is conditional again, and a `304` there still means *unchanged*
+rather than *unknown*. The other two endpoints keep their ETags: their
+payloads leave nothing behind in memory, so re-reading them would buy nothing.
+
+The cost is one unconditional GET per restart, against a budget of at least
+5,000/hour. It is the poller that does this rather than the daemon because the
+poller owns both the cache and the path strings; a caller assembling
+`/pulls?state=open&…` itself would be a second place for those query
+parameters to have to agree.
+
 ## ⏱ The adaptive interval
 
 | Event | Effect |

@@ -118,7 +118,10 @@ class Daemon:
     #: to drop comments on closed ones. It lives across cycles because that
     #: leg answers 304 whenever nothing about an open pull request changed,
     #: and a 304 means unchanged rather than unknown. ``None`` until the
-    #: first 200, which leaves the filter off -- see ``Classifier``.
+    #: first 200, which leaves the filter off -- see ``Classifier``. It does
+    #: not survive a restart, and the stored ETag would, so
+    #: ``seed_watermarks`` forgets that one ETag to force the first cycle
+    #: to answer 200.
     open_pull_requests: frozenset[int] | None = None
 
     def reload_config(self) -> None:
@@ -204,8 +207,17 @@ class Daemon:
         Called once at startup, so the bound is process start rather than
         first-successful-poll -- which would drift later every time an early
         poll failed, widening the window of backlog treated as new.
+
+        The ``/pulls`` ETag is dropped here for the same reason, which is
+        why this is the hook: both are about a process that has just
+        started holding nothing the previous one knew.
+        ``open_pull_requests`` is one of those things, and it is refilled
+        only by a ``200`` from that endpoint -- so an ETag that survived
+        the restart would hold the comment filter off until some open pull
+        request changed. See :meth:`Poller.forget_etag`.
         """
         self._adopt_unqualified_watermarks()
+        self.poller.forget_etag(Endpoint.OPEN_PULLS)
         for stem in (PULL_REQUESTS, COMMENTS):
             self._since(stem, now=now)
 

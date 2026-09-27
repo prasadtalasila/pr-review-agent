@@ -41,6 +41,7 @@ def facts(remote) -> PullRequestFacts:
         additions=2,
         deletions=0,
         changed_files=1,
+        state="open",
     )
 
 

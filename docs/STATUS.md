@@ -167,3 +167,13 @@ bugs:
   claims.
 - `worker.count` needs a restart to take effect. `SIGHUP` swaps only the
   budget section, and the workers are built once at startup.
+- **A reopened pull request does not recover the trigger that was abandoned
+  while it was closed.** The worker now refuses a merged or closed pull
+  request [before the checkout](WORKER.md#the-closed-pull-request-is-refused-before-the-checkout),
+  which is what stopped the agent paying for reviews nobody would read. What
+  it cannot do is bring the row back afterwards: every trigger is gated on a
+  timestamp that has already passed, and the abandoned row's dedupe key
+  blocks a second enqueue. A fresh `@claude` comment after the reopen works,
+  and re-triggering on reopen was considered and declined — it would mean a
+  fourth watched endpoint or a per-pull-request poll, which is the cost
+  [POLLER.md](POLLER.md) exists to refuse.
