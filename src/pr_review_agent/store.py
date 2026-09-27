@@ -266,6 +266,23 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 
+def is_contention(exc: sqlite3.OperationalError) -> bool:
+    """Whether ``exc`` is another connection holding the write lock.
+
+    ``busy_timeout`` above waits 5 s for that lock, and several daemons
+    sharing one store can exceed it -- the reviews are minutes long and the
+    writes are not staggered. SQLite reports the timeout as a plain
+    ``OperationalError``; the message is the only thing distinguishing it
+    from a genuine fault like a missing table, so the message is what this
+    reads. ``SQLITE_BUSY`` says "database is locked" and ``SQLITE_LOCKED``
+    says "database table is locked", so the shared word is the test. No
+    other message the driver raises contains either word, and matching too
+    narrowly only costs the restart the caller would have done anyway.
+    """
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
 class SqliteStore:
     """Persistent ETags, watermarks and review queue for one daemon instance."""
 

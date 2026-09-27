@@ -41,10 +41,11 @@ the cycle above changed when it landed: polling still stops at `enqueue`.
 
 The poll cycle and a review have different cadences — an adaptive 10–600 s
 against minutes — and different failure modes, so they are separate tasks
-gathered by `run()`:
+run together by `run()`:
 
 ```text
-asyncio.gather(
+run_together(
+    stop,
     daemon.run_forever(stop),                 # poll → classify → enqueue
     *[supervise(worker, stop) for worker in workers],   # claim → review → settle
 )
@@ -52,6 +53,17 @@ asyncio.gather(
 
 Both wait on the same stop event. A review therefore never holds up a poll,
 and a `SIGTERM` reaches both.
+
+`run_together` rather than `asyncio.gather` because gather re-raises the first
+failure while leaving its siblings running: the exception would leave `run()`'s
+`with SqliteStore(...)` block and close the connection under a worker still
+mid-review, whose teardown then logs a second, misleading traceback over the
+first. Instead a failure **sets `stop`** — the same event `SIGTERM` sets — and
+the others are given `RESPAWN_BACKOFF` to finish the review they are holding
+and settle it. Only what is still running after that is cancelled, because an
+engine subprocess killed mid-answer costs the allowance already spent on it.
+`asyncio.TaskGroup` is not a substitute: it cancels siblings at once, and the
+package supports 3.10.
 
 `build_workers` makes `worker.count` of them (default 1, capped at 4), each
 with a distinct owner id, all sharing the one queue and the one governor.
@@ -122,9 +134,16 @@ because this is where an operator will notice them.
 ## 🚨 Errors and shutdown
 
 A `GitHubClientError` is logged at `ERROR` and the cycle skipped: a transient
-network failure must not kill a daemon. Anything else propagates. A daemon
-that keeps polling while failing to enqueue looks healthy and reviews
-nothing, so an unexpected bug should crash loudly rather than spin silently.
+network failure must not kill a daemon. So is a `sqlite3.OperationalError`
+that `is_contention` recognises — another daemon on the same file held the
+write lock for longer than `busy_timeout`, which says nothing about this
+process and is over by the next cycle. Anything else propagates, including any
+other `OperationalError`: a daemon that keeps polling while failing to enqueue
+looks healthy and reviews nothing, so an unexpected bug should crash loudly
+rather than spin silently.
+
+When it does propagate it no longer takes the store out from under the
+workers — see [Two loops, one process](#-two-loops-one-process).
 
 A worker is treated differently: an unexpected exception there is logged and
 the loop restarted, because killing the process for a fault confined to one

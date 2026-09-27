@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import cast
@@ -21,6 +22,7 @@ from pr_review_agent.daemon import (
     build_engine,
     build_workers,
     resolve_budget,
+    run_together,
     supervise,
 )
 from pr_review_agent.engine.claude import ClaudeCliEngine
@@ -554,6 +556,123 @@ async def test_an_already_set_stop_runs_no_cycle(tmp_path):
     await asyncio.wait_for(make_daemon(tmp_path, handler).run_forever(stop), timeout=5)
 
     assert polls == []
+
+
+async def test_store_contention_does_not_stop_the_loop(tmp_path):
+    # Several daemons on one file can exceed the 5 s busy_timeout. That says
+    # nothing about this process and is over by the next cycle, so restarting
+    # for it throws away a poller that was working.
+    stop = asyncio.Event()
+    calls = {"n": 0}
+
+    class BusyQueue(ReviewQueue):
+        def enqueue(self, trigger, *, now):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise sqlite3.OperationalError("database is locked")
+            stop.set()
+            return super().enqueue(trigger, now=now)
+
+    daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
+    daemon.queue = BusyQueue(daemon.store, repo=daemon.config.github.repo)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+
+    await asyncio.wait_for(daemon.run_forever(stop), timeout=5)
+
+    assert calls["n"] == 3
+    assert queued(daemon) == 1
+
+
+async def test_a_store_error_that_is_not_contention_still_crashes(tmp_path):
+    # The widened catch must not turn a schema bug into a silent spin.
+    class BrokenQueue(ReviewQueue):
+        def enqueue(self, trigger, *, now):
+            raise sqlite3.OperationalError("no such table: queue")
+
+    daemon = make_daemon(tmp_path, responder(pulls=[pr_item(3, RECENT)]))
+    daemon.queue = BrokenQueue(daemon.store, repo=daemon.config.github.repo)
+    daemon.store.advance_watermark(PULLS_WM, OLD)
+
+    with pytest.raises(sqlite3.OperationalError):
+        await asyncio.wait_for(daemon.run_forever(asyncio.Event()), timeout=5)
+
+
+async def test_a_failing_task_stops_the_others_before_the_error_escapes():
+    stop = asyncio.Event()
+    order = []
+
+    async def poller():
+        raise RuntimeError("poll cycle failed")
+
+    async def worker():
+        await stop.wait()
+        order.append("worker unwound")
+
+    with pytest.raises(RuntimeError, match="poll cycle failed"):
+        await asyncio.wait_for(run_together(stop, poller(), worker()), timeout=5)
+
+    assert order == ["worker unwound"]
+    assert stop.is_set()
+
+
+async def test_the_store_is_still_open_while_the_worker_unwinds(tmp_path):
+    # The regression `asyncio.gather` caused: the error left `run`'s `with
+    # SqliteStore(...)` block while a worker was still mid-review, so its
+    # teardown ran against a closed connection and logged a second,
+    # misleading traceback over the first.
+    stop = asyncio.Event()
+    store = SqliteStore(tmp_path / "state.db")
+    seen = []
+
+    async def poller():
+        raise RuntimeError("poll cycle failed")
+
+    async def worker():
+        await stop.wait()
+        seen.append(store.watermark(PULLS_WM))
+
+    with pytest.raises(RuntimeError), store:
+        await asyncio.wait_for(run_together(stop, poller(), worker()), timeout=5)
+
+    assert seen == [None]  # read, not `ProgrammingError: closed database`
+
+
+async def test_a_task_that_ignores_stop_is_cancelled_after_the_grace():
+    # The grace is for the review already being paid for, not an indefinite
+    # wait: what is still running when it lapses is cancelled.
+    stop = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def poller():
+        raise RuntimeError("poll cycle failed")
+
+    async def deaf():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    with pytest.raises(RuntimeError, match="poll cycle failed"):
+        await asyncio.wait_for(run_together(stop, poller(), deaf(), grace=0), timeout=5)
+
+    assert cancelled.is_set()
+
+
+async def test_run_together_returns_when_every_task_finishes():
+    stop = asyncio.Event()
+    finished = []
+
+    async def one():
+        finished.append(1)
+
+    async def two():
+        finished.append(2)
+
+    await asyncio.wait_for(run_together(stop, one(), two()), timeout=5)
+
+    assert sorted(finished) == [1, 2]
+    assert not stop.is_set()
 
 
 # The command-line entry points are exercised in tests/test_cli.py, which
