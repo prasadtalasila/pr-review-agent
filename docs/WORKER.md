@@ -36,12 +36,23 @@ claim(admit=governor.admit)        the lease and the reservation, one commit
   → governor.headroom(now)         what the review left, logged as event 6
   → publisher.publish(run)         one comment per pull request, edited in place
   → complete / release / abandon   close the row
+  → queue.fold(claim, ...)         close the triggers this review answered
 ```
 
 A row whose kind is `publish` skips all of it: the worker looks the named
 run up, posts it, and closes the item. That path reaches no engine and
 writes no ledger row — see
 [PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
+
+### The fold
+
+A review that recorded findings closes every other trigger for that pull
+request that was already waiting when it started and named no other commit:
+three mentions on one pull request asked one question, and the agent posts
+one comment. Only a run that recorded something folds anything — a run that
+recorded nothing has no answer to give them. The rule, and why a trigger
+enqueued *during* the review is left alone, is in
+[QUEUE.md](QUEUE.md#-one-review-answers-what-was-waiting).
 
 ### The history read and the numbering
 

@@ -94,7 +94,9 @@ def test_recording_the_same_run_twice_refreshes_it(runs):
 
 def test_a_published_run_is_not_offered_again(runs):
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
-    runs.mark_published("pr_opened:o/r:7:deadbeef", comment_id=555, now=LATER)
+    runs.mark_published(
+        "pr_opened:o/r:7:deadbeef", comment_id=555, now=LATER, outcome="published"
+    )
     assert runs.unpublished("pr_opened:o/r:7:deadbeef") is None
 
 
@@ -113,7 +115,9 @@ def test_each_unpublished_run_is_offered_under_its_own_key(runs):
 
 def test_marking_published_records_the_comment(runs):
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
-    runs.mark_published("pr_opened:o/r:7:deadbeef", comment_id=555, now=LATER)
+    runs.mark_published(
+        "pr_opened:o/r:7:deadbeef", comment_id=555, now=LATER, outcome="published"
+    )
     assert runs.comment_for_pull_request(REPO, 7) == 555
 
 
@@ -125,22 +129,24 @@ def test_a_pull_request_with_no_comment_yet(runs):
 def test_the_newest_comment_is_the_one_edited_in_place(runs):
     """One agent comment per pull request, rewritten on re-review."""
     runs.record(trigger(key="first"), head_sha=HEAD, result=result(), now=NOON)
-    runs.mark_published("first", comment_id=555, now=NOON)
+    runs.mark_published("first", comment_id=555, now=NOON, outcome="published")
     runs.record(trigger(key="second"), head_sha=HEAD, result=result(), now=LATER)
-    runs.mark_published("second", comment_id=555, now=LATER)
+    runs.mark_published("second", comment_id=555, now=LATER, outcome="published")
     assert runs.comment_for_pull_request(REPO, 7) == 555
 
 
 def test_another_pull_requests_comment_is_not_reused(runs):
     runs.record(trigger(pr=8, key="k8"), head_sha=HEAD, result=result(), now=NOON)
-    runs.mark_published("k8", comment_id=999, now=NOON)
+    runs.mark_published("k8", comment_id=999, now=NOON, outcome="published")
     assert runs.comment_for_pull_request(REPO, 7) is None
 
 
 def test_purging_empties_the_content_and_keeps_the_rest(runs):
     """The ledger survives the purge, and so does the comment id."""
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
-    runs.mark_published("pr_opened:o/r:7:deadbeef", comment_id=555, now=NOON)
+    runs.mark_published(
+        "pr_opened:o/r:7:deadbeef", comment_id=555, now=NOON, outcome="published"
+    )
     assert runs.purge_content(REPO, 7, now=LATER) == 1
     assert runs.comment_for_pull_request(REPO, 7) == 555
 

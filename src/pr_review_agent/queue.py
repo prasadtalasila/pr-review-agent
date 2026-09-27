@@ -160,6 +160,28 @@ SET status = :status, leased_until = NULL, owner = NULL,
 WHERE dedupe_key = :key AND owner = :owner
 """
 
+# Every other trigger for this pull request that the review just posted has
+# already answered. Two conditions, and each one narrows the claim:
+#
+# `enqueued_at <= :before` -- it was already waiting when the review started,
+# so what the review read is at least as new as what it asked about. A
+# trigger enqueued *during* the review may be about something newer.
+#
+# `head_sha IS NULL OR head_sha = :head` -- it did not name a different
+# commit. A mention carries no sha (the comment payload has none), which is
+# the case this is really for: three people asking about one pull request
+# asked one question. A trigger that named a commit the review did not read
+# is not answered by it and keeps its own claim.
+#
+# A publication item is excluded: it names a recorded run of its own, which
+# no review of this one has posted.
+_FOLD = """
+UPDATE queue SET status = :done, leased_until = NULL, owner = NULL
+WHERE repo = :repo AND pr_number = :pr AND status = :pending
+  AND kind != :publish AND dedupe_key != :key AND enqueued_at <= :before
+  AND (head_sha IS NULL OR head_sha = :head)
+"""
+
 # Whether this worker still holds the row it claimed. Read immediately before
 # a GitHub write that cannot be taken back.
 _HOLDS = """
@@ -279,6 +301,36 @@ class ReviewQueue:
         }
         with self._store.transaction() as conn:
             return conn.execute(_RELEASE_UNATTEMPTED, params).rowcount == 1
+
+    def fold(self, claim: Claim, *, before: datetime, head_sha: str) -> int:
+        """Close the triggers ``claim``'s review already answered.
+
+        Three maintainers mentioning the agent on one pull request asked one
+        question, and the agent posts one comment per pull request -- so
+        reviewing each of them separately would pay three times to overwrite
+        the same comment twice. ``before`` is when this review started:
+        everything still waiting at that moment is answered by it, and
+        anything enqueued since is not. ``head_sha`` is the commit it read,
+        which is what keeps a trigger naming some *other* commit out of the
+        fold.
+
+        Returns how many rows were folded, for the caller to log. Unguarded
+        by the lease on purpose: the rows being closed are not the claimed
+        one, and they are closed on the strength of a comment that has
+        already been posted.
+        """
+        params = {
+            "done": str(QueueStatus.DONE),
+            "pending": str(QueueStatus.PENDING),
+            "publish": str(TriggerKind.PUBLISH),
+            "repo": self._repo,
+            "pr": claim.trigger.pr_number,
+            "key": claim.trigger.dedupe_key,
+            "before": stamp(before, "fold boundary"),
+            "head": head_sha,
+        }
+        with self._store.transaction() as conn:
+            return conn.execute(_FOLD, params).rowcount
 
     def holds(self, claim: Claim, *, now: datetime) -> bool:
         """Does ``claim``'s owner still hold a live lease on its row?

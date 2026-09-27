@@ -123,10 +123,11 @@ TRUNCATION_NOTE = (
 class PublishOutcome(StrEnum):
     """How an attempt to publish ended.
 
-    ``SUPERSEDED`` and ``DRY_RUN`` are both "nothing was posted, and that is
-    correct" -- but they are kept apart because only one of them means the
-    work was wasted. Collapsing them would hide a moved head behind an
-    operator's own setting.
+    ``SUPERSEDED`` says the head moved under the review. Whether anything
+    was posted under it depends on ``publish.post_superseded``, and that is
+    deliberate: the outcome records what was *true of the run*, not which
+    branch the publisher took, so a stored row means the same thing after an
+    operator changes the setting.
     """
 
     PUBLISHED = "published"
@@ -196,21 +197,38 @@ class Publisher:
             logger.error("could not acknowledge %s", trigger.dedupe_key, exc_info=True)
 
     async def publish(self, run: RecordedRun) -> Published:
-        """Post ``run``'s review, unless the head moved under it.
+        """Post ``run``'s review, saying so if the head moved under it.
 
         The live read comes first and unconditionally, including in a dry
         run: an operator watching a dry run needs to see the same decision
         the real path would take, not a shortcut past it.
+
+        A moved head no longer discards the review by default. The tokens
+        were spent before this method was called, so discarding saves
+        nothing and produces nothing; the comment is edited in place, so a
+        review of the previous commit is replaced by the next round rather
+        than left beside it. What the reader needs is to know which commit
+        the text describes, which the header now says.
+        ``publish.post_superseded: false`` restores the old behaviour, and
+        stamps the run either way -- an unstamped run is offered for
+        publication for the lifetime of the database.
         """
         live, commits = await self._live_pull(run.pr_number)
-        if live != run.head_sha:
+        moved = live if live != run.head_sha else None
+        if moved is not None:
             logger.info(
-                "%s reviewed %s but the head is now %s: discarding",
+                "%s reviewed %s but the head is now %s: %s",
                 run.dedupe_key,
                 run.head_sha[:7],
-                live[:7],
+                moved[:7],
+                "saying so on the comment"
+                if self.config.post_superseded
+                else "discarding",
             )
-            return Published(PublishOutcome.SUPERSEDED)
+            if not self.config.post_superseded:
+                return self._stamp(
+                    run, comment_id=None, outcome=PublishOutcome.SUPERSEDED
+                )
 
         body = render(
             run.head_sha,
@@ -219,6 +237,7 @@ class Publisher:
             round_number=self.runs.round_of(run.repo, run.pr_number, run.dedupe_key),
             commits=commits,
             handle=self.handle,
+            moved_to=moved,
         )
         if leaks(body, self.secrets):
             # Not retried, and not logged with the body: re-running would
@@ -262,7 +281,11 @@ class Publisher:
             comment_id,
             extra={"repo": run.repo, "pr": run.pr_number, "comment": comment_id},
         )
-        return self._stamp(run, comment_id=comment_id)
+        return self._stamp(
+            run,
+            comment_id=comment_id,
+            outcome=(PublishOutcome.SUPERSEDED if moved else PublishOutcome.PUBLISHED),
+        )
 
     async def _live_pull(self, pr_number: int) -> tuple[str, int]:
         """The head and commit count this pull request has *now*.
@@ -297,7 +320,10 @@ class Publisher:
         for the lifetime of the database.
         """
         self.runs.mark_published(
-            run.dedupe_key, comment_id=comment_id, now=datetime.now(timezone.utc)
+            run.dedupe_key,
+            comment_id=comment_id,
+            now=datetime.now(timezone.utc),
+            outcome=str(outcome),
         )
         return Published(outcome, comment_id)
 
@@ -310,6 +336,7 @@ def render(
     round_number: int,
     commits: int,
     handle: str,
+    moved_to: str | None = None,
 ) -> str:
     """The comment body for a review of ``head_sha``.
 
@@ -344,6 +371,8 @@ def render(
         f"## Review: PR #{pr_number} — round {round_number} "
         f"(`{head_sha[:7]}`, {commits} commits)"
     )
+    if moved_to is not None:
+        header = f"{header}\n\n{_moved_note(head_sha, moved_to)}"
     if not findings:
         return neutralise(f"{header}\n\nNo issues found.\n\n{TRAILER}", handle)
     ordered = sorted(findings, key=_order)
@@ -355,6 +384,21 @@ def render(
         rendered = _prose(section) if heading == "Nits" else _items(section)
         sections.append(f"## {heading}\n\n{rendered}")
     return neutralise(_fit(header, sections), handle)
+
+
+def _moved_note(head_sha: str, moved_to: str) -> str:
+    """Said above a review whose commit is no longer the head.
+
+    The tokens were spent before the head was re-read, so the choice is
+    between a review nobody sees and one that says what it describes. Most
+    of a review survives a fixup commit, and the comment is edited in place,
+    so the next round replaces this text rather than sitting beside it.
+    """
+    return (
+        f"_This review describes `{head_sha[:7]}`, which is no longer the head: "
+        f"the branch has since moved to `{moved_to[:7]}`. Findings may already "
+        "be addressed. Mention me again for a review of the new head._"
+    )
 
 
 def _fit(header: str, sections: list[str]) -> str:

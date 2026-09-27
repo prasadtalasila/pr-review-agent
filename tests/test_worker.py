@@ -59,10 +59,16 @@ pytestmark = pytest.mark.skipif(
 
 
 def budget(**overrides) -> BudgetConfig:
+    # The pacer is off unless a test is about it. These cases review one
+    # pull request several times inside a few simulated seconds, which is
+    # exactly what the shipped interval defers -- and what it defers is
+    # `tests/test_pacing.py`'s subject, not theirs.
     base = {
         "session_tokens": 100_000,
         "weekly_tokens": 1_000_000,
         "max_run_tokens": MAX_RUN_TOKENS,
+        "min_review_interval_seconds": 0,
+        "mention_min_review_interval_seconds": 0,
     }
     return BudgetConfig(**{**base, **overrides})
 
@@ -1096,11 +1102,40 @@ async def test_a_completed_review_is_recorded_then_published(wired):
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
 
 
-async def test_a_superseded_head_is_never_posted(wired, git_remote):
+async def test_one_review_answers_the_mentions_that_were_waiting(wired):
+    """Three mentions, one engine run, one comment, three closed rows.
+
+    The pacer would defer the second and third; folding is what stops them
+    being reviewed one interval apart afterwards, because by then the review
+    they were waiting for has already been posted.
+    """
+    fixture = wired()
+    for comment_id in (1, 2, 3):
+        fixture.queue.enqueue(mention(comment_id=comment_id), now=NOW)
+
+    assert await fixture.worker.run_once() is True
+
+    engine = fixture.engine
+    assert isinstance(engine, FakeEngine)
+    assert len(engine.requests) == 1
+    posted = [r for r in fixture.github.comments if r.url.path.endswith("/comments")]
+    assert len(posted) == 1
+    assert [
+        fixture.queue.status(mention(comment_id=c).dedupe_key) for c in (1, 2, 3)
+    ] == [QueueStatus.DONE] * 3
+
+
+async def test_a_superseded_head_is_posted_once_and_stamped(wired, git_remote):
     """The review ran against a head the pull request has since left.
 
     The head moves between the worker's read and the publisher's, which is
-    the only way it can move: both read the same endpoint.
+    the only way it can move: both read the same endpoint. The tokens were
+    spent before that read, so the review is posted saying which commit it
+    describes rather than discarded.
+
+    The stamp is issue #68: an unstamped run stays "still owed a comment"
+    for the lifetime of the database, and every claim that took the offer
+    re-read the same moved head.
     """
     github_moving = GitHubDouble(
         git_remote.head_sha, head_moves_to="a-newer-commit-entirely"
@@ -1110,7 +1145,8 @@ async def test_a_superseded_head_is_never_posted(wired, git_remote):
 
     await fixture.worker.run_once()
 
-    assert fixture.github.comments == []
+    assert len(fixture.github.comments) == 1
+    assert fixture.runs.unpublished(opened().dedupe_key) is None
     # Done rather than retried: a push is not a trigger, so another attempt
     # would re-read the same stale sha and reserve allowance to do it.
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
@@ -1214,7 +1250,9 @@ async def test_a_publication_item_for_a_posted_run_closes_itself(wired, git_remo
     run = fixture.runs.record(
         opened(), head_sha=git_remote.head_sha, result=_recorded_result(), now=NOW
     )
-    fixture.runs.mark_published(run.dedupe_key, comment_id=555, now=NOW)
+    fixture.runs.mark_published(
+        run.dedupe_key, comment_id=555, now=NOW, outcome="published"
+    )
     item = publication_of(opened(), run)
     fixture.queue.enqueue(item, now=NOW)
 

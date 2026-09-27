@@ -430,3 +430,60 @@ def test_one_repos_sweep_does_not_abandon_anothers_rows(store):
             (elsewhere().dedupe_key,),
         ).fetchone()[0]
     assert status == str(QueueStatus.PENDING)
+
+
+# -- folding: one review answers everything that was already waiting ------
+
+
+def test_folding_closes_the_mentions_the_review_answered(queue):
+    """Three people asking about one pull request asked one question.
+
+    The agent keeps one comment per pull request and edits it in place, so
+    reviewing each mention separately would pay three times to overwrite the
+    same comment twice.
+    """
+    queue.enqueue(mention(comment_id=1), now=NOON)
+    queue.enqueue(mention(comment_id=2), now=NOON)
+    queue.enqueue(mention(comment_id=3), now=NOON)
+    claim = queue.claim(now=NOON, owner="w")
+    assert claim is not None
+
+    folded = queue.fold(claim, before=NOON + timedelta(seconds=1), head_sha="abc123")
+
+    assert folded == 2
+    assert queue.status(mention(comment_id=2).dedupe_key) is QueueStatus.DONE
+
+
+def test_folding_leaves_a_trigger_enqueued_during_the_review(queue):
+    """It may be asking about something the review never read."""
+    queue.enqueue(mention(comment_id=1), now=NOON)
+    claim = queue.claim(now=NOON, owner="w")
+    assert claim is not None
+    started = NOON + timedelta(seconds=1)
+    queue.enqueue(mention(comment_id=2), now=started + timedelta(minutes=4))
+
+    assert queue.fold(claim, before=started, head_sha="abc123") == 0
+
+
+def test_folding_leaves_a_trigger_that_named_another_commit(queue):
+    """A request about a commit this review did not read is not answered by it."""
+    queue.enqueue(mention(comment_id=1), now=NOON)
+    queue.enqueue(opened(head_sha="something-else"), now=NOON)
+    claim = queue.claim(now=NOON, owner="w")
+    assert claim is not None
+
+    folded = queue.fold(claim, before=NOON + timedelta(seconds=1), head_sha="abc123")
+
+    assert folded == 0
+    assert queue.status(opened(head_sha="something-else").dedupe_key) is (
+        QueueStatus.PENDING
+    )
+
+
+def test_folding_is_scoped_to_one_pull_request(queue):
+    queue.enqueue(mention(pr=7, comment_id=1), now=NOON)
+    queue.enqueue(mention(pr=8, comment_id=2), now=NOON)
+    claim = queue.claim(now=NOON, owner="w")
+    assert claim is not None
+
+    assert queue.fold(claim, before=NOON + timedelta(seconds=1), head_sha="x") == 0

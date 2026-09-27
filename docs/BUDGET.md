@@ -32,6 +32,15 @@ so that "every control on spend" is one list rather than four pages:
 | `engine.timeout_seconds` | The wall clock one run cannot outlive, which is the only bound when an engine reports no usage | [ENGINE.md](ENGINE.md) |
 | `queue.max_attempts` | How often one trigger may be retried, and so how many times a single failure can be paid for | [QUEUE.md](QUEUE.md) |
 
+And one control *is* a layer decision about a claim, but about a claim's
+**pull request** rather than its windows, so it has a section of its own:
+
+| Control | What it bounds | Where |
+| :-- | :-- | :-- |
+| `budget.min_review_interval_seconds` | How often one pull request may be reviewed | [below](#-the-pacer-one-pull-requests-rate) |
+| `budget.mention_min_review_interval_seconds` | The same, when a person asked directly | [below](#-the-pacer-one-pull-requests-rate) |
+| `budget.max_reviews_per_pull_request` | How many reviews one pull request may have in a day | [below](#-the-pacer-one-pull-requests-rate) |
+
 Layer 1 is the classifier — it *is* the first budget layer, which is why its
 rejections are logged at a level an operator actually sees.
 
@@ -308,6 +317,86 @@ people can trigger reviews and one monopolising the week is a real outcome.
 `actor_id` has been on every ledger row since the governor shipped, precisely
 so this stayed possible: the ledger is append-only, and attribution is the one
 field that cannot be backfilled.
+
+## ⏱ The pacer: one pull request's rate
+
+**Implemented** in `src/pr_review_agent/pacing.py`, and called from `admit`
+after the windows and before the reservation is written.
+
+The windows above bound a **total**. They cannot tell one pull request
+consuming the day from thirty sharing it, and that distinction is the whole
+reason this exists: a branch under active development produces triggers at
+the rate somebody pushes to it, once a maintainer is mentioning the agent
+alongside those pushes. Each of those reviews is paid for in full, and each
+is liable to be superseded by the next push before it can be posted.
+
+So a second question is asked of the same ledger:
+
+| Key | Default | Refuses when |
+| :-- | :-- | :-- |
+| `min_review_interval_seconds` | 900 | this pull request was reviewed less than 15 minutes ago |
+| `mention_min_review_interval_seconds` | 300 | the same, for a `@claude` — a person is waiting, so it is shorter |
+| `max_reviews_per_pull_request` | *unset* | this pull request has had that many reviews in a trailing 24 hours |
+
+### A refusal here defers; it does not drop
+
+It is an ordinary admission refusal, which in this queue means the row stays
+`pending`, costs no attempt, and is offered again on the next claim. Nothing
+is lost, and nothing is silently answered by somebody else's run.
+
+That is also where the saving comes from. A deferred trigger is reviewed
+once the interval has passed, **against whatever the head is then** — so a
+burst of pushes and mentions inside one interval collapses into one review of
+the final head instead of one review each. The
+[fold](QUEUE.md#-one-review-answers-what-was-waiting) closes the rest of the
+burst when that review posts, so the queue does not then drain them one
+interval apart.
+
+The cost of a deferral is one indexed `SELECT` over a table the governor
+already writes. No GitHub call, no engine, no reservation.
+
+### Why the ledger, and not `runs`
+
+`runs` holds reviews that produced findings. A run that reached an engine and
+then failed spent tokens just the same, and a pacer blind to it would let a
+pull request that crash-loops the engine be re-reviewed without limit — which
+is the case that empties an allowance fastest. Every admitted run writes a
+ledger row, so the ledger is the honest record of *this pull request reached
+an engine*. Migration 11 puts `repo` and `pr_number` on it for exactly this
+query.
+
+Rows written before that migration carry NULL in both and read as **no
+history**, which is the same answer a pull request nobody has reviewed gets.
+Reading a missing column as *recent* would defer every review on an upgraded
+database until a backfill nobody can do had happened.
+
+### This is not the contributor window again
+
+The two look alike — a rolling duration, a refusal on the same ladder — and
+they are deliberately different axes:
+
+| | `per_contributor_pct` | the pacer |
+| :-- | :-- | :-- |
+| Scopes to | one **person** | one **pull request** |
+| Measured in | tokens | time since the last review, and a count |
+| Answers | one contributor monopolising the week | one branch monopolising the day |
+
+A repository can hit either without the other: one maintainer opening thirty
+pull requests trips the contributor window and no pacer; one contributor's
+single branch under a rebase-heavy week trips the pacer and no window. The
+cap is off by default for the reason `per_contributor_pct` is — a repository
+with one active pull request at a time gains nothing from it, and a default
+that refuses work nobody asked it to refuse is the wrong direction for a
+knob.
+
+### What it does not do
+
+**It posts nothing.** A deferral and a cap refusal are `WARNING` log lines;
+no comment is written to say the agent is waiting. The contributor sees the
+👀 reaction only once the trigger is actually claimed, which for a deferred
+mention is one interval later than they typed it. That is the deliberate
+trade: a comment saying "I am waiting" costs a GitHub write on every paced
+trigger and would itself need rate limiting.
 
 ## 🤝 Several repositories, one allowance
 
@@ -613,6 +702,24 @@ cases in `tests/test_queue.py`:
 - repeated trips drive the calibration **monotonically downward** rather than
   oscillating, and a clean window recovers a point, capped at the configured
   value.
+
+In `tests/test_pacing.py`, for the pacer — every case leaves the windows
+nowhere near spent, so only the pacer can be what refused:
+
+- a second review of one pull request inside the interval is refused, and the
+  row is still `pending` with no attempt spent, then claimed once the interval
+  elapses;
+- a mention waits the shorter interval while an ordinary trigger at the same
+  moment still waits;
+- the interval binds one pull request only, so a busy one does not hold the
+  queue for every other;
+- `0` disables the interval, spelled rather than approximated;
+- a run that reached an engine and recorded **no** findings still paces the
+  next one — the ledger is what is measured, not `runs`;
+- the cap refuses past its count, rolls out of its trailing day, and is
+  absent by default;
+- a ledger row from before migration 11 reads as no history rather than as a
+  recent review.
 
 In `tests/test_cli_engine.py` and `tests/test_worker.py`, for the detector and
 the join:

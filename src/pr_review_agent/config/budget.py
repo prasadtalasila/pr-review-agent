@@ -7,6 +7,7 @@ what an operator declared here and turns it into windows and a ladder.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import timedelta
 
 from ._sections import ConfigError
 
@@ -20,6 +21,20 @@ DEFAULT_REVIEWER_SHARE_PCT = 40
 #: choice. `tests/test_config.py` pins both by value.
 DEFAULT_MAX_CHANGED_FILES = 100
 DEFAULT_MAX_CHANGED_LINES = 5000
+
+#: How long one pull request waits between reviews, and how long it waits
+#: when a human asked directly. A contributor pushing fixups produces a
+#: trigger per push once a maintainer is mentioning the agent alongside
+#: them, and every one of those reviews is paid for in full -- so the
+#: default is on rather than off. A mention waits less because it is a
+#: person asking rather than a repository event, and silence is a worse
+#: answer to a person.
+#:
+#: Zero disables either one. That is spelled rather than implied: an
+#: operator who wants the previous behaviour should not have to discover
+#: that some large number approximates it.
+DEFAULT_MIN_REVIEW_INTERVAL_SECONDS = 900
+DEFAULT_MENTION_MIN_REVIEW_INTERVAL_SECONDS = 300
 
 #: Paths excluded from both the size gate and the diff the engine is shown.
 #: The four categories BUDGET.md layer 2 names -- lockfiles, vendored trees,
@@ -101,6 +116,29 @@ def _cap(data: dict, key: str, default: int) -> int:
     return value
 
 
+def _interval(data: dict, key: str, default: int) -> int:
+    """Read an optional pacing interval, in seconds. Zero disables it."""
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(
+            f"budget.{key} must be a whole number of seconds, or 0 to disable"
+        )
+    return value
+
+
+def _reviews_cap(data: dict) -> int | None:
+    """Read the optional per-pull-request daily review cap."""
+    value = data.get("max_reviews_per_pull_request")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError(
+            "budget.max_reviews_per_pull_request must be a positive integer, "
+            "or absent for no cap"
+        )
+    return value
+
+
 #: What an authority publishes and a complier adopts: the pool arithmetic, and
 #: only that. Every one of these decides how much of the *shared* allowance is
 #: available, so two daemons disagreeing about one of them disagree about the
@@ -169,6 +207,20 @@ class BudgetConfig:
     #: Optional, and off by default: on a one-person allowlist any cap below
     #: 100 % would block the only account that can trigger anything.
     per_contributor_pct: int | None = None
+    #: The pacer, below the windows: how long one pull request waits between
+    #: reviews. It bounds a *rate* where the windows bound a *total*, which
+    #: is why neither replaces the other -- the windows cannot tell one pull
+    #: request consuming the day from thirty sharing it.
+    min_review_interval_seconds: int = DEFAULT_MIN_REVIEW_INTERVAL_SECONDS
+    mention_min_review_interval_seconds: int = (
+        DEFAULT_MENTION_MIN_REVIEW_INTERVAL_SECONDS
+    )
+    #: Optional, and off by default, for the reason ``per_contributor_pct``
+    #: is: it is the fairness knob for pull requests rather than a spending
+    #: ceiling, and a repository with one active pull request at a time
+    #: gains nothing from it. Counted over a trailing 24 hours, the same
+    #: duration as the daily window.
+    max_reviews_per_pull_request: int | None = None
 
     @property
     def session_limit(self) -> int:
@@ -201,6 +253,20 @@ class BudgetConfig:
         if self.per_contributor_pct is None:
             return None
         return self.weekly_limit * self.per_contributor_pct // 100
+
+    def review_interval(self, *, mention: bool) -> timedelta:
+        """How long this pull request waits before it may be reviewed again.
+
+        A mention has its own, shorter interval rather than an exemption. An
+        exemption would put the whole control behind one word a contributor
+        can type, which is the shape of a limit that does not limit.
+        """
+        seconds = (
+            self.mention_min_review_interval_seconds
+            if mention
+            else self.min_review_interval_seconds
+        )
+        return timedelta(seconds=seconds)
 
     def shared(self) -> dict[str, int | None]:
         """The pool arithmetic, as an authority publishes it."""
@@ -265,7 +331,31 @@ class BudgetConfig:
             ),
             per_contributor_pct=per_contributor,
             excluded_paths=_excluded_paths(data),
+            min_review_interval_seconds=_interval(
+                data, "min_review_interval_seconds", DEFAULT_MIN_REVIEW_INTERVAL_SECONDS
+            ),
+            mention_min_review_interval_seconds=_interval(
+                data,
+                "mention_min_review_interval_seconds",
+                DEFAULT_MENTION_MIN_REVIEW_INTERVAL_SECONDS,
+            ),
+            max_reviews_per_pull_request=_reviews_cap(data),
         )
+        if (
+            config.mention_min_review_interval_seconds
+            > config.min_review_interval_seconds
+        ):
+            # Not arithmetic that breaks anything -- it simply means the
+            # repository's own events are paced more loosely than the people
+            # asking about them, which is the opposite of what the two keys
+            # are for and is far likelier to be a transposition.
+            raise ConfigError(
+                "budget.mention_min_review_interval_seconds "
+                f"({config.mention_min_review_interval_seconds}) exceeds "
+                f"budget.min_review_interval_seconds "
+                f"({config.min_review_interval_seconds}): a mention would "
+                "wait longer than an ordinary trigger"
+            )
         if (
             config.per_contributor_limit is not None
             and config.per_contributor_limit < config.max_run_tokens

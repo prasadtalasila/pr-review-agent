@@ -52,10 +52,11 @@ have moved on, and a review of a superseded commit landing late is worse
 than no review at all.
 
 So the publisher re-reads `GET /pulls/{n}` and compares the live head with
-the one the review ran against. On a mismatch it posts nothing and the queue
-row is **completed**, not retried: a push to an existing pull request is not
-a trigger ([TRIGGERS.md](TRIGGERS.md)), so another attempt would re-read the
-same stale sha and reserve allowance to do it.
+the one the review ran against. On a mismatch the queue row is **completed**,
+not retried: a push to an existing pull request is not a trigger
+([TRIGGERS.md](TRIGGERS.md)), so another attempt would re-read the same stale
+sha and reserve allowance to do it. What gets posted is
+[below](#-a-head-that-moved-under-the-review).
 
 [QUEUE.md](QUEUE.md#-what-the-queue-does-not-do) assigns this check here
 deliberately. It has to be a live read taken as late as possible; at claim
@@ -63,6 +64,34 @@ time it would be worth nothing.
 
 The read happens in a dry run too. An operator watching one needs to see the
 same decision the real path would take, not a shortcut past it.
+
+## 🪧 A head that moved under the review
+
+The review is posted anyway, under a line saying what it describes:
+
+> _This review describes `aaaaaaa`, which is no longer the head: the branch
+> has since moved to `bbbbbbb`. Findings may already be addressed. Mention me
+> again for a review of the new head._
+
+This used to be a discard, and the argument for changing it is that the
+tokens are **already spent** by the time the head is re-read — the engine ran
+before the publisher was called, and `settle` has already charged the ledger.
+Discarding saves nothing; it only guarantees nobody sees what was paid for.
+Most of a review survives a fixup commit, and the agent keeps
+[one comment per pull request](#-one-comment-per-pull-request) and edits it in
+place, so this text is *replaced* by the next round rather than accumulating
+beside it. The one thing a reader genuinely needs — which commit the words
+describe — is what the note gives them.
+
+`publish.post_superseded: false` restores the discard for an operator who
+would rather have silence.
+
+**Either way the run is stamped.** That half is not configurable, and it is
+[issue #68](https://github.com/prasadtalasila/pr-review-agent/issues/68): the
+discard path used to return before `_stamp`, leaving `published_at` NULL, so
+the run stayed "still owed a comment" for the lifetime of the database. The
+`publish_outcome` column added in migration 12 is what lets a stamped row say
+*which* ending it had, which `published_at` alone cannot.
 
 ## 💬 One comment per pull request
 
@@ -277,7 +306,7 @@ what would have happened before `release_unattempted` existed.
 | :-- | :-- | :-- |
 | published | `complete` | Done. |
 | dry run | `complete` | The pipeline ran; there is nothing to retry. |
-| superseded | `complete` | The head will never match again. |
+| superseded | `complete` | The head will never match again; the review is posted saying so unless `post_superseded` is off. |
 | write failed, engine ran | `complete`, plus a `publish` item | The review is done; only the posting is outstanding. |
 | write failed, `publish` item | `release_unattempted` | Retryable, and the attempt does not count: nothing was spent. |
 | run already posted or purged | `complete` | Nothing left to post, so the item is finished. |
@@ -303,7 +332,8 @@ The brake that stops spending is `budget.enabled`. See
 
 A dry run still stamps the run as needing publication no longer. The pipeline
 ran and there is nothing left to post; an unstamped run would be re-offered
-on every claim for the lifetime of the database.
+on every claim for the lifetime of the database. So does a superseded run,
+and for the same reason — see [above](#-a-head-that-moved-under-the-review).
 
 ## 📋 The `runs` table
 
@@ -319,6 +349,9 @@ knowing:
   request already have".
 - **`findings` is JSON text, not a child table.** Written once, read once,
   purged wholesale; nothing queries a finding by path, line or severity.
+- **`publish_outcome` says how publishing ended,** which `published_at`
+  cannot: a posted review and one discarded because the head moved both have
+  to be stamped, and only the outcome column tells them apart afterwards.
 - **`content_purged_at` is stamped apart from emptying `findings`,** so a run
   whose content was deleted after a merge stays distinguishable from a run
   that looked and found nothing — the same distinction `Outcome` keeps

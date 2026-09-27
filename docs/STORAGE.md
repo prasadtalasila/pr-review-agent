@@ -137,7 +137,9 @@ CREATE TABLE ledger (
     reserved_at      TEXT NOT NULL,   -- aware UTC, ISO-8601
     settled_at       TEXT,
     reviewed_lines   INTEGER,         -- what the estimate is fitted against
-    stop_reason      TEXT             -- why the run ended; NULL until settled
+    stop_reason      TEXT,            -- why the run ended; NULL until settled
+    repo             TEXT,            -- NULL before migration 11
+    pr_number        INTEGER          -- NULL before migration 11; the pacer reads both
 );
 CREATE TABLE runs (
     dedupe_key        TEXT PRIMARY KEY, -- the queue row and ledger rows it joins
@@ -149,7 +151,8 @@ CREATE TABLE runs (
     comment_id        INTEGER,          -- NULL until published
     recorded_at       TEXT NOT NULL,
     published_at      TEXT,             -- NULL until posted (or dry-run)
-    content_purged_at TEXT
+    content_purged_at TEXT,
+    publish_outcome   TEXT              -- published|superseded|dry_run|refused
 );
 CREATE TABLE budget_state (
     key   TEXT PRIMARY KEY,           -- calibrated_pct|tripped_until|last_trip_at
@@ -235,7 +238,18 @@ budget window; version 5 adds `ledger.reviewed_lines`; version 6 adds
 `ledger.stop_reason`; version 7 adds `queue.comment_id` and
 `queue.comment_source`, which is what lets the publisher acknowledge the
 comment a mention was written in; version 8 adds `runs`; version 9 adds
-`budget_state`; version 10 adds `budget_policy`.
+`budget_state`; version 10 adds `budget_policy`; version 11 adds
+`ledger.repo`, `ledger.pr_number` and the `(repo, pr_number, reserved_at)`
+index the [pacer](BUDGET.md#-the-pacer-one-pull-requests-rate) reads; version
+12 adds `runs.publish_outcome`.
+
+Version 11's two columns are **NULL on every row written before it**, and
+that is the reading the pacer is built around: no repository and no pull
+request means no history, which is the same answer a pull request nobody has
+reviewed gets. A backfill is impossible — the ledger is keyed by
+`dedupe_key`, and the pull request a retired key referred to is not
+recoverable from it — so the honest default was the design constraint rather
+than an afterthought.
 
 **Each migration and its version bump commit together**, in one transaction.
 That is what lets versions 5, 6 and 7 be `ALTER TABLE ADD COLUMN`, which

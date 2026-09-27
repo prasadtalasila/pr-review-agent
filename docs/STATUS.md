@@ -24,6 +24,7 @@ they are reproduced here so they survive the issue being closed.
 | Engine adapter (`CliEngine` + `ClaudeCliEngine`) | implemented, unit tested, wired |
 | Publisher (👀, head re-check, one comment per PR) | implemented, unit tested |
 | Circuit breaker and calibration decay | implemented, unit tested |
+| Per-pull-request pacer (review interval, daily cap) and the trigger fold | implemented, unit tested |
 | `pr-review-agent <noun> <verb>` command tree, `config generate` | implemented, unit tested |
 | systemd user unit and `service install` | implemented, unit tested |
 | Logging: level, `auto`/`text`/`json` shape, journald priorities | implemented, unit tested |
@@ -98,6 +99,8 @@ linked.
       allowance being consumed in one day (**done**); the degradation ladder is
       observed at 85 / 100 % (**done**) and at 60 % (with the engine);
       `per_contributor_pct` bounds one contributor's share of the week
+      (**done**); the pacer bounds how often and how many times one pull
+      request is reviewed, deferring rather than dropping what it refuses
       (**done**); path exclusions keep a vendored-only change from being
       refused on size, and a pre-flight estimate over `max_run_tokens`
       refuses a run and releases its reservation (**done**); a review wall

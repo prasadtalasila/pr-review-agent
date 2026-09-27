@@ -103,6 +103,12 @@ class PublishConfig:
     """
 
     dry_run: bool = False
+    #: Post a review whose commit stopped being the head while it ran,
+    #: marked as describing that commit. Defaults true because the tokens
+    #: are spent before the head is re-read: discarding the review saves
+    #: nothing and shows nobody anything. ``false`` restores the older
+    #: behaviour, where such a review is recorded and never posted.
+    post_superseded: bool = True
 
     @classmethod
     def parse(cls, data: dict) -> PublishConfig:
@@ -114,7 +120,13 @@ class PublishConfig:
         # only answer that cannot surprise an operator.
         if not isinstance(dry_run, bool):
             raise ConfigError(f"publish.dry_run must be true or false, got {dry_run!r}")
-        return cls(dry_run=dry_run)
+        post_superseded = data.get("post_superseded", True)
+        if not isinstance(post_superseded, bool):
+            raise ConfigError(
+                "publish.post_superseded must be true or false, "
+                f"got {post_superseded!r}"
+            )
+        return cls(dry_run=dry_run, post_superseded=post_superseded)
 
 
 @dataclass(frozen=True)

@@ -152,6 +152,37 @@ budget:
   # resulting allowance is below max_run_tokens the loader refuses the file.
   # per_contributor_pct: 50
 
+  # Optional (defaults 900 and 300). The pacer: how long ONE pull request
+  # waits between reviews, and how long it waits when a human asked directly
+  # by mentioning the agent. The windows above bound a total; these bound a
+  # rate, and neither replaces the other -- a window cannot tell one pull
+  # request consuming the day from thirty sharing it.
+  #
+  # A trigger arriving inside the interval is DEFERRED, never dropped: its
+  # queue row stays pending, costs no attempt, and is claimed once the
+  # interval has passed -- by which time it is reviewed against whatever the
+  # head is then. That is the point. A branch being pushed to produces a
+  # trigger per push once somebody is mentioning the agent alongside them,
+  # and each of those reviews is paid for in full and liable to be superseded
+  # by the next push before it can be posted.
+  #
+  # A mention waits less because a person is waiting for it; it may not wait
+  # LONGER than min_review_interval_seconds, and the loader refuses a file
+  # where it does. Either may be 0 to disable that half of the pacer.
+  min_review_interval_seconds: 900
+  mention_min_review_interval_seconds: 300
+
+  # Optional, and ABSENT BY DEFAULT: no cap. The most reviews any one pull
+  # request may have in a trailing 24 hours -- the daily window's duration,
+  # scoped to one pull request. It is the fairness knob for pull requests
+  # that per_contributor_pct is for people: the interval above bounds how
+  # FAST one pull request is reviewed, this bounds how MANY times, so a
+  # month-old pull request cannot quietly absorb the allowance.
+  #
+  # A refusal is logged at WARNING and the row waits; nothing is posted to
+  # say the cap was reached.
+  # max_reviews_per_pull_request: 5
+
   # Optional (defaults 100 / 5000). Layer 2's diff-size caps: a pull request
   # over either is refused before a worktree is created and before any diff
   # reaches the reviewer. Both exist because neither bounds the other --
@@ -272,6 +303,17 @@ publish:
   #
   # Reloaded on SIGHUP, like budget: a brake that needs a restart is not one.
   dry_run: false
+
+  # Optional (default true). Post a review whose commit stopped being the
+  # head while it ran, with a line above it saying which commit it describes
+  # and that the branch has moved. The tokens were spent before the head was
+  # re-read, so discarding the review saves nothing and shows nobody
+  # anything; the agent keeps one comment per pull request and edits it in
+  # place, so the next round replaces the text rather than sitting beside it.
+  #
+  # false restores the older behaviour: the run is recorded, stamped and
+  # never posted.
+  post_superseded: true
 
 # ---------------------------------------------------------------------------
 # logging -- OPTIONAL. How much the daemon says, and what a record looks like.

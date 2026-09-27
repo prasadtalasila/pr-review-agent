@@ -64,6 +64,7 @@ from datetime import datetime, timedelta
 from ._compat import StrEnum
 from ._time import parse, stamp, to_utc
 from .config import BudgetConfig
+from .pacing import paced
 from .queue import Claim
 from .store import SqliteStore, read_budget_policy
 from .triggers.models import TriggerKind
@@ -276,8 +277,9 @@ class Breaker:
 
 _RESERVE = """
 INSERT INTO ledger
-    (dedupe_key, owner, actor_id, mode, reserved_tokens, reserved_at)
-VALUES (:key, :owner, :actor, :mode, :tokens, :now)
+    (dedupe_key, owner, actor_id, mode, reserved_tokens, reserved_at,
+     repo, pr_number)
+VALUES (:key, :owner, :actor, :mode, :tokens, :now, :repo, :pr)
 """
 
 # An unsettled row counts its whole reservation, which is what stops a second
@@ -404,6 +406,8 @@ class Governor:
         )
         if not self._allows(headroom, claim, config):
             return False
+        if not paced(conn, claim, at, config):
+            return False
         conn.execute(
             _RESERVE,
             {
@@ -413,6 +417,8 @@ class Governor:
                 "mode": str(headroom.mode),
                 "tokens": config.max_run_tokens,
                 "now": stamp(now),
+                "repo": claim.trigger.repo,
+                "pr": claim.trigger.pr_number,
             },
         )
         return True
