@@ -362,12 +362,18 @@ async def test_a_token_that_can_write_passes():
     assert by_name(results)["github write scope"].ok
 
 
-async def test_a_read_only_token_fails_the_write_check():
-    """The publisher exists now, so read-only is no longer sufficient."""
+async def test_no_contents_write_cautions_rather_than_fails():
+    """`push` is contents:write, which the documented scope does not include.
+
+    A fine-grained token scoped exactly as TOKENS.md says -- Pull requests
+    read/write, Issues read/write, Metadata read -- reports ``push: false``
+    and can still post every comment the publisher writes. Failing it here
+    would refuse to start on a correctly configured host.
+    """
     results = await check_github(make_client(repo_serving({"push": False})), ENDPOINTS)
     check = by_name(results)["github write scope"]
-    assert not check.ok
-    assert "write" in check.detail
+    assert check.ok
+    assert "contents:write" in check.detail
 
 
 async def test_an_unreported_permission_warns_rather_than_fails():
@@ -376,6 +382,16 @@ async def test_an_unreported_permission_warns_rather_than_fails():
     check = by_name(results)["github write scope"]
     assert check.ok
     assert "could not" in check.detail
+
+
+async def test_every_inconclusive_result_names_the_permissions_to_check():
+    """ "Check your token" without saying what to check says nothing."""
+    for permissions in ({"push": False}, None):
+        results = await check_github(make_client(repo_serving(permissions)), ENDPOINTS)
+        detail = by_name(results)["github write scope"].detail
+        assert "Pull requests: read/write" in detail
+        assert "Issues: read/write" in detail
+        assert "Metadata: read" in detail
 
 
 async def test_an_unreadable_repository_fails_the_write_check():

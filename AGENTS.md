@@ -32,8 +32,9 @@ locally-hosted PR review agent.
 - Use meaningful symbol names.
 - Add comments only where logic is non-obvious. Prefer a docstring that
   explains *why* a rule exists over one that restates the signature.
-- Public modules, classes and functions carry a docstring: `pylint` is run at
-  a 10.00/10 score on `src`, and a missing docstring is a score regression.
+- Public modules, classes and functions carry a docstring: `pylint` scores
+  `src` at 9.97/10 against a 9.0 gate, and a missing docstring is a score
+  regression.
 
 ## BEST PRACTICES
 
@@ -53,20 +54,57 @@ src/pr_review_agent/          importable package (src layout)
   _startup.py                 token + config, shared by both entry points
   bootstrap.py                pre-flight egress checks for a new host
   budget.py                   rolling windows, ladder, reserve-then-settle
-  publisher.py                the 👀, the head re-check, one comment per PR
-  runs.py                     what a paid review produced, so it can be re-posted
   config.py                   config.yaml loader and validation
   daemon.py                   the poll-classify-enqueue loop and entry point
+  logs.py                     one level and one format, resolved from three layers
+  numbering.py                finding numbers that survive a re-review
+  publisher.py                the 👀, the head re-check, one comment per PR
   queue.py                    claim protocol and per-pull-request leases
-  worker.py                   claim, review, settle, close the row
+  runs.py                     what a paid review produced, so it can be re-posted
+  sanitise.py                 engine prose made inert before it is posted
   store.py                    SQLite schema, watermarks, ETags, queue table
-  triggers/                   allowlist, @mention parsing, classifier
-  poller/                     GitHub REST polling, ETags, adaptive interval
-  workspace/                  bare mirror, per-run worktree, diff, teardown
-  engine/                     the ReviewEngine seam and a fake engine
+  worker.py                   claim, review, settle, close the row
+  cli/
+    __init__.py               the root group, the nouns, the exit codes
+    _common.py                the shared --config option and startup handling
+    cmd_config.py             config generate | validate
+    cmd_daemon.py             daemon start
+    cmd_host.py               host check
+    cmd_service.py            service install -- place the systemd user unit
+  engine/
+    models.py                 ReviewEngine protocol, Capabilities, request/result
+    cli.py                    the subprocess boundary every CLI adapter shares
+    claude.py                 the `claude` CLI adapter, the first engine that spends
+    prompt.py                 what the reviewer is told; untrusted text fenced off
+    standards.py              review standards, read from the base ref
+    fake.py                   an engine that spends nothing, for tests
+  poller/
+    endpoints.py              the three repo-wide request paths, and /pulls/{n}
+    client.py                 async conditional GET, rate-limit handling
+    etag_store.py             the ETagCache protocol and in-memory cache
+    interval.py               adaptive poll delay
+    payloads.py               raw GitHub dicts to trigger models
+    pulls.py                  one pull request to PullRequestFacts
+    poller.py                 one sweep across all three endpoints
+  templates/                  the config templates and systemd units the wheel ships
+    pr-review-agent.service   the single-repository user unit
+    pr-review-agent@.service  the templated per-instance user unit
+  triggers/
+    models.py                 payload-shaped dataclasses; PayloadError
+    allowlist.py              numeric-user-id membership
+    mention.py                @claude in *prose* only
+    classifier.py             PullRequest | Comment to Decision
+  workspace/
+    gitcmd.py                 the one hardened `git` invocation
+    exclusions.py             configured path patterns to git pathspec arguments
+    repo.py                   bare mirror, per-run worktree, diff, teardown
 tests/                        pytest suite, one test_*.py per module
 .github/workflows/python-ci.yml   the single CI workflow
 ```
+
+`tests/test_docs_layout.py` fails if a module is missing from this tree or
+from the one in `DEVELOPER.md`. Add a module, add both lines in the same
+commit.
 
 - The supported range is **Python 3.10 - 3.14**, and CI runs all five. Code
   must therefore stay 3.10-compatible: a 3.11+ name goes behind a shim in

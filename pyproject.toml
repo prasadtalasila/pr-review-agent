@@ -1,6 +1,6 @@
 [project]
 name = "pr-review-agent"
-version = "1.1.6"
+version = "1.1.7"
 description = "Locally-hosted LLM-based PR review agent with enforced usage budgets"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -88,6 +88,13 @@ branch = true
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+# The gate names `src tests scripts`, and this makes a bare `ruff check .` --
+# which is what anyone reaches for first -- agree with it. `include` below
+# settles which *kinds* of file ruff touches; this settles which directories,
+# and they answer different questions: a checkout carrying untracked Python
+# (a local `.claude/`, a scratch directory, a built `site/` or `dist/`)
+# reports thousands of errors from files this project does not own.
+extend-exclude = [".claude", "docker/.claude", "site", "dist"]
 
 # Ruff 0.16 added `*.md` to the default `include`, so `ruff format` began
 # rewriting the Python blocks fenced inside Markdown. Spelling the previous
