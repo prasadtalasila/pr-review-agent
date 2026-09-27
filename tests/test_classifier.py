@@ -73,7 +73,6 @@ def test_fresh_pr_from_allowlisted_author_is_accepted(classifier):
         (make_pr(author=BOT), "bot_author"),
         (make_pr(is_draft=True), "draft"),
         (make_pr(created_at=EARLIER), "not_fresh"),
-        (make_pr(created_at=SINCE), "not_fresh"),
     ],
 )
 def test_ineligible_pull_requests_are_rejected(classifier, pr, reason):
@@ -138,13 +137,35 @@ def test_maintainer_can_summon_review_of_an_outsider_pr(classifier):
         (make_comment(body="> @claude review"), "no_mention"),
         (make_comment(body="use `@claude` to summon"), "no_mention"),
         (make_comment(updated_at=EARLIER), "not_fresh"),
-        (make_comment(updated_at=SINCE), "not_fresh"),
     ],
 )
 def test_ineligible_comments_are_rejected(classifier, comment, reason):
     decision = classifier.classify_comment(comment)
     assert not decision.accepted
     assert decision.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("classify", "item"),
+    [
+        (Classifier.classify_pull_request, make_pr(created_at=SINCE)),
+        (Classifier.classify_comment, make_comment(updated_at=SINCE)),
+    ],
+    ids=["pull_request", "comment"],
+)
+def test_an_item_stamped_the_watermark_second_is_still_offered(
+    classifier, classify, item
+):
+    """Issue #73: the boundary second is re-offered, not dropped forever.
+
+    GitHub stamps to the second and its listings are eventually consistent,
+    so two items opened in the same second can arrive in different cycles.
+    The first advances the watermark to that second; under `<=` the second
+    one was then *at* the watermark and never classified again. The queue
+    dedupes on `dedupe_key`, so re-offering the second costs nothing --
+    which makes `<` strictly safer than `<=` rather than a trade.
+    """
+    assert classify(classifier, item).accepted
 
 
 def test_a_comment_edited_after_the_watermark_is_accepted(classifier):
@@ -321,8 +342,8 @@ def test_comments_are_not_filtered_while_the_open_set_is_unknown(classifier):
 
 # -- freshness outranks identity ------------------------------------------
 #
-# Anything at or below the watermark has already been decided, whoever wrote
-# it, so no other reason is informative -- and `not_fresh` is the one that
+# Anything below the watermark has already been decided, whoever wrote it,
+# so no other reason is informative -- and `not_fresh` is the one that
 # keeps a re-seen item at DEBUG.
 
 

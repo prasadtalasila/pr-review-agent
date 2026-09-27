@@ -115,6 +115,15 @@ TRAILER = (
     "beyond this comment.</sub>"
 )
 
+#: Said at the end of every refusal notice. Both halves are load-bearing:
+#: a contributor who has just been refused wants to know whether it cost
+#: anything, and what to do next -- and the answer to the second is never
+#: "wait", because a deterministic refusal ends the trigger for good.
+REFUSAL_TRAILER = (
+    "<sub>No review ran and nothing was charged. Once the pull request or "
+    "the configuration has changed, a new @{handle} comment asks again.</sub>"
+)
+
 #: How long a rendered body may be. GitHub rejects a comment over 65 536
 #: characters with a 422 -- *after* the review was paid for -- and the
 #: worker would then re-offer the same body on every claim forever. The
@@ -209,6 +218,76 @@ class Publisher:
             # module is, and swallowing every exception would hide one
             # behind a missing emoji.
             logger.error("could not acknowledge %s", trigger.dedupe_key, exc_info=True)
+
+    async def notify(self, trigger: Trigger, notice: str) -> None:
+        """Say that a deterministic refusal ended this trigger. Never raises.
+
+        The 👀 goes on as soon as the claim is made, minutes before anyone
+        knows whether a review is possible. When the size gate or the
+        pre-flight then refuses, the row is abandoned and that is the whole
+        of the contributor's experience: an acknowledgement and then
+        silence, with the reason visible only in the operator's journal
+        (issue #78). A maintainer who typed the handle on a 6 000-line pull
+        request had no way to learn that raising a cap is the fix.
+
+        **Only deterministic refusals are announced.** A transient failure
+        is retried and will answer for itself; a closed pull request is not
+        told anything, because nobody is reading it; and a ``PayloadError``
+        is a bug in the agent rather than something the pull request can
+        act on. What is left is the set a contributor or maintainer can
+        actually do something about, which is what makes a notice worth the
+        comment it costs.
+
+        **It cannot accumulate.** One notice ends one trigger, and the row
+        is abandoned in the same breath, so nothing re-offers it. A second
+        notice means a second deliberate ``@handle`` -- somebody asking
+        again -- and answering that one too is the point rather than a
+        leak.
+
+        Suppressed by ``dry_run``, unlike :meth:`acknowledge`. The reaction
+        says "your trigger arrived", which is true in a dry run; this
+        writes a comment under the agent's account, which is exactly what
+        the brake is on to prevent.
+
+        Never raises, for the same reason the acknowledgement does not: the
+        row this explains is already closed and settled at zero, and
+        letting a failed courtesy propagate would turn a free refusal into
+        a retried failure that reserves allowance to reach the same answer.
+        """
+        if self.config.dry_run:
+            logger.info(
+                "publish.dry_run: not posting a refusal notice on %s#%d: %s",
+                trigger.repo,
+                trigger.pr_number,
+                notice,
+            )
+            return
+        body = refusal(notice, handle=self.handle)
+        try:
+            response = await self.client.post(
+                self.endpoints.issue_comments(trigger.pr_number), {"body": body}
+            )
+        except GitHubClientError:
+            logger.error(
+                "could not post the refusal notice for %s",
+                trigger.dedupe_key,
+                exc_info=True,
+            )
+            return
+        comment_id = int(response["id"])
+        self.posted.record(trigger.repo, comment_id, now=datetime.now(timezone.utc))
+        logger.info(
+            "refused %s on %s#%d as comment %d",
+            trigger.dedupe_key,
+            trigger.repo,
+            trigger.pr_number,
+            comment_id,
+            extra={
+                "repo": trigger.repo,
+                "pr": trigger.pr_number,
+                "comment": comment_id,
+            },
+        )
 
     async def publish(self, run: RecordedRun) -> Published:
         """Post ``run``'s review, saying so if the head moved under it.
@@ -397,6 +476,27 @@ def render(
         rendered = _prose(section) if heading == "Nits" else _items(section)
         sections.append(f"## {heading}\n\n{rendered}")
     return neutralise(_fit(header, sections), handle)
+
+
+def refusal(notice: str, *, handle: str) -> str:
+    """Assemble one deterministic refusal into a comment body.
+
+    Pure, and short enough that the length cap :func:`render` works around
+    cannot be reached: every notice is fixed text over a handful of
+    integers and configuration key names this process chose itself.
+
+    It still goes through ``neutralise``, which is not ceremony. The
+    trailer tells the reader to comment ``@handle`` again, and a comment
+    the agent posts is a comment the poller reads back -- so without it the
+    advice would summon the review it is explaining the absence of, on a
+    pull request already known to be unreviewable. What ``sanitise`` adds
+    for a review is left out, because there is no engine prose here for it
+    to escape.
+    """
+    return neutralise(
+        f"**Not reviewed.** {notice}\n\n{REFUSAL_TRAILER.format(handle=handle)}",
+        handle,
+    )
 
 
 def _moved_note(head_sha: str, moved_to: str) -> str:

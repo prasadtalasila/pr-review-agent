@@ -30,6 +30,7 @@ claim(admit=governor.admit)        the lease and the reservation, one commit
   → runs.history(repo, pr)         what the last round found, and its numbers
   → workspace.checkout(...)        the tree, the merge-base diff, exclusions
   → governor.preflight(...)        the last free refusal -- releases its own hold
+  → publisher.notify(...)          on a refusal only: says so on the pull request
   → engine.review(request)         the only agent-specific step, and the spend
   → numbering.assign(...)          stable numbers, before anything is stored
   → runs.record(...)               the findings, so a failed publish is retryable
@@ -130,6 +131,20 @@ settle afterwards — a second settle on a settled row is the one mistake this
 arrangement is designed to make impossible. The row is then abandoned: both
 refusals are deterministic for this head, and another attempt would reserve
 allowance only to reach the same answer.
+
+**And then it says so on the pull request.** It returns the sentence to post
+rather than a `bool`, which the worker hands to
+[`Publisher.notify`](PUBLISHER.md#-the-refusal-notice). Until 1.4.0 a refusal
+was silent: the 👀 went on minutes earlier, the row was abandoned, and the
+reason existed only in the operator's journal — so a maintainer who typed
+the handle on a 6 000-line pull request had no way to learn that raising a
+cap is the fix (issue #78). The same is done for the size gate, which
+refuses earlier still, through `PullRequestTooLarge.notice`.
+
+No other ending is announced. A transient failure is retried and the review
+it eventually produces speaks for itself; a closed pull request is told
+nothing, because nobody is reading it; and a `PayloadError` is a bug in the
+agent rather than something a contributor can act on.
 
 `checkout.reviewed` rather than `facts` is what it is asked about. Those are
 different numbers on purpose: the API's counts cover every changed path,

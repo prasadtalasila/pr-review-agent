@@ -154,7 +154,12 @@ budget:
 ```
 
 A pull request over either cap raises `PullRequestTooLarge` **before a
-worktree exists and before any diff can reach an engine**.
+worktree exists and before any diff can reach an engine**. The exception
+carries a `notice`: the same refusal addressed to the contributor rather
+than to the journal, which the worker posts on the pull request through
+[`Publisher.notify`](PUBLISHER.md#-the-refusal-notice). Both read the same
+four fields, so the number an operator sees and the number the pull request
+is told cannot drift apart.
 
 The caps are measured on `git diff --numstat` with `excluded_paths` applied,
 not on the API's `additions` / `deletions` / `changed_files`. That is why the

@@ -62,7 +62,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ._compat import StrEnum
-from ._time import parse, stamp, to_utc
+from ._time import stamp, to_utc
+from .breaker import FULL_CALIBRATION, TRIP_HOLD, Breaker, calibrated, decay
+from .breaker import read as read_breaker
+from .breaker import write as write_breaker
 from .config import BudgetConfig
 from .config.budget import DAILY, SESSION, WEEKLY
 from .pacing import paced
@@ -92,38 +95,6 @@ DEFAULT_TOKENS_PER_LINE = 40
 
 #: Settled, measurable runs needed before the fit replaces the constant.
 MIN_FIT_SAMPLES = 10
-
-#: How long a trip refuses every claim. ``SESSION`` because it is the
-#: shortest window, and because it is a *duration* rather than a reset time --
-#: which is the only kind of answer available when the plan publishes none.
-#: If the weekly limit was the one that blew, the next attempt trips again and
-#: the calibration keeps shrinking, so the design converges either way rather
-#: than needing the attribution to be right.
-TRIP_HOLD = SESSION
-
-#: What one trip does to the calibration, and what one clean window undoes.
-#: Multiplicative down, additive up: the series converges instead of
-#: oscillating, and a one-off heavy week on the *shared* pool heals rather
-#: than crippling the reviewer for good.
-DECAY_FACTOR = 0.9
-RECOVERY_POINTS = 1
-RECOVERY_PERIOD = SESSION
-
-#: Percentage points, never a float: no drift across restarts, and the same
-#: arithmetic ``BudgetConfig._share`` already uses. Floored at 1 rather than
-#: 0 for the reason ``reviewer_share_pct`` is -- ``_headroom`` divides by
-#: ``window.limit``, so a calibration reaching zero is a crash, not a policy.
-FULL_CALIBRATION = 100
-MIN_CALIBRATION = 1
-
-#: The breaker's whole state: three unrelated scalars, so a key/value table
-#: rather than a row of one thing. Absent means never tripped, which is what
-#: lets an existing database adopt migration 6 with no backfill.
-_STATE_GET = "SELECT key, value FROM budget_state"
-_STATE_SET = """
-INSERT INTO budget_state (key, value) VALUES (:key, :value)
-ON CONFLICT(key) DO UPDATE SET value = excluded.value
-"""
 
 
 class Mode(StrEnum):
@@ -245,48 +216,6 @@ class Headroom:
     mode: Mode
     remaining: int
     tightest: str
-
-
-@dataclass(frozen=True)
-class Breaker:
-    """What the last usage-limit failure left behind.
-
-    The defaults are "never tripped", which is what an empty
-    ``budget_state`` reads back as -- so a database that predates migration 6
-    needs no backfill to mean the right thing.
-    """
-
-    calibrated_pct: int = FULL_CALIBRATION
-    tripped_until: datetime | None = None
-    last_trip_at: datetime | None = None
-
-    def tripped(self, now: datetime) -> bool:
-        """Whether claims are still being refused outright."""
-        return self.tripped_until is not None and now < self.tripped_until
-
-    def calibration(self, now: datetime) -> int:
-        """The stored calibration with accrued recovery applied.
-
-        Computed rather than stored, so nothing is written on a read path and
-        the whole rule is a pure function of three values.
-
-        Recovery is additive against a multiplicative decay, which is what
-        makes the series converge downward instead of oscillating. It has to
-        exist at all because the usage pool is *shared*: a trip does not
-        always mean the operator's guess was too high, it can equally mean
-        the maintainer had a heavy week, and a calibration that could only
-        ever be revised downward would leave the reviewer permanently
-        crippled by one of those.
-
-        Because ``RECOVERY_PERIOD`` equals ``TRIP_HOLD``, the first point
-        accrues exactly as the hold expires.
-        """
-        if self.last_trip_at is None:
-            return self.calibrated_pct
-        periods = (now - self.last_trip_at) // RECOVERY_PERIOD
-        return min(
-            FULL_CALIBRATION, self.calibrated_pct + RECOVERY_POINTS * max(0, periods)
-        )
 
 
 _RESERVE = """
@@ -427,7 +356,7 @@ class Governor:
             )
             return False
         at = to_utc(now, "now")
-        breaker = _breaker(conn)
+        breaker = read_breaker(conn)
         if breaker.tripped(at):
             # Ahead of the window arithmetic on purpose: a trip is a fact
             # about the account, and the arithmetic is the guess it just
@@ -525,15 +454,10 @@ class Governor:
         """
         at = to_utc(now, "now")
         with self._store.transaction() as conn:
-            # Truncated rather than rounded, so every trip is a strict
-            # decrease: rounding stalls at 4, where `round(3.6)` is 4 again
-            # and the calibration stops converging short of its floor.
-            calibrated = max(
-                MIN_CALIBRATION, int(_breaker(conn).calibration(at) * DECAY_FACTOR)
-            )
-            _set_breaker(
+            calibration = decay(read_breaker(conn).calibration(at))
+            write_breaker(
                 conn,
-                calibrated_pct=str(calibrated),
+                calibrated_pct=str(calibration),
                 tripped_until=stamp(at + TRIP_HOLD),
                 last_trip_at=stamp(at),
             )
@@ -541,14 +465,14 @@ class Governor:
             "usage limit reached: refusing every claim for %s, and the effective "
             "limits are now %d%% of the configured ones",
             TRIP_HOLD,
-            calibrated,
+            calibration,
         )
-        return calibrated
+        return calibration
 
     def breaker(self) -> Breaker:
         """The breaker's state, for an operator or a status readout."""
         with self._store.transaction() as conn:
-            return _breaker(conn)
+            return read_breaker(conn)
 
     def estimate(self, reviewed_lines: int) -> int:
         """Predicted tokens for a review of ``reviewed_lines`` lines.
@@ -564,8 +488,8 @@ class Governor:
         """
         return round(self._rate() * reviewed_lines)
 
-    def preflight(self, claim: Claim, reviewed_lines: int, now: datetime) -> bool:
-        """Whether this run is worth starting -- releasing its hold if not.
+    def preflight(self, claim: Claim, reviewed_lines: int, now: datetime) -> str | None:
+        """Why this run is not worth starting, or ``None`` to start it.
 
         Refuses a pull request predicted to cost more than one run may spend,
         and one with nothing left to review after ``budget.excluded_paths``.
@@ -577,6 +501,24 @@ class Governor:
         releases a reservation early by design. Making the decision and the
         release one call means that failure cannot be introduced by a
         caller.
+
+        **The refusal notice rather than ``False``.** A ``bool`` was all the
+        worker needed in order to stop; it is not enough to *say* why it
+        stopped, and a trigger the agent acknowledged and then answered with
+        silence is the defect issue #78 names. The worker cannot re-derive
+        the sentence without duplicating the branch above -- two copies of
+        one rule, which would drift the first time a third refusal is added
+        -- so the component that refuses is the one that writes it, beside
+        the numbers it reports to the journal. It is the same currency
+        ``PullRequestTooLarge.notice`` hands back, so the worker treats the
+        two refusals alike and :meth:`Publisher.notify` posts either.
+
+        ``None`` is the go-ahead, which reads backwards for a moment and is
+        worth it: the alternative is a truthy value meaning "stop".
+
+        Each notice names the setting that would turn this refusal into a
+        review, because that is the only part a reader can act on, and
+        carries the same numbers as the log line beside it.
         """
         key = claim.trigger.dedupe_key
         max_run_tokens = self._effective_now().max_run_tokens
@@ -584,10 +526,14 @@ class Governor:
             logger.info(
                 "nothing left to review in %s after path exclusions: refusing", key
             )
+            notice = (
+                "Every path this pull request changes is excluded from review "
+                "by `budget.excluded_paths`, so there is nothing left to read."
+            )
         else:
             predicted = self.estimate(reviewed_lines)
             if predicted <= max_run_tokens:
-                return True
+                return None
             logger.warning(
                 "%s is predicted to cost %d tokens over %d reviewable lines, "
                 "above the %d a run may spend: refusing",
@@ -596,15 +542,16 @@ class Governor:
                 reviewed_lines,
                 max_run_tokens,
             )
+            notice = (
+                f"{reviewed_lines} reviewable lines are predicted to cost about "
+                f"{predicted} tokens, above the {max_run_tokens} one review may "
+                "spend. Raise `budget.max_run_tokens`, or narrow the change."
+            )
         # Known to have cost nothing, which is not the same as unknown: an
         # `unavailable` row would draw its whole reservation down instead.
-        self.settle(
-            claim,
-            Usage(tokens=0, confidence=UsageConfidence.EXACT),
-            now=now,
-            stop_reason=StopReason.REFUSED,
-        )
-        return False
+        nothing = Usage(tokens=0, confidence=UsageConfidence.EXACT)
+        self.settle(claim, nothing, now=now, stop_reason=StopReason.REFUSED)
+        return notice
 
     def _rate(self) -> float:
         """Tokens per reviewable line, fitted against the ledger.
@@ -659,7 +606,7 @@ class Governor:
                 conn,
                 now,
                 self._effective(conn),
-                calibration=_breaker(conn).calibration(at),
+                calibration=read_breaker(conn).calibration(at),
             )
 
     def _headroom(
@@ -682,7 +629,7 @@ class Governor:
         worst, tightest = 0.0, windows[0]
         remaining = None
         for window in windows:
-            limit = _calibrated(window.limit, calibration)
+            limit = calibrated(window.limit, calibration)
             used = _used_since(conn, at - window.duration, window.actor_id)
             worst = max(worst, used / limit)
             left = limit - used
@@ -766,16 +713,6 @@ def _used_since(
     return int(conn.execute(_USED_SINCE_BY_ACTOR, params).fetchone()[0])
 
 
-def _calibrated(limit: int, calibration: int) -> int:
-    """``limit`` scaled by what the breaker has learned.
-
-    Never below one token: ``_headroom`` divides by this, and a small
-    configured window against a heavily decayed calibration would otherwise
-    reach zero and raise where it should refuse.
-    """
-    return max(1, limit * calibration // FULL_CALIBRATION)
-
-
 def _settle_lost(conn: sqlite3.Connection, key: str, now: datetime) -> None:
     """Close the reservation a previous admission of ``key`` left open.
 
@@ -793,24 +730,6 @@ def _settle_lost(conn: sqlite3.Connection, key: str, now: datetime) -> None:
     """
     if conn.execute(_SETTLE_LOST, {"now": stamp(now), "key": key}).rowcount:
         logger.warning("%s left a reservation open: settling it as lost", key)
-
-
-def _breaker(conn: sqlite3.Connection) -> Breaker:
-    """Read the breaker's state; every key absent means never tripped."""
-    stored = dict(conn.execute(_STATE_GET).fetchall())
-    tripped_until = stored.get("tripped_until")
-    last_trip_at = stored.get("last_trip_at")
-    return Breaker(
-        calibrated_pct=int(stored.get("calibrated_pct", FULL_CALIBRATION)),
-        tripped_until=None if tripped_until is None else parse(tripped_until),
-        last_trip_at=None if last_trip_at is None else parse(last_trip_at),
-    )
-
-
-def _set_breaker(conn: sqlite3.Connection, **values: str) -> None:
-    """Write the breaker's state, inside the caller's transaction."""
-    for key, value in values.items():
-        conn.execute(_STATE_SET, {"key": key, "value": value})
 
 
 def _mode_for(utilisation: float) -> Mode:

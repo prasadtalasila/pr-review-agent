@@ -267,6 +267,23 @@ A refused row records `used_tokens = 0` at confidence `exact` — the cost is
 not unknown, it is known to be nothing — and leaves `reviewed_lines` NULL, so
 a refusal never contributes to the fit.
 
+### A refusal says so on the pull request
+
+`preflight` returns **the sentence to post**, or `None` to go ahead, rather
+than a `bool`. A `bool` was all the worker needed in order to stop; it was
+not enough to say *why* it stopped, and a trigger the agent acknowledged and
+then answered with silence is the defect issue #78 names. The worker cannot
+re-derive the sentence without duplicating the branch above — two copies of
+one rule, which would drift the first time a third refusal is added — so the
+component that refuses is the one that writes it, beside the numbers it
+reports to the journal.
+
+Each notice names the setting that would turn the refusal into a review:
+`budget.excluded_paths` when nothing survived them, `budget.max_run_tokens`
+when the prediction did not fit. The worker hands it to
+[`Publisher.notify`](PUBLISHER.md#-the-refusal-notice), which is also what
+posts the size gate's own `PullRequestTooLarge.notice`.
+
 ### The free refusal before the checkout
 
 `preflight` is the last free refusal; it is not the first. One question is
@@ -655,8 +672,12 @@ with a typo.
 
 ## 🔌 The circuit breaker
 
-**Implemented** in `src/pr_review_agent/budget.py`, over the `budget_state`
-table. Design note:
+**Implemented** in `src/pr_review_agent/breaker.py`, over the `budget_state`
+table, with `Governor.trip` and `Governor.breaker` in `budget.py` as its only
+callers. It sits beside the governor rather than inside it because the two
+answer different questions — the governor measures windows and decides what
+may be spent, the breaker decides how far to trust the numbers those windows
+are measured against. Design note:
 [the circuit breaker](superpowers/specs/2026-09-18-circuit-breaker-design.md).
 
 Every limit above is the operator's guess, because the plan publishes no

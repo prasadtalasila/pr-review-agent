@@ -10,15 +10,17 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from pr_review_agent.breaker import (
+    DECAY_FACTOR,
+    MIN_CALIBRATION,
+    RECOVERY_PERIOD,
+    TRIP_HOLD,
+)
 from pr_review_agent.budget import (
     DAILY,
-    DECAY_FACTOR,
     DEFAULT_TOKENS_PER_LINE,
-    MIN_CALIBRATION,
     MIN_FIT_SAMPLES,
-    RECOVERY_PERIOD,
     SESSION,
-    TRIP_HOLD,
     WEEKLY,
     Governor,
     Mode,
@@ -225,7 +227,7 @@ def test_a_refused_preflight_reads_as_refused_not_as_a_failure(store):
     claim = queue.claim(now=NOON, owner="w", admit=governor.admit)
     assert claim is not None
 
-    assert governor.preflight(claim, 0, NOON) is False
+    assert governor.preflight(claim, 0, NOON) is not None
 
     with store.transaction() as conn:
         row = conn.execute("SELECT stop_reason, used_tokens FROM ledger").fetchone()
@@ -651,7 +653,7 @@ def test_an_empty_ledger_still_refuses_an_oversized_pull_request(store):
     governor = Governor(store, budget())
     (claim,) = admit_all(store, governor, [opened(pr=1)])
     over = budget().max_run_tokens // DEFAULT_TOKENS_PER_LINE + 1
-    assert governor.preflight(claim, over, NOON) is False
+    assert governor.preflight(claim, over, NOON) is not None
 
 
 def test_the_fit_takes_over_once_the_sample_exists(store):
@@ -696,14 +698,14 @@ def test_a_refused_run_hands_its_reservation_straight_back(store):
     (claim,) = admit_all(store, governor, [opened(pr=1)])
     assert governor.headroom(NOON).remaining < budget().daily_limit
 
-    assert governor.preflight(claim, 10_000, NOON) is False
+    assert governor.preflight(claim, 10_000, NOON) is not None
     assert governor.headroom(NOON).remaining == budget().daily_limit
 
 
 def test_an_affordable_pull_request_keeps_its_reservation(store):
     governor = Governor(store, budget())
     (claim,) = admit_all(store, governor, [opened(pr=1)])
-    assert governor.preflight(claim, 1, NOON) is True
+    assert governor.preflight(claim, 1, NOON) is None
     assert governor.headroom(NOON).remaining < budget().daily_limit
 
 
@@ -711,8 +713,27 @@ def test_nothing_left_to_review_is_refused_for_free(store):
     """A lockfile-only pull request has nothing in it after exclusions."""
     governor = Governor(store, budget())
     (claim,) = admit_all(store, governor, [opened(pr=1)])
-    assert governor.preflight(claim, 0, NOON) is False
+    assert governor.preflight(claim, 0, NOON) is not None
     assert governor.headroom(NOON).remaining == budget().daily_limit
+
+
+def test_each_refusal_names_the_setting_that_would_change_it(store):
+    """Issue #78: a refusal a contributor cannot act on is a silence.
+
+    The two arms say different things because the operator action differs:
+    one is a cap to raise, the other is a pull request every path of which
+    is configured out of review, where raising a cap changes nothing.
+    """
+    governor = Governor(store, budget(weekly_tokens=250_000, session_tokens=250_000))
+    empty, expensive = admit_all(store, governor, [opened(pr=1), opened(pr=2)])
+
+    nothing_left = governor.preflight(empty, 0, NOON)
+    over_budget = governor.preflight(expensive, 10_000, NOON)
+
+    assert nothing_left is not None
+    assert "budget.excluded_paths" in nothing_left
+    assert over_budget is not None
+    assert "budget.max_run_tokens" in over_budget
 
 
 def test_a_refusal_never_contributes_to_the_fit(store):
