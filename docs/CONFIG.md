@@ -377,6 +377,7 @@ See [ENGINE.md](ENGINE.md) for the argv these keys produce.
 | :-- | :-- | :-- | :-- |
 | `dry_run` | boolean | no (default `false`) | Run the whole pipeline and post nothing, logging the comment that would have been written. |
 | `post_superseded` | boolean | no (default `true`) | Post a review whose commit stopped being the head while it ran, marked as describing that commit. `false` records it and posts nothing. |
+| `max_publish_attempts` | integer ≥ 1 | no (default `10`) | How many posts one recorded review may cost before the agent gives up on it and stamps `runs.publish_failed_at`. |
 
 Optional, and the default is to post. Unlike the plan token counts this is
 not a guess an operator has to make: a dry run spends exactly what a real
@@ -390,11 +391,20 @@ refusing both is the only answer that cannot surprise an operator.
 
 `post_superseded` defaults to posting because the tokens are spent before
 the head is re-read: discarding the review saves nothing and shows nobody
-anything. The agent keeps one comment per pull request and edits it in place,
-so a review of the previous commit is replaced by the next round rather than
-left beside it — what the reader needs is to know which commit the text
-describes, which the header says. See
+anything, and most of a review survives a fixup commit. What the reader needs
+is to know which commit the text describes, which the header says. See
 [PUBLISHER.md](PUBLISHER.md#-a-head-that-moved-under-the-review).
+
+`max_publish_attempts` is deliberately well above `worker.max_attempts`. That
+bound measures the allowance one poison trigger may drain and a post reaches
+no engine, so a failed post is handed back *unattempted* and counted here
+instead. Ten rather than three because the findings are already paid for: the
+cost of one more attempt is a single HTTP request, and the cost of stopping
+too early is a review nobody ever sees. What it bounds is the case no retry
+fixes — a locked pull request, a repository whose issues were turned off —
+which was otherwise repeated on every claim forever. Clearing the stamp
+offers the review again; see
+[STORAGE.md](STORAGE.md#-migrations).
 
 Reloadable on `SIGHUP` — see [Reload](#-reload) — and described in full in
 [PUBLISHER.md](PUBLISHER.md#-publishdry_run).

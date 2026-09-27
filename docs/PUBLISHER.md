@@ -77,11 +77,12 @@ This used to be a discard, and the argument for changing it is that the
 tokens are **already spent** by the time the head is re-read — the engine ran
 before the publisher was called, and `settle` has already charged the ledger.
 Discarding saves nothing; it only guarantees nobody sees what was paid for.
-Most of a review survives a fixup commit, and the agent keeps
-[one comment per pull request](#-one-comment-per-pull-request) and edits it in
-place, so this text is *replaced* by the next round rather than accumulating
-beside it. The one thing a reader genuinely needs — which commit the words
-describe — is what the note gives them.
+Most of a review survives a fixup commit. The one thing a reader genuinely
+needs — which commit the words describe — is what the note gives them. Since
+1.3.0 the note is not replaced by the next round: each review posts
+[its own comment](#-one-comment-per-review), so a reader scrolling the thread
+sees the review of the old commit, marked as such, above the review of the
+new one. That is the honest record of what was reviewed and when.
 
 `publish.post_superseded: false` restores the discard for an operator who
 would rather have silence.
@@ -93,26 +94,51 @@ the run stayed "still owed a comment" for the lifetime of the database. The
 `publish_outcome` column added in migration 12 is what lets a stamped row say
 *which* ending it had, which `published_at` alone cannot.
 
-## 💬 One comment per pull request
+## 💬 One comment per review
 
-Findings are posted as a single ordinary issue comment on the pull request's
-conversation, and a re-review **edits that comment in place** rather than
-adding another. What a reader sees is the agent's current opinion, not a
-thread of superseded machine opinion they have to scroll past. The history
-is not lost — it lives in `runs` and the ledger, where it can be queried and
-purged.
+Findings are posted as an ordinary issue comment on the pull request's
+conversation, and a re-review **posts its own comment**. Nothing the agent
+has posted is ever edited, and the `comment_id` recorded against a run is
+never dereferenced again.
 
-The body names the commit it describes, because an edited comment otherwise
-says nothing about which revision it is about. It also names the round and
-the commit count — "round 3" and "round 1" are different statements, and a
-reader returning to an edited comment cannot otherwise tell which one they
-are looking at. The commit count comes off the live pull request payload the
-publisher already reads to decide whether the head moved, so it costs no
-extra round trip and no database column.
+**This reverses the original design, and the reason is worth keeping.** Until
+1.3.0 the agent kept one comment per pull request and rewrote it on every
+round: what a reader saw was the agent's current opinion rather than a thread
+of superseded machine opinion to scroll past. That reads well, and it made
+the last step of a paid review depend on a comment anybody could delete. A
+maintainer tidying a thread — "resolved, let's clean this up" — left an id
+that answered `404` forever. The `PATCH` raised, the worker handed the row
+back *unattempted*, the next claim did exactly the same thing, and a review
+the account had already been billed for was never seen by anyone while an
+`ERROR` appeared in the log every idle period. That is
+[issue #71](https://github.com/prasadtalasila/pr-review-agent/issues/71).
 
-Findings render in a pinned section-then-number-then-location order, so a
-re-review that finds the same things produces the same body below the header
-and the edit is a no-op.
+A 404 fallback would have patched that one path. Posting afresh removes the
+class: a write that creates something cannot fail because somebody deleted
+something else. What is gained beyond the fix is that each reviewed commit
+keeps a durable, linkable comment — a maintainer can quote round 2 in a
+discussion and the quote still means what it meant. What is given up is the
+tidy thread, and two things bound the untidiness:
+
+- [`pacing`](BUDGET.md#-the-pacer) collapses a burst of triggers on one pull
+  request into one review, so an active branch does not produce a comment per
+  push.
+- `ReviewQueue.fold` closes every trigger already waiting when a review
+  starts, so three maintainers mentioning the agent get one comment, not
+  three.
+
+The body names the commit it describes, because a pull request under review
+has several and a reader has to be able to tell which revision each comment
+is about. It also names the round and the commit count — "round 3" and
+"round 1" are different statements, including when both found nothing. The
+commit count comes off the live pull request payload the publisher already
+reads to decide whether the head moved, so it costs no extra round trip and
+no database column.
+
+Findings still render in a pinned section-then-number-then-location order.
+That used to be what made an edit a no-op diff; it now serves the reader
+comparing this round's comment with the last one, for whom only a stable
+order makes the things that changed the things that stand out.
 
 ### The rendered report
 
@@ -174,13 +200,18 @@ code rather than a property of it.
 A review body is engine prose over the tree being reviewed. When that tree is
 *this* repository, the prose names `@claude` readily — the handle is what the
 whole trigger pipeline is about, so a finding about that pipeline quotes it.
-The comment is also edited in place on re-review, which bumps `updated_at`,
-so the poller sees it as fresh every round.
+A comment the agent posts is a comment the poller reads back on the next
+cycle.
 
 Left alone that is a loop: the agent posts, the classifier accepts what it
-posted, and the agent reviews the pull request again. The dedupe key bounds it
-to one extra paid review per pull request, because the comment id does not
-change — one more than anybody asked for.
+posted, and the agent reviews the pull request again. Until 1.3.0 the dedupe
+key bounded it to one extra paid review per pull request, because the comment
+was rewritten and its id never changed. Now that each review posts a *new*
+comment with a new id, that bound is gone — the loop would be bounded only by
+[the pacer](BUDGET.md#-the-pacer)'s interval and per-pull-request daily cap.
+So the mitigation below is no longer defence in depth behind a cheap
+structural limit; it is the thing that closes the loop, and the test that
+pins it is not optional.
 
 So `render` returns `triggers.mention.neutralise(body, handle)`. It rewrites
 the `@` of exactly the mentions `has_mention` would find into `&#64;`, which
@@ -302,21 +333,37 @@ drained nothing. Counting it would abandon a review after three failed posts
 and leave its findings recorded and permanently invisible — which is exactly
 what would have happened before `release_unattempted` existed.
 
+**It is counted on the run instead.** `publish.max_publish_attempts` (default
+10) bounds how many posts one recorded review may cost before the agent gives
+up on it: `runs.publish_attempts` counts them, `runs.publish_failed_at` stamps
+the last one, and a stamped run is never offered for publication again. Ten
+rather than the queue's three, because the findings are already paid for — the
+cost of one more attempt is one HTTP request, and the cost of stopping too
+early is a review nobody sees. What this bounds is the case no retry can fix:
+a locked pull request, a repository whose issues were turned off, a token that
+lost its scope. The `ERROR` names the run, and an operator who fixes the cause
+puts it back in the queue with:
+
+```sql
+UPDATE runs SET publish_failed_at = NULL, publish_attempts = 0
+ WHERE dedupe_key = '<key from the ERROR>';
+```
+
 | Publish outcome | Queue verb | Why |
 | :-- | :-- | :-- |
 | published | `complete` | Done. |
 | dry run | `complete` | The pipeline ran; there is nothing to retry. |
 | superseded | `complete` | The head will never match again; the review is posted saying so unless `post_superseded` is off. |
 | write failed, engine ran | `complete`, plus a `publish` item | The review is done; only the posting is outstanding. |
-| write failed, `publish` item | `release_unattempted` | Retryable, and the attempt does not count: nothing was spent. |
+| write failed, `publish` item | `release_unattempted` | Retryable, and the attempt does not count against `max_attempts`: nothing was spent. |
+| `max_publish_attempts` failed posts | `complete`, and the run is stamped | No retry will fix it; an `ERROR` names what an operator has to look at. |
 | run already posted or purged | `complete` | Nothing left to post, so the item is finished. |
 
-A publish-only retry therefore never exhausts the attempt bound. That is
-deliberate — the bound measures allowance drained, and this drains none — but
-it does mean a comment GitHub will *never* accept is retried for as long as
-the item is claimable. The retention sweep is where that eventually stops
-mattering: a purged run is no longer offered for publication, and the item
-closes itself the first time it finds nothing to post.
+A publish-only retry therefore never exhausts `max_attempts`. That is
+deliberate — the bound measures allowance drained, and this drains none — and
+until 1.3.0 it meant a comment GitHub will *never* accept was retried for as
+long as the item stayed claimable, which `STATUS.md` recorded as a known gap.
+`max_publish_attempts` closes it without touching what `max_attempts` means.
 
 ## 🧪 `publish.dry_run`
 
@@ -344,9 +391,14 @@ knowing:
   turns "every posted comment is traceable to a ledger row recording engine,
   model, mode, usage and `usage_confidence`" into a query rather than a
   convention.
-- **`comment_id` is written per run and read per pull request.** The question
-  at publish time is never "what did this run post" but "what does this pull
-  request already have".
+- **`comment_id` is written per run and never read back.** Since each review
+  posts its own comment it is a record of what this run produced — traceable,
+  and what a future line-anchored comment would need — rather than an address
+  the next round writes to. Nothing dereferences it, which is why a comment a
+  maintainer deletes can no longer strand a paid review.
+- **`publish_attempts` and `publish_failed_at` bound the publish-only retry,**
+  which `max_attempts` deliberately does not measure. See
+  [above](#-a-paid-review-is-kept-until-it-can-be-posted).
 - **`findings` is JSON text, not a child table.** Written once, read once,
   purged wholesale; nothing queries a finding by path, line or severity.
 - **`publish_outcome` says how publishing ended,** which `published_at`

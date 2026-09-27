@@ -34,7 +34,7 @@ claim(admit=governor.admit)        the lease and the reservation, one commit
   → runs.record(...)               the findings, so a failed publish is retryable
   → governor.settle(claim, usage)  release whatever was not spent
   → governor.headroom(now)         what the review left, logged as event 6
-  → publisher.publish(run)         one comment per pull request, edited in place
+  → publisher.publish(run)         one new comment per review, nothing edited
   → complete / release / abandon   close the row
   → queue.fold(claim, ...)         close the triggers this review answered
 ```
@@ -43,6 +43,13 @@ A row whose kind is `publish` skips all of it: the worker looks the named
 run up, posts it, and closes the item. That path reaches no engine and
 writes no ledger row — see
 [PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
+
+A failed post is handed back **unattempted**, so it does not spend the
+`max_attempts` bound that measures allowance drained. It is counted against
+`publish.max_publish_attempts` instead: at that many failures the run is
+stamped `publish_failed_at`, the item is closed rather than handed back, and
+an `ERROR` names the run an operator has to look at. Without that bound a
+post GitHub will never accept was repeated on every claim forever.
 
 ### The fold
 

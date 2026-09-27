@@ -199,6 +199,16 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
     # the head moved, and both have to be stamped or the row is offered for
     # publication for the lifetime of the database.
     ("ALTER TABLE runs ADD COLUMN publish_outcome TEXT",),
+    # How many times posting this run has been tried, and when it was given
+    # up on. A publication item is retried without counting an attempt --
+    # posting reaches no engine, so the bound that measures allowance has
+    # nothing to measure -- which left a post GitHub will never accept being
+    # retried on every claim forever. Rows written before this migration
+    # start at zero, which is the honest answer: nothing counted them.
+    (
+        "ALTER TABLE runs ADD COLUMN publish_attempts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE runs ADD COLUMN publish_failed_at TEXT",
+    ),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

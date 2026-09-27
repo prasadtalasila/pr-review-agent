@@ -6,6 +6,7 @@ building the drainer while the only engine is a fake one.
 """
 
 import asyncio
+import logging
 import sys
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -23,7 +24,11 @@ from pr_review_agent.budget import (
     Usage,
     UsageConfidence,
 )
-from pr_review_agent.config import BudgetConfig, PublishConfig
+from pr_review_agent.config import (
+    DEFAULT_MAX_PUBLISH_ATTEMPTS,
+    BudgetConfig,
+    PublishConfig,
+)
 from pr_review_agent.engine import (
     FULL,
     Capabilities,
@@ -260,6 +265,24 @@ def ledger_rows(store: SqliteStore) -> list[tuple]:
         ).fetchall()
 
 
+def posted_comment(store: SqliteStore, key: str) -> int | None:
+    """The comment id a run recorded, now that nothing reads it back."""
+    with store.transaction() as conn:
+        return conn.execute(
+            "SELECT comment_id FROM runs WHERE dedupe_key = :key", {"key": key}
+        ).fetchone()[0]
+
+
+def publish_state(store: SqliteStore, key: str) -> tuple:
+    """How many posts were tried for a run, and whether it was given up on."""
+    with store.transaction() as conn:
+        return conn.execute(
+            "SELECT publish_attempts, publish_failed_at FROM runs "
+            "WHERE dedupe_key = :key",
+            {"key": key},
+        ).fetchone()
+
+
 def reviewed_lines(store: SqliteStore) -> list[int | None]:
     with store.transaction() as conn:
         return [
@@ -286,6 +309,7 @@ def wired_fixture(tmp_path, workspace, git_remote):
         queue_class=ReviewQueue,
         dry_run=False,
         github=None,
+        max_publish_attempts=DEFAULT_MAX_PUBLISH_ATTEMPTS,
     ):
         store = SqliteStore(tmp_path / "state.db")
         store.__enter__()
@@ -308,7 +332,9 @@ def wired_fixture(tmp_path, workspace, git_remote):
                 client=resolved,
                 endpoints=endpoints,
                 runs=runs,
-                config=PublishConfig(dry_run=dry_run),
+                config=PublishConfig(
+                    dry_run=dry_run, max_publish_attempts=max_publish_attempts
+                ),
                 handle="claude",
             ),
             runs=runs,
@@ -379,7 +405,7 @@ async def test_an_exhausted_budget_still_admits_a_publication_item(wired, git_re
 
     assert fixture.engine.requests == []  # nothing was reviewed
     assert ledger_rows(fixture.store) == []  # and nothing was reserved
-    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+    assert posted_comment(fixture.store, opened().dedupe_key) == 555
 
 
 async def test_an_unposted_run_does_not_admit_a_fresh_review(wired, git_remote):
@@ -1098,7 +1124,7 @@ async def test_a_completed_review_is_recorded_then_published(wired):
     await fixture.worker.run_once()
 
     assert fixture.github.comments[0].method == "POST"
-    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+    assert posted_comment(fixture.store, opened().dedupe_key) == 555
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
 
 
@@ -1169,7 +1195,7 @@ async def test_a_failed_publish_is_retried_without_a_second_review(wired, git_re
     await fixture.worker.run_once()
 
     assert len(fixture.engine.requests) == 1  # the engine was not run again
-    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+    assert posted_comment(fixture.store, opened().dedupe_key) == 555
     assert fixture.queue.status(_publish_key()) is QueueStatus.DONE
 
 
@@ -1225,8 +1251,63 @@ async def test_failed_posts_never_abandon_a_paid_review(wired, git_remote):
     github._write_status = 201
     await fixture.worker.run_once()
 
-    assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+    assert posted_comment(fixture.store, opened().dedupe_key) == 555
     assert fixture.queue.status(_publish_key()) is QueueStatus.DONE
+
+
+async def test_posts_are_given_up_on_at_the_bound(wired, git_remote, caplog):
+    """Issue #71: a post GitHub will never accept stops being retried.
+
+    Every claim used to repeat it, because a publish-only retry counts no
+    attempt -- so the review stayed invisible and an ERROR was logged every
+    idle period, for the lifetime of the database.
+    """
+    github = GitHubDouble(git_remote.head_sha, write_status=502)
+    fixture = wired(github=github, max_publish_attempts=3)
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    with caplog.at_level(logging.ERROR):
+        for _ in range(4):
+            await fixture.worker.run_once()
+
+    attempts, failed_at = publish_state(fixture.store, opened().dedupe_key)
+    assert (attempts, failed_at is not None) == (3, True)
+    assert fixture.queue.status(_publish_key()) is QueueStatus.DONE
+    assert "gave up posting" in caplog.text
+    # And nothing is left to claim, however long the daemon runs.
+    assert await fixture.worker.run_once() is False
+
+
+async def test_a_run_given_up_on_is_not_re_enqueued(wired, git_remote):
+    """The first failed post is the last one when the bound is one."""
+    github = GitHubDouble(git_remote.head_sha, write_status=502)
+    fixture = wired(github=github, max_publish_attempts=1)
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.queue.status(_publish_key()) is None
+    attempts, failed_at = publish_state(fixture.store, opened().dedupe_key)
+    assert (attempts, failed_at is not None) == (1, True)
+
+
+async def test_clearing_the_stamp_publishes_the_review(wired, git_remote):
+    """What an operator does once the reason the post failed is fixed."""
+    github = GitHubDouble(git_remote.head_sha, write_status=502)
+    fixture = wired(github=github, max_publish_attempts=1)
+    fixture.queue.enqueue(opened(), now=NOW)
+    await fixture.worker.run_once()
+
+    github._write_status = 201
+    with fixture.store.transaction() as conn:
+        conn.execute("UPDATE runs SET publish_failed_at = NULL, publish_attempts = 0")
+    fixture.queue.enqueue(
+        publication_of(opened(), _run_named(opened().dedupe_key)), now=NOW
+    )
+
+    await fixture.worker.run_once()
+
+    assert posted_comment(fixture.store, opened().dedupe_key) == 555
 
 
 async def test_a_publication_whose_lease_lapsed_posts_nothing(wired, git_remote):

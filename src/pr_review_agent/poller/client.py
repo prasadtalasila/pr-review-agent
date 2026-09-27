@@ -152,10 +152,6 @@ class GitHubClient:
         """
         return await self._write("POST", path, json)
 
-    async def patch(self, path: str, json: dict) -> dict:
-        """PATCH ``json`` onto ``path`` and return the decoded response body."""
-        return await self._write("PATCH", path, json)
-
     async def _write(self, method: str, path: str, json: dict) -> dict:
         """One write, sharing ``get``'s rate-limit retry and error shape."""
         response = await self._send_with_retries(method, path, {}, json=json)
@@ -190,9 +186,10 @@ class GitHubClient:
 
         Shared by the read and the write paths so a secondary rate limit is
         honoured the same way whichever one hit it. A retried write is safe
-        here because both writes the publisher makes are idempotent in
-        effect: a repeated reaction is a no-op, and a repeated comment edit
-        sets the same body.
+        here because only a 403 or 429 carrying ``Retry-After`` is retried,
+        and GitHub answers that *instead of* doing the thing: the reaction
+        was not added and the comment was not posted, so the second attempt
+        is the first one that can take effect.
         """
         attempt = 0
         while True:

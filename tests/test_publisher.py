@@ -95,6 +95,7 @@ class Transport:
         self._head = head
         self._comment_id = comment_id
         self._commits = commits
+        self._posted = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -103,7 +104,11 @@ class Transport:
             if self._commits is not None:
                 payload["commits"] = self._commits
             return httpx.Response(200, json=payload)
-        return httpx.Response(201, json={"id": self._comment_id})
+        # A new id per write, the way GitHub answers a second POST: a test
+        # that asserted one id everywhere could not tell a second comment
+        # from a rewritten first one.
+        self._posted += 1
+        return httpx.Response(201, json={"id": self._comment_id + self._posted - 1})
 
     @property
     def paths(self) -> list[str]:
@@ -300,28 +305,40 @@ async def test_a_first_review_posts_a_new_comment(runs):
     assert transport.writes[0].url.path == "/repos/o/r/issues/7/comments"
 
 
-async def test_a_re_review_edits_the_comment_in_place(runs):
+async def test_a_re_review_posts_a_second_comment(runs):
+    """One comment per review since 1.3.0, and nothing is ever edited."""
     transport = Transport()
     publisher = make_publisher(runs, transport)
-    await publisher.publish(recorded(runs, key="first"))
-    await publisher.publish(recorded(runs, key="second"))
-    assert [w.method for w in transport.writes] == ["POST", "PATCH"]
-    assert transport.writes[1].url.path == "/repos/o/r/issues/comments/555"
+    first = await publisher.publish(recorded(runs, key="first"))
+    second = await publisher.publish(recorded(runs, key="second"))
+    assert [w.method for w in transport.writes] == ["POST", "POST"]
+    assert transport.writes[1].url.path == "/repos/o/r/issues/7/comments"
+    assert (first.comment_id, second.comment_id) == (555, 556)
 
 
-async def test_a_clean_re_review_edits_rather_than_duplicates(runs):
+async def test_a_clean_re_review_posts_its_own_comment(runs):
     transport = Transport()
     publisher = make_publisher(runs, transport)
     await publisher.publish(recorded(runs, key="first"))
     await publisher.publish(recorded(runs, findings=(), key="second"))
-    assert [w.method for w in transport.writes] == ["POST", "PATCH"]
+    assert [w.method for w in transport.writes] == ["POST", "POST"]
+
+
+async def test_a_deleted_comment_cannot_strand_a_review(runs):
+    """Issue #71: nothing dereferences the id a maintainer may have deleted."""
+    transport = Transport()
+    publisher = make_publisher(runs, transport)
+    await publisher.publish(recorded(runs, key="first"))
+    await publisher.publish(recorded(runs, key="second"))
+    assert not [w for w in transport.writes if w.method == "PATCH"]
+    assert "/issues/comments/" not in " ".join(transport.paths)
 
 
 async def test_publishing_stamps_the_run(runs):
     transport = Transport()
-    await make_publisher(runs, transport).publish(recorded(runs))
+    published = await make_publisher(runs, transport).publish(recorded(runs))
     assert runs.unpublished("k1") is None
-    assert runs.comment_for_pull_request(REPO, 7) == 555
+    assert published.comment_id == 555
 
 
 # -- what the comment says -----------------------------------------------

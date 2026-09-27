@@ -152,10 +152,13 @@ There is **no check on which account the agent posts as**. There used to be:
 
 The loop they guarded is real. A review body is engine prose over the tree
 being reviewed, and when that tree is *this* repository the prose names
-`@claude` readily. The comment is also edited in place on re-review, which
-bumps `updated_at`, so it comes back to the poller as fresh. Left alone, the
-agent answers itself — bounded by the dedupe key to one extra paid review per
-pull request, which is one more than nobody asked for.
+`@claude` readily, and a comment the agent posts comes back to the poller on
+the next cycle. Left alone, the agent answers itself. Until 1.3.0 the dedupe
+key bounded that to one extra paid review per pull request, because the agent
+rewrote one comment whose id never changed; since each review posts its own
+comment, a new id means a new key, and the only bound left would be
+[the pacer](BUDGET.md#-the-pacer). So the mitigation below carries the whole
+weight now.
 
 It is closed in the publisher instead. `publisher.render` runs every body it
 posts through `mention.neutralise`, which rewrites exactly the mentions

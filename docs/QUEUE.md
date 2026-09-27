@@ -158,10 +158,10 @@ with, and all three are guarded on the owner.
 
 ## 🧺 One review answers what was waiting
 
-The agent posts [one comment per pull request](PUBLISHER.md#-one-comment-per-pull-request)
-and edits it in place. So three maintainers mentioning it on one pull request
-asked **one** question: reviewing each mention separately would pay three
-times to overwrite the same comment twice.
+The agent posts [one comment per review](PUBLISHER.md#-one-comment-per-review).
+So three maintainers mentioning it on one pull request asked **one**
+question: reviewing each mention separately would pay three times to post
+three comments saying the same thing.
 
 After a review records its findings, the worker calls `fold`, which closes
 every other row for that pull request that

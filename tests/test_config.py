@@ -368,6 +368,24 @@ def test_an_unusable_post_superseded_is_rejected():
         Config.from_mapping(data)
 
 
+def test_posts_are_tried_ten_times_by_default():
+    """The findings are paid for; the cost of one more attempt is a request."""
+    assert Config.from_mapping(VALID).publish.max_publish_attempts == 10
+
+
+def test_max_publish_attempts_is_read_from_the_file():
+    data = {**VALID, "publish": {"max_publish_attempts": 3}}
+    assert Config.from_mapping(data).publish.max_publish_attempts == 3
+
+
+@pytest.mark.parametrize("given", [0, -1, "many", 2.5, True])
+def test_an_unusable_max_publish_attempts_is_rejected(given):
+    """`true` included: a bool is an int in Python, and would mean a limit of one."""
+    data = {**VALID, "publish": {"max_publish_attempts": given}}
+    with pytest.raises(ConfigError, match="max_publish_attempts"):
+        Config.from_mapping(data)
+
+
 def test_unknown_key_in_budget_is_rejected():
     data = {**VALID, "budget": {**BUDGET, "reviewer_share": 40}}
     with pytest.raises(ConfigError, match="unknown keys in 'budget'"):

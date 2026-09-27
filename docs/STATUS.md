@@ -59,8 +59,7 @@ the governor — is doing work rather than describing a property the code had
 for free, and a test pins it.
 
 The [publisher](PUBLISHER.md) now makes the result visible: a 👀 at claim
-time, a live `head_sha` re-check, and one comment per pull request edited in
-place on re-review. It can make no other kind of write, which is how
+time, a live `head_sha` re-check, and one ordinary comment per review. It can make no other kind of write, which is how
 [DESIGN.md](DESIGN.md#-prompt-injection-is-in-scope)'s third mitigation stops
 being a promise about code and becomes a property of it.
 
@@ -145,12 +144,6 @@ bugs:
 - The primary GitHub rate limit carries `x-ratelimit-reset` but no
   `Retry-After`, so the client raises rather than sleeping to the reset. See
   [POLLER.md](POLLER.md#-rate-limits-and-retries).
-- **A comment GitHub will never accept is retried on every claim for that
-  pull request.** A publish-only retry deliberately does not count against
-  `max_attempts` — the bound measures allowance drained, and a post that
-  reaches no engine drains none — so nothing eventually gives up on it. The
-  retention sweep is where this stops mattering: a purged run is no longer
-  offered for publication.
 - **Review content accumulates in `runs` and nothing purges it yet.**
   `RunStore.purge_content` exists and has no caller; the retention sweep is
   the next component.

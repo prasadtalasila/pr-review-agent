@@ -17,18 +17,25 @@ a review of a superseded commit landing late is worse than no review --
 ``QUEUE.md`` puts the check here deliberately, because only a read taken
 immediately before posting is worth anything.
 
-**One comment per pull request, rewritten in place.** A re-review edits the
-comment the agent already has rather than adding another, which is what
-stops a thread filling with superseded machine opinion. The history lives in
-``runs`` and the ledger, where it can be queried and purged, rather than in
-a comment thread where it can only be scrolled past.
+**One comment per review, posted afresh.** Each review posts its own
+ordinary issue comment and edits nothing; the id it gets is recorded against
+the run and never written to again. The agent kept one comment per pull
+request and rewrote it until 1.3.0, which read well but made the review's
+last step depend on a comment anybody could delete: a maintainer tidying a
+thread left an id that answered 404 forever, and a paid review was retried
+invisibly on every claim (issue #71). A comment that cannot be edited cannot
+be lost that way, and each reviewed commit keeps a durable, linkable comment
+of its own. What bounds the thread is not the edit but
+:mod:`pr_review_agent.pacing`, which collapses a burst of triggers into one
+review, and ``ReviewQueue.fold``, which answers every trigger waiting on a
+pull request with the one review it ran.
 
 **Nothing it posts can summon another review.** A review body is engine
 prose over an untrusted tree, and when the tree is this repository that prose
-readily contains ``@claude``. The comment is also edited in place on
-re-review, which bumps ``updated_at`` and makes it fresh again to the poller.
-So ``render`` runs every body through ``triggers.mention.neutralise``, which
-rewrites exactly the mentions the classifier would find into ``&#64;`` -- a
+readily contains ``@claude``, and a comment the agent posts is a comment the
+poller reads back. So ``render`` runs every body through
+``triggers.mention.neutralise``, which rewrites exactly the mentions the
+classifier would find into ``&#64;`` -- a
 reader still sees ``@claude``, and the raw body a later poll reads back has
 no ``@`` for ``has_mention`` to match. This is where the loop is closed, and
 it is why the classifier needs no notion of who the agent is.
@@ -77,9 +84,10 @@ EYES = "eyes"
 
 #: Which heading each severity renders under, in the order a reader sees
 #: them. Pinned here, where a test can read it, because iteration order over
-#: an enum is a definition detail rather than a promise -- and because stable
-#: ordering is what makes an edit-in-place a no-op diff when a re-review
-#: finds the same things.
+#: an enum is a definition detail rather than a promise -- and because a
+#: reader comparing this round's comment with the last one is reading a
+#: diff, and only a pinned order makes the things that changed the things
+#: that stand out.
 #:
 #: ``major`` and ``minor`` share a heading on purpose. ``Severity`` is
 #: persisted and asserted across the suite, so it is not collapsed to three
@@ -205,10 +213,12 @@ class Publisher:
 
         A moved head no longer discards the review by default. The tokens
         were spent before this method was called, so discarding saves
-        nothing and produces nothing; the comment is edited in place, so a
-        review of the previous commit is replaced by the next round rather
-        than left beside it. What the reader needs is to know which commit
-        the text describes, which the header now says.
+        nothing and produces nothing, and most of a review survives a fixup
+        commit. What the reader needs is to know which commit the text
+        describes, which the header says. Since 1.3.0 this comment is not
+        replaced by the next round -- each review posts its own -- so the
+        note stays in the thread beside the review of the new head, which is
+        the honest record of what was reviewed and when.
         ``publish.post_superseded: false`` restores the old behaviour, and
         stamps the run either way -- an unstamped run is offered for
         publication for the lifetime of the database.
@@ -263,15 +273,9 @@ class Publisher:
             )
             return self._stamp(run, comment_id=None, outcome=PublishOutcome.DRY_RUN)
 
-        existing = self.runs.comment_for_pull_request(run.repo, run.pr_number)
-        if existing is None:
-            posted = await self.client.post(
-                self.endpoints.issue_comments(run.pr_number), {"body": body}
-            )
-        else:
-            posted = await self.client.patch(
-                self.endpoints.issue_comment(existing), {"body": body}
-            )
+        posted = await self.client.post(
+            self.endpoints.issue_comments(run.pr_number), {"body": body}
+        )
         comment_id = int(posted["id"])
         logger.info(
             "published %s on %s#%d as comment %d",
@@ -340,12 +344,11 @@ def render(
 ) -> str:
     """The comment body for a review of ``head_sha``.
 
-    The commit is named because the comment is edited in place: without it a
-    reader cannot tell which revision the text describes, and an edit that
-    silently replaces a review of an older commit is the one way this design
-    can mislead. The round and the commit count are there for the same
-    reason -- "round 3" and "round 1" are different statements, including
-    when both found nothing.
+    The commit is named because a pull request under review has several,
+    and a reader scrolling past two comments from the agent has to be able
+    to tell which revision each of them describes. The round and the commit
+    count are there for the same reason -- "round 3" and "round 1" are
+    different statements, including when both found nothing.
 
     A finding renders no ``path:line`` anchor. The paths that matter are the
     ones the reviewer names in its own prose, which is what the reference
@@ -391,8 +394,8 @@ def _moved_note(head_sha: str, moved_to: str) -> str:
 
     The tokens were spent before the head was re-read, so the choice is
     between a review nobody sees and one that says what it describes. Most
-    of a review survives a fixup commit, and the comment is edited in place,
-    so the next round replaces this text rather than sitting beside it.
+    of a review survives a fixup commit, and the note is what keeps a reader
+    who finds this comment later from taking it for a review of the head.
     """
     return (
         f"_This review describes `{head_sha[:7]}`, which is no longer the head: "
