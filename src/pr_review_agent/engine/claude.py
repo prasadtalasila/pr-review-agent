@@ -45,8 +45,10 @@ _TRUNCATING_SUBTYPES = frozenset({"error_max_turns"})
 
 #: How this adapter recognises the account being out of quota, as opposed to
 #: this run being out of its own ceiling. Matched case-insensitively against
-#: the envelope and against stderr, because it is not yet known which of the
-#: two carries it.
+#: stderr, and against the *error-carrying fields only* of a result envelope
+#: that says it errored -- never against `structured_output`, which is the
+#: model's prose about a tree an attacker can write. A finding that quotes
+#: `rate_limit_error` is an ordinary review, not a wall.
 #:
 #: **These markers are a guess, and the one place to correct it.** Issue #20
 #: requires the real failure to be observed before the interface is fixed;
@@ -161,11 +163,32 @@ class ClaudeCliEngine(CliEngine):
         lowered = text.lower()
         return any(marker in lowered for marker in _USAGE_LIMIT_MARKERS)
 
+    def _envelope_usage_limited(self, envelope: dict) -> bool:
+        """Whether *the CLI itself* said the account is out of quota.
+
+        Only an envelope that reports an error is asked, and only its own
+        error-carrying fields are read. The review's output is not one of
+        them: it is model prose about an attacker-influenced tree, and
+        matching a marker there lets one line in a diff trip the breaker for
+        the whole fleet.
+        """
+        subtype = envelope.get("subtype")
+        errored = envelope.get("is_error") is True or (
+            isinstance(subtype, str) and subtype.startswith("error_")
+        )
+        if not errored:
+            return False
+        return any(
+            self.usage_limited(field if isinstance(field, str) else json.dumps(field))
+            for field in (envelope.get("error"), envelope.get("result"), subtype)
+            if field is not None
+        )
+
     def parse(self, stdout: str) -> ReviewResult:
         """Read the result envelope, strictly."""
         envelope = self._envelope(stdout)
         usage = self._usage(envelope)
-        if self.usage_limited(json.dumps(envelope)):
+        if self._envelope_usage_limited(envelope):
             # Hit mid-run: the envelope still measured what it spent, so the
             # breaker is told a real figure rather than the reservation.
             raise UsageLimited(f"{self.name} reports a usage limit", usage)

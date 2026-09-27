@@ -620,6 +620,10 @@ the join:
 - a usage limit on stderr and one in the envelope both raise `UsageLimited`,
   the envelope carrying its measured usage and the stderr case carrying none,
   while an unrelated failure is still a protocol error;
+- the envelope is only asked when it says it errored, and only its own
+  error-carrying fields are read -- a finding that quotes `rate_limit_error`
+  parses as a completed review, because the review's prose is written about a
+  tree an attacker can edit and must never be able to trip the breaker;
 - a `UsageLimited` run trips the breaker, settles at what is known rather than
   at the reservation, leaves the row pending, and is not attempted again while
   the breaker holds.
