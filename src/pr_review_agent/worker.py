@@ -576,6 +576,14 @@ class ReviewWorker:
         drained nothing; counting it would abandon a review after three
         failed posts and leave its findings recorded and permanently
         invisible.
+
+        It is counted on the *run* instead, against
+        ``publish.max_publish_attempts``. A post GitHub will never accept --
+        a locked pull request, a repository whose issues were turned off --
+        was otherwise retried on every claim for the lifetime of the
+        database, which is the gap ``STATUS.md`` used to record. At the
+        bound the run is stamped, this item is closed rather than handed
+        back, and an ERROR names what has to be looked at.
         """
         key = published_run_key(claim.trigger)
         pending = self.runs.unpublished(key)
@@ -589,10 +597,39 @@ class ReviewWorker:
         if not self.queue.holds(claim, now=_now()):
             logger.warning("lease lapsed before %s republished", key)
             return
-        if await self._published(claim, pending):
+        # ``_gave_up`` runs only when the post failed, and closes the item
+        # rather than handing it back when that failure was the last one
+        # allowed.
+        if await self._published(claim, pending) or self._gave_up(pending):
             self.queue.complete(claim)
         else:
             self.queue.release_unattempted(claim)
+
+    def _gave_up(self, run: RecordedRun) -> bool:
+        """Count a failed post against ``run``; ``True`` once it is given up.
+
+        The limit is read through the publisher because ``publish`` is one
+        of the two reloadable sections: an operator who raises it over
+        ``SIGHUP`` should not have to restart the daemon to have the next
+        retry honour it.
+        """
+        if not self.runs.publish_failed(
+            run.dedupe_key,
+            limit=self.publisher.config.max_publish_attempts,
+            now=_now(),
+        ):
+            return False
+        logger.error(
+            "gave up posting %s on %s#%d after %d attempts; the review is "
+            "recorded and will not be offered again until publish_failed_at "
+            "is cleared on that row",
+            run.dedupe_key,
+            run.repo,
+            run.pr_number,
+            self.publisher.config.max_publish_attempts,
+            extra={"repo": run.repo, "pr": run.pr_number},
+        )
+        return True
 
     async def _settle_publish_and_finish(self, claim: Claim, end: RunEnd) -> None:
         """Record what the run cost, post it, then close its row.
@@ -639,12 +676,18 @@ class ReviewWorker:
             },
         )
         reviewed = end.reviewed
-        if reviewed is not None and not await self._published(claim, reviewed):
-            # The review itself is done and must not be run again, so this
-            # row is completed and what remains -- the posting -- is enqueued
-            # as work of its own. Handing *this* row back instead would make
-            # the next claim for this pull request a republication wearing a
-            # review trigger's name.
+        # The review itself is done and must not be run again, so its row is
+        # completed and what remains -- the posting -- is enqueued as work of
+        # its own. Handing *this* row back instead would make the next claim
+        # for this pull request a republication wearing a review trigger's
+        # name. The first post counts like every later one: enqueueing an
+        # item for a run already given up on would only produce a claim that
+        # finds nothing to do.
+        if (
+            reviewed is not None
+            and not await self._published(claim, reviewed)
+            and not self._gave_up(reviewed)
+        ):
             self.queue.enqueue(publication_of(claim.trigger, reviewed), now=_now())
         self._verb(end.finish)(claim)
 

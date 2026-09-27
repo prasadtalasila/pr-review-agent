@@ -40,6 +40,13 @@ DEFAULT_WORKERS = 1
 #: faster than any plausible allowance, and every claim would be refused.
 MAX_WORKERS = 4
 
+#: Posts tried for one recorded review before it is given up on. Ten rather
+#: than the queue's three: the findings are already paid for, so the cost of
+#: trying again is one HTTP request, and the cost of stopping too early is a
+#: review nobody ever sees. Ten failed posts is no longer a bad afternoon at
+#: GitHub -- it is something an operator has to fix.
+DEFAULT_MAX_PUBLISH_ATTEMPTS = 10
+
 
 @dataclass(frozen=True)
 class StoreConfig:
@@ -109,6 +116,13 @@ class PublishConfig:
     #: nothing and shows nobody anything. ``false`` restores the older
     #: behaviour, where such a review is recorded and never posted.
     post_superseded: bool = True
+    #: How many times posting one recorded review may be tried before the
+    #: run is stamped as failed and stops being offered. Deliberately well
+    #: above the queue's ``max_attempts``: that bound measures allowance
+    #: drained and a post drains none, so the only thing this protects
+    #: against is a post GitHub will never accept -- a locked pull request,
+    #: a repository with issues disabled -- being retried forever.
+    max_publish_attempts: int = DEFAULT_MAX_PUBLISH_ATTEMPTS
 
     @classmethod
     def parse(cls, data: dict) -> PublishConfig:
@@ -126,7 +140,19 @@ class PublishConfig:
                 "publish.post_superseded must be true or false, "
                 f"got {post_superseded!r}"
             )
-        return cls(dry_run=dry_run, post_superseded=post_superseded)
+        attempts = data.get("max_publish_attempts", DEFAULT_MAX_PUBLISH_ATTEMPTS)
+        # ``bool`` is an ``int`` in Python, so ``true`` would pass an
+        # ``isinstance`` test and then be a limit of one.
+        if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
+            raise ConfigError(
+                "publish.max_publish_attempts must be a positive integer, "
+                f"got {attempts!r}"
+            )
+        return cls(
+            dry_run=dry_run,
+            post_superseded=post_superseded,
+            max_publish_attempts=attempts,
+        )
 
 
 @dataclass(frozen=True)

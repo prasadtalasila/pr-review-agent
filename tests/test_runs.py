@@ -63,10 +63,23 @@ def result(findings=FINDINGS, outcome=Outcome.COMPLETED):
     )
 
 
-@pytest.fixture(name="runs")
-def runs_fixture(tmp_path):
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        yield RunStore(store)
+        yield store
+
+
+@pytest.fixture(name="runs")
+def runs_fixture(store):
+    return RunStore(store)
+
+
+def row(store, key, column):
+    """One column of one run, for the state no reader returns."""
+    with store.transaction() as conn:
+        return conn.execute(
+            f"SELECT {column} FROM runs WHERE dedupe_key = :key", {"key": key}
+        ).fetchone()[0]
 
 
 def test_a_recorded_run_round_trips(runs):
@@ -113,42 +126,32 @@ def test_each_unpublished_run_is_offered_under_its_own_key(runs):
     assert runs.unpublished("second").dedupe_key == "second"
 
 
-def test_marking_published_records_the_comment(runs):
+def test_marking_published_records_the_comment(runs, store):
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
     runs.mark_published(
         "pr_opened:o/r:7:deadbeef", comment_id=555, now=LATER, outcome="published"
     )
-    assert runs.comment_for_pull_request(REPO, 7) == 555
+    assert row(store, "pr_opened:o/r:7:deadbeef", "comment_id") == 555
 
 
-def test_a_pull_request_with_no_comment_yet(runs):
-    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
-    assert runs.comment_for_pull_request(REPO, 7) is None
-
-
-def test_the_newest_comment_is_the_one_edited_in_place(runs):
-    """One agent comment per pull request, rewritten on re-review."""
+def test_each_round_records_the_comment_it_posted(runs, store):
+    """One comment per review: the second round does not overwrite the first."""
     runs.record(trigger(key="first"), head_sha=HEAD, result=result(), now=NOON)
     runs.mark_published("first", comment_id=555, now=NOON, outcome="published")
     runs.record(trigger(key="second"), head_sha=HEAD, result=result(), now=LATER)
-    runs.mark_published("second", comment_id=555, now=LATER, outcome="published")
-    assert runs.comment_for_pull_request(REPO, 7) == 555
+    runs.mark_published("second", comment_id=556, now=LATER, outcome="published")
+    assert row(store, "first", "comment_id") == 555
+    assert row(store, "second", "comment_id") == 556
 
 
-def test_another_pull_requests_comment_is_not_reused(runs):
-    runs.record(trigger(pr=8, key="k8"), head_sha=HEAD, result=result(), now=NOON)
-    runs.mark_published("k8", comment_id=999, now=NOON, outcome="published")
-    assert runs.comment_for_pull_request(REPO, 7) is None
-
-
-def test_purging_empties_the_content_and_keeps_the_rest(runs):
+def test_purging_empties_the_content_and_keeps_the_rest(runs, store):
     """The ledger survives the purge, and so does the comment id."""
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
     runs.mark_published(
         "pr_opened:o/r:7:deadbeef", comment_id=555, now=NOON, outcome="published"
     )
     assert runs.purge_content(REPO, 7, now=LATER) == 1
-    assert runs.comment_for_pull_request(REPO, 7) == 555
+    assert row(store, "pr_opened:o/r:7:deadbeef", "comment_id") == 555
 
 
 def test_purging_twice_purges_nothing_the_second_time(runs):
@@ -162,6 +165,60 @@ def test_a_purged_run_is_never_offered_for_publication(runs):
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
     runs.purge_content(REPO, 7, now=LATER)
     assert runs.unpublished("pr_opened:o/r:7:deadbeef") is None
+
+
+# -- giving up on a post GitHub will never accept -------------------------
+
+
+KEY = "pr_opened:o/r:7:deadbeef"
+
+
+def test_a_failed_post_short_of_the_limit_is_not_given_up_on(runs):
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    assert runs.publish_failed(KEY, limit=3, now=LATER) is False
+    assert runs.publish_failed(KEY, limit=3, now=LATER) is False
+    assert runs.unpublished(KEY) is not None
+
+
+def test_the_last_attempt_allowed_stamps_the_run(runs, store):
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    for _ in range(2):
+        runs.publish_failed(KEY, limit=3, now=LATER)
+    assert runs.publish_failed(KEY, limit=3, now=LATER) is True
+    assert row(store, KEY, "publish_attempts") == 3
+    assert row(store, KEY, "publish_failed_at") is not None
+
+
+def test_a_run_given_up_on_is_never_offered_for_publication(runs):
+    """The whole point: the retry loop stops, and the ERROR stops with it."""
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    runs.publish_failed(KEY, limit=1, now=LATER)
+    assert runs.unpublished(KEY) is None
+
+
+def test_clearing_the_stamp_offers_the_run_again(runs, store):
+    """The operator's recovery, as docs/STORAGE.md describes it."""
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    runs.publish_failed(KEY, limit=1, now=LATER)
+    with store.transaction() as conn:
+        conn.execute(
+            "UPDATE runs SET publish_failed_at = NULL, publish_attempts = 0 "
+            "WHERE dedupe_key = :key",
+            {"key": KEY},
+        )
+    assert runs.unpublished(KEY) is not None
+
+
+def test_a_run_posted_in_the_meantime_is_not_stamped(runs, store):
+    """`published_at` is set, so there is no failure left to record."""
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    runs.mark_published(KEY, comment_id=555, now=NOON, outcome="published")
+    assert runs.publish_failed(KEY, limit=1, now=LATER) is False
+    assert row(store, KEY, "publish_attempts") == 0
+
+
+def test_a_run_that_was_never_recorded_is_not_a_failure(runs):
+    assert runs.publish_failed("never-recorded", limit=1, now=LATER) is False
 
 
 def test_a_naive_timestamp_is_refused(runs):

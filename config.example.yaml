@@ -308,12 +308,25 @@ publish:
   # head while it ran, with a line above it saying which commit it describes
   # and that the branch has moved. The tokens were spent before the head was
   # re-read, so discarding the review saves nothing and shows nobody
-  # anything; the agent keeps one comment per pull request and edits it in
-  # place, so the next round replaces the text rather than sitting beside it.
+  # anything, and most of a review survives a fixup commit.
   #
   # false restores the older behaviour: the run is recorded, stamped and
   # never posted.
   post_superseded: true
+
+  # Optional (default 10). How many times posting one recorded review may be
+  # tried before the agent gives up on it, stamps runs.publish_failed_at and
+  # stops offering it. Deliberately well above worker.max_attempts: that
+  # bound measures the allowance one poison trigger may drain, and posting a
+  # review reaches no engine and drains none. What this bounds is a post
+  # GitHub will never accept -- a locked pull request, a repository whose
+  # issues were turned off -- which was otherwise retried on every claim
+  # forever, logging an ERROR each time and showing nobody the review.
+  #
+  # An operator who fixes the cause puts the review back in the queue with:
+  #   UPDATE runs SET publish_failed_at = NULL, publish_attempts = 0
+  #    WHERE dedupe_key = '<key from the ERROR>';
+  max_publish_attempts: 10
 
 # ---------------------------------------------------------------------------
 # logging -- OPTIONAL. How much the daemon says, and what a record looks like.

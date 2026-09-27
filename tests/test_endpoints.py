@@ -52,10 +52,6 @@ def test_issue_comments_path():
     assert ENDPOINTS.issue_comments(12) == "/repos/o/r/issues/12/comments"
 
 
-def test_issue_comment_path():
-    assert ENDPOINTS.issue_comment(555) == "/repos/o/r/issues/comments/555"
-
-
 def test_pull_request_reactions_path():
     """Where a pr_opened trigger is acknowledged: the PR has no comment."""
     assert ENDPOINTS.issue_reactions(12) == "/repos/o/r/issues/12/reactions"

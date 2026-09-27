@@ -130,5 +130,5 @@ was in place before anything could spend.
 | 6 | **Workspace** | Fetch a pull request head into a bare mirror, check it out into an isolated worktree, diff it against the merge base, tear it down. Executes nothing from the tree. | implemented — [WORKSPACE.md](WORKSPACE.md) |
 | 7 | **Review worker** | Claim through the governor, resolve the pull request, check it out, run an engine, settle the ledger, close the row. Its own task, so a review never blocks a poll. | implemented — [WORKER.md](WORKER.md) |
 | 8 | **Engine adapter** | A `ReviewEngine` protocol and `Capabilities` record, with CLI-subprocess implementations (`claude`, then one other). No vendor SDK is linked. | implemented — [ENGINE.md](ENGINE.md); a second adapter is deliberately last |
-| 9 | **Publisher** | An immediate 👀 reaction, a live `head_sha` re-check, and one comment per pull request — edited in place on re-review. It can post no other kind of write. | implemented — [PUBLISHER.md](PUBLISHER.md) |
+| 9 | **Publisher** | An immediate 👀 reaction, a live `head_sha` re-check, and one ordinary comment per review — nothing it has posted is ever edited. It can post no other kind of write. | implemented — [PUBLISHER.md](PUBLISHER.md) |
 | 10 | **Retention sweep** | Purge review content once a pull request merges; keep the ledger. | not started |

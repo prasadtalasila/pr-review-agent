@@ -86,10 +86,6 @@ class RepoEndpoints:
         """
         return f"/repos/{self.owner}/{self.name}/issues/{number}/comments"
 
-    def issue_comment(self, comment_id: int) -> str:
-        """Where the publisher edits the comment it posted before."""
-        return f"/repos/{self.owner}/{self.name}/issues/comments/{comment_id}"
-
     def issue_reactions(self, number: int) -> str:
         """Where a ``pr_opened`` trigger is acknowledged.
 

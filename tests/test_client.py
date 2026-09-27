@@ -244,17 +244,6 @@ async def test_post_returns_the_created_body():
     }
 
 
-async def test_patch_returns_the_updated_body():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "PATCH"
-        return httpx.Response(200, json={"id": 9, "body": "edited"})
-
-    assert await make_client(handler).patch("/x", {"body": "edited"}) == {
-        "id": 9,
-        "body": "edited",
-    }
-
-
 async def test_a_200_from_post_is_accepted():
     """A duplicate reaction returns 200 rather than 201, and is not a failure."""
 

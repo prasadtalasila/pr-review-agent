@@ -306,10 +306,10 @@ class ReviewQueue:
         """Close the triggers ``claim``'s review already answered.
 
         Three maintainers mentioning the agent on one pull request asked one
-        question, and the agent posts one comment per pull request -- so
-        reviewing each of them separately would pay three times to overwrite
-        the same comment twice. ``before`` is when this review started:
-        everything still waiting at that moment is answered by it, and
+        question -- so reviewing each of them separately would pay three
+        times to post three comments saying the same thing. ``before`` is when
+        this review started: everything still waiting at that moment is
+        answered by it, and
         anything enqueued since is not. ``head_sha`` is the commit it read,
         which is what keeps a trigger naming some *other* commit out of the
         fold.

@@ -152,7 +152,9 @@ CREATE TABLE runs (
     recorded_at       TEXT NOT NULL,
     published_at      TEXT,             -- NULL until posted (or dry-run)
     content_purged_at TEXT,
-    publish_outcome   TEXT              -- published|superseded|dry_run|refused
+    publish_outcome   TEXT,             -- published|superseded|dry_run|refused
+    publish_attempts  INTEGER NOT NULL DEFAULT 0,  -- posts tried for this run
+    publish_failed_at TEXT              -- set once it is given up on
 );
 CREATE TABLE budget_state (
     key   TEXT PRIMARY KEY,           -- calibrated_pct|tripped_until|last_trip_at
@@ -241,7 +243,22 @@ comment a mention was written in; version 8 adds `runs`; version 9 adds
 `budget_state`; version 10 adds `budget_policy`; version 11 adds
 `ledger.repo`, `ledger.pr_number` and the `(repo, pr_number, reserved_at)`
 index the [pacer](BUDGET.md#-the-pacer-one-pull-requests-rate) reads; version
-12 adds `runs.publish_outcome`.
+12 adds `runs.publish_outcome`; version 13 adds `runs.publish_attempts` and
+`runs.publish_failed_at`.
+
+Version 13's counter starts at **zero on every row written before it**, which
+is the honest reading: nothing counted those posts. A run carrying a stamp is
+never offered for publication again, so an operator who has fixed whatever
+GitHub was refusing — an unlocked pull request, a restored token scope — puts
+the review back in the queue by clearing it:
+
+```sql
+UPDATE runs SET publish_failed_at = NULL, publish_attempts = 0
+ WHERE dedupe_key = '<key from the ERROR>';
+```
+
+The daemon picks it up the next time a publication item names that run; until
+then the findings sit in `runs`, which is where they have been all along.
 
 Version 11's two columns are **NULL on every row written before it**, and
 that is the reading the pacer is built around: no repository and no pull

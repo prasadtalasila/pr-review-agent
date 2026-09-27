@@ -11,11 +11,20 @@ publish-only, and it is the whole reason this table exists.
 traceable to a ledger row recording engine, model, mode, usage and
 confidence" into a query rather than a convention.
 
-**The comment id is written per run and read per pull request.** The agent
-keeps one comment per pull request and rewrites it on re-review, so the
-question asked at publish time is never "what did this run post" but "what
-does this pull request already have" -- answered by the newest run for that
-pull request carrying an id, which is what ``runs_by_pr`` serves.
+**The comment id is written per run and never read back.** Each review
+posts its own comment, so the id is a record of what this run produced --
+traceable, and what a future line-anchored comment would need -- rather than
+an address the next round writes to. Nothing dereferences it, which is why a
+comment a maintainer deletes can no longer strand a paid review (issue #71).
+
+**A publication that cannot succeed is eventually given up on.**
+``publish_attempts`` counts posts tried for one run and ``publish_failed_at``
+stamps the one that exhausted ``publish.max_publish_attempts``. Until this
+existed a run whose post GitHub would never accept -- a locked pull request,
+a repository with issues disabled -- was offered on every claim for the
+lifetime of the database, because a publish-only retry deliberately does not
+count against ``max_attempts``. A stamped run is no longer offered; clearing
+the stamp puts it back.
 
 **Findings are JSON text rather than a child table.** They are written once,
 read once and purged wholesale; no query selects on a finding's path, line or
@@ -61,6 +70,7 @@ SELECT dedupe_key, repo, pr_number, head_sha, outcome, findings, comment_id
 FROM runs
 WHERE dedupe_key = :key
   AND published_at IS NULL AND content_purged_at IS NULL
+  AND publish_failed_at IS NULL
 """
 
 _MARK_PUBLISHED = """
@@ -69,12 +79,20 @@ UPDATE runs SET published_at = :now, comment_id = :comment,
 WHERE dedupe_key = :key AND published_at IS NULL
 """
 
-# The newest comment this pull request has, which is the one edited in place.
-_COMMENT_FOR_PR = """
-SELECT comment_id FROM runs
-WHERE repo = :repo AND pr_number = :pr AND comment_id IS NOT NULL
-ORDER BY recorded_at DESC, rowid DESC
-LIMIT 1
+# One more post tried for this run, stamped as given up on when that was the
+# last one allowed. `published_at IS NULL` because a run posted by another
+# worker in between is not a failure to record.
+_PUBLISH_FAILED = """
+UPDATE runs
+SET publish_attempts = publish_attempts + 1,
+    publish_failed_at = CASE
+        WHEN publish_attempts + 1 >= :limit THEN :now ELSE NULL
+    END
+WHERE dedupe_key = :key AND published_at IS NULL
+"""
+
+_PUBLISH_FAILED_AT = """
+SELECT publish_failed_at FROM runs WHERE dedupe_key = :key
 """
 
 # `findings` is emptied rather than set NULL: the column is NOT NULL, and an
@@ -283,13 +301,24 @@ class RunStore:
                 == 1
             )
 
-    def comment_for_pull_request(self, repo: str, pr_number: int) -> int | None:
-        """The comment the agent already has on this pull request, if any."""
+    def publish_failed(self, dedupe_key: str, *, limit: int, now: datetime) -> bool:
+        """Count a failed post; ``True`` when that was the last one allowed.
+
+        The count lives on the run rather than on the queue row that carries
+        it. A publication item is released *unattempted* -- posting reaches
+        no engine and drains no allowance, so ``max_attempts`` has nothing
+        to measure -- and the row is closed once this returns ``True``, so a
+        counter held there would be decremented away and then thrown out.
+        The stamp has to outlive both, because it is what an operator reads
+        to find the review nobody ever saw, and clears to offer it again.
+        """
         with self._store.transaction() as conn:
-            row = conn.execute(
-                _COMMENT_FOR_PR, {"repo": repo, "pr": pr_number}
-            ).fetchone()
-        return None if row is None else row[0]
+            conn.execute(
+                _PUBLISH_FAILED,
+                {"key": dedupe_key, "limit": limit, "now": stamp(now, "run timestamp")},
+            )
+            row = conn.execute(_PUBLISH_FAILED_AT, {"key": dedupe_key}).fetchone()
+        return row is not None and row[0] is not None
 
     def purge_content(self, repo: str, pr_number: int, *, now: datetime) -> int:
         """Delete the review content for this pull request; how many rows.

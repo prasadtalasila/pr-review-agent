@@ -31,7 +31,7 @@ src/pr_review_agent/
 ├── logs.py            # one level and one format, resolved from three layers
 ├── numbering.py       # finding numbers that survive a re-review
 ├── pacing.py          # how often one pull request may be reviewed
-├── publisher.py       # the 👀, the head re-check, one comment per pull request
+├── publisher.py       # the 👀, the head re-check, one comment per review
 ├── queue.py           # claim protocol and per-pull-request leases
 ├── runs.py            # what a paid review produced, so publishing can retry
 ├── sanitise.py        # engine prose made inert before it is posted
