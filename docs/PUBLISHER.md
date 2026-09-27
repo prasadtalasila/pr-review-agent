@@ -228,24 +228,35 @@ settle  →  record  →  publish  →  finish
 ```
 
 Recording the findings in `runs` **before** publishing is what makes a failed
-publish cheap. The next claim for that pull request finds the unpublished run
-and posts it, reaching no engine at all — so a flaky GitHub write cannot
-spend the allowance a second time. A test pins the engine call count at 1
-across a failed publish and its successful retry.
+publish cheap. The review row is completed — the review itself is done and
+must never be run again — and what remains, the posting, is enqueued as a
+`publish` work item naming that run. Draining it reaches no engine at all, so
+a flaky GitHub write cannot spend the allowance a second time. A test pins
+the engine call count at 1 across a failed publish and its successful retry.
 
-The resume path takes the **ordinary claim** rather than a path of its own.
-That keeps one pull request in one worker's hands; a second lease would be a
-second chance to post the same comment twice.
+**Republication is its own unit of work.** It used to be a bypass inside
+`admit`: any claim for a pull request carrying an unposted run was let
+through without reserving, and the claim was then spent posting *the oldest*
+such run rather than doing what it was claimed for. So a fresh `@claude` was
+not a review request any more — it was whatever run happened to be pending,
+and a run that could never be posted swallowed every later trigger on that
+pull request. Now `admit` has one meaning, a claim for a review always
+reserves, and a mention always reviews the head it was written against.
+
+The item is an **ordinary queue row**, so it takes the ordinary
+per-pull-request lease. That keeps one pull request in one worker's hands; a
+second lease would be a second chance to post the same comment twice.
 
 **It reserves nothing and settles nothing.** The worker's `admit` predicate
-consults the governor for everything that could spend, and bypasses it for a
-pull request that already has a recorded, unpublished run. That run reached
-an engine once, under a reservation that has already settled; posting it
-reaches none. Without the bypass an exhausted budget would hold a review the
-allowance was *already spent on* hostage until a window rolled — refusing to
-spend nothing, to avoid a cost paid days ago. And because the ladder's
-`mention_only` rung refuses a `pr_opened` trigger from 85% utilisation, not
-100%, that hostage-taking would start well before the budget was gone.
+consults the governor for everything that could spend, and exempts a
+`publish` item — read off the item's own kind, never off what some other row
+left behind. The run it names reached an engine once, under a reservation
+that has already settled; posting it reaches none. Without the exemption an
+exhausted budget would hold a review the allowance was *already spent on*
+hostage until a window rolled — refusing to spend nothing, to avoid a cost
+paid days ago. And because the ladder's `mention_only` rung refuses a
+`pr_opened` trigger from 85% utilisation, not 100%, that hostage-taking would
+start well before the budget was gone.
 
 This is why `CLAUDE.md` §5's rule is stated about **engines** rather than
 about claims. Nothing reaches a review engine outside the governor; a
@@ -267,14 +278,16 @@ what would have happened before `release_unattempted` existed.
 | published | `complete` | Done. |
 | dry run | `complete` | The pipeline ran; there is nothing to retry. |
 | superseded | `complete` | The head will never match again. |
-| write failed, engine ran | `release` | Retryable. The attempt counts: this claim did reach an engine. |
-| write failed, publish-only | `release_unattempted` | Retryable, and the attempt does not count: nothing was spent. |
+| write failed, engine ran | `complete`, plus a `publish` item | The review is done; only the posting is outstanding. |
+| write failed, `publish` item | `release_unattempted` | Retryable, and the attempt does not count: nothing was spent. |
+| run already posted or purged | `complete` | Nothing left to post, so the item is finished. |
 
 A publish-only retry therefore never exhausts the attempt bound. That is
 deliberate — the bound measures allowance drained, and this drains none — but
-it does mean a comment GitHub will *never* accept is retried on every claim
-for that pull request. The retention sweep is where that eventually stops
-mattering, because a purged run is no longer offered for publication.
+it does mean a comment GitHub will *never* accept is retried for as long as
+the item is claimable. The retention sweep is where that eventually stops
+mattering: a purged run is no longer offered for publication, and the item
+closes itself the first time it finds nothing to post.
 
 ## 🧪 `publish.dry_run`
 

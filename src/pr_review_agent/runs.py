@@ -35,14 +35,13 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ._time import stamp
 from .engine import Finding, Outcome, ReviewResult, Severity
 from .store import SqliteStore
-from .triggers.models import Trigger
+from .triggers.models import Trigger, TriggerKind
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +53,14 @@ ON CONFLICT(dedupe_key) DO UPDATE SET
     head_sha = :sha, outcome = :outcome, findings = :findings, recorded_at = :now
 """
 
-# Oldest first, so a backlog of unpublished runs drains in the order it was
-# reviewed. `content_purged_at IS NULL` because a purged run has no findings
-# left and publishing it would post an empty review over a real one.
+# One named run, if it is still waiting to be posted. `content_purged_at IS
+# NULL` because a purged run has no findings left and publishing it would
+# post an empty review over a real one.
 _UNPUBLISHED = """
 SELECT dedupe_key, repo, pr_number, head_sha, outcome, findings, comment_id
 FROM runs
-WHERE repo = :repo AND pr_number = :pr
+WHERE dedupe_key = :key
   AND published_at IS NULL AND content_purged_at IS NULL
-ORDER BY recorded_at, rowid
-LIMIT 1
 """
 
 _MARK_PUBLISHED = """
@@ -84,17 +81,6 @@ LIMIT 1
 _PURGE = """
 UPDATE runs SET findings = '[]', content_purged_at = :now
 WHERE repo = :repo AND pr_number = :pr AND content_purged_at IS NULL
-"""
-
-
-# Asked inside the queue's claim transaction, so it takes a connection
-# rather than opening one: `SqliteStore.transaction` issues BEGIN IMMEDIATE,
-# and SQLite has no nested transaction to issue it into.
-_HAS_UNPUBLISHED = """
-SELECT 1 FROM runs
-WHERE repo = :repo AND pr_number = :pr
-  AND published_at IS NULL AND content_purged_at IS NULL
-LIMIT 1
 """
 
 
@@ -130,6 +116,35 @@ class RecordedRun:
     outcome: Outcome
     findings: tuple[Finding, ...]
     comment_id: int | None
+
+
+#: Prefixed so a publication item can never collide with the review whose
+#: findings it posts: both are queue rows, and the queue is keyed by one
+#: string. Built and read in this module only, which is what keeps the
+#: format a format rather than an interface.
+_PUBLISH_PREFIX = "publish:"
+
+
+def publication_of(trigger: Trigger, run: RecordedRun) -> Trigger:
+    """The work item that posts ``run``, to be enqueued when a post fails.
+
+    Derived from the review's own trigger, so the item carries the actor and
+    the comment the review was asked for by -- the queue row needs both, and
+    a republished review is still that contributor's review.
+    """
+    return replace(
+        trigger,
+        kind=TriggerKind.PUBLISH,
+        dedupe_key=_PUBLISH_PREFIX + run.dedupe_key,
+        head_sha=run.head_sha,
+    )
+
+
+def published_run_key(trigger: Trigger) -> str:
+    """Which recorded run a ``PUBLISH`` item names."""
+    if trigger.kind is not TriggerKind.PUBLISH:
+        raise ValueError(f"{trigger.dedupe_key!r} is not a publication item")
+    return trigger.dedupe_key[len(_PUBLISH_PREFIX) :]
 
 
 @dataclass(frozen=True)
@@ -194,24 +209,17 @@ class RunStore:
             comment_id=None,
         )
 
-    @staticmethod
-    def has_unpublished(conn: sqlite3.Connection, repo: str, pr_number: int) -> bool:
-        """Is a paid review for this pull request still waiting to be posted?
+    def unpublished(self, dedupe_key: str) -> RecordedRun | None:
+        """The run ``dedupe_key`` names, or ``None`` if it needs no posting.
 
-        Takes the caller's connection because its one caller is the queue's
-        ``admit`` predicate, which runs inside the claim transaction. Opening
-        another would mean a ``BEGIN IMMEDIATE`` inside a ``BEGIN
-        IMMEDIATE``, which SQLite refuses.
+        ``None`` covers three cases a publication item does not distinguish:
+        the run was posted by an earlier attempt, its content was purged
+        after the pull request merged, or it was never recorded at all. All
+        three mean the same thing to the caller -- there is nothing left to
+        post -- and the item is finished either way.
         """
-        return (
-            conn.execute(_HAS_UNPUBLISHED, {"repo": repo, "pr": pr_number}).fetchone()
-            is not None
-        )
-
-    def unpublished_for(self, repo: str, pr_number: int) -> RecordedRun | None:
-        """The oldest recorded run for this pull request still to be posted."""
         with self._store.transaction() as conn:
-            row = conn.execute(_UNPUBLISHED, {"repo": repo, "pr": pr_number}).fetchone()
+            row = conn.execute(_UNPUBLISHED, {"key": dedupe_key}).fetchone()
         return None if row is None else _run(row)
 
     def history(self, repo: str, pr_number: int) -> PullRequestHistory:
