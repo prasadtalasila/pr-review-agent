@@ -15,6 +15,7 @@ PAYLOAD = {
     "additions": 12,
     "deletions": 3,
     "changed_files": 2,
+    "state": "open",
 }
 
 
@@ -30,6 +31,24 @@ def test_facts_are_mapped_from_the_payload():
     assert facts.changed_files == 2
 
 
+def test_the_state_the_worker_refuses_on_is_mapped():
+    """What the worker reads to abandon a claim before it pays for one."""
+    facts = pull_request_facts(PAYLOAD)
+    assert (facts.state, facts.merged) == ("open", False)
+    assert facts.is_open
+
+
+def test_a_merged_pull_request_is_not_open():
+    facts = pull_request_facts({**PAYLOAD, "state": "closed", "merged": True})
+    assert (facts.state, facts.merged) == ("closed", True)
+    assert not facts.is_open
+
+
+def test_merged_defaults_to_false_when_the_payload_omits_it():
+    """A payload without the flag is still usable; one without `state` is not."""
+    assert pull_request_facts(PAYLOAD).merged is False
+
+
 def test_changed_lines_is_what_the_line_cap_measures():
     assert pull_request_facts(PAYLOAD).changed_lines == 15
 
@@ -41,6 +60,10 @@ def test_changed_lines_is_what_the_line_cap_measures():
         {**PAYLOAD, "base": None},
         {k: v for k, v in PAYLOAD.items() if k != "changed_files"},
         {**PAYLOAD, "additions": "lots"},
+        # `state` is required like the rest: defaulting it to "open" would
+        # turn a payload shape change into the closed-pull-request guard
+        # switching itself off, which is what it exists to prevent.
+        {k: v for k, v in PAYLOAD.items() if k != "state"},
     ],
 )
 def test_an_unusable_payload_is_a_payload_error(broken):

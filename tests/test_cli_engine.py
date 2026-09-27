@@ -41,6 +41,7 @@ FACTS = PullRequestFacts(
     additions=10,
     deletions=2,
     changed_files=1,
+    state="open",
 )
 
 TRIGGER = Trigger(

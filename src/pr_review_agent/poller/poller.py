@@ -78,6 +78,27 @@ class Poller:
         )
         return PollCycle(results=results, any_changed=any_changed)
 
+    def forget_etag(self, endpoint: Endpoint) -> None:
+        """Drop the stored ETag for one endpoint, forcing its next GET to 200.
+
+        The ETag cache outlives the process -- it is a table in SQLite --
+        and some of what a ``200`` carries does not. ``/pulls?state=open``
+        is the case: the daemon keeps the set of open pull request numbers
+        that payload named, in memory, and a ``304`` means *unchanged*
+        rather than *unknown*, so after a restart the stored ETag is
+        honoured, no payload arrives, and the set stays empty until some
+        open pull request happens to change. On a quiet repository that is
+        days, and for all of them the comment filter is off.
+
+        So the endpoint whose payload holds process state is forgotten at
+        startup. It is the poller that does it rather than the daemon
+        because the path is built here; a caller assembling the request
+        string itself would be a second place for the query parameters to
+        have to agree. The cost is one unconditional GET per restart out of
+        a 5,000/hour budget.
+        """
+        self.etags.set(self.endpoints.path(endpoint), None)
+
     def _update_interval(self, any_changed: bool, lowest_remaining: int | None) -> None:
         if lowest_remaining is not None and lowest_remaining <= self.rate_limit_floor:
             logger.warning(

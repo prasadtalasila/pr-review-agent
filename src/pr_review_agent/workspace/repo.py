@@ -54,8 +54,16 @@ class PullRequestFacts:
 
     All of it comes from one ``GET /repos/{owner}/{name}/pulls/{n}``, which
     is also the read that resolves ``head_sha`` for a mention trigger --
-    whose payload carries none.
+    whose payload carries none. ``state`` and ``merged`` ride along on that
+    same read, so asking whether the checkout is worth making at all costs
+    no extra request.
     """
+
+    # One payload, one record of it. Splitting the state fields off into a
+    # second type would put the question "is this worth reviewing" and the
+    # answer "here is what to check out" in two places, when they arrive in
+    # the same response and are read three lines apart.
+    # pylint: disable=too-many-instance-attributes
 
     number: int
     head_sha: str
@@ -63,11 +71,32 @@ class PullRequestFacts:
     additions: int
     deletions: int
     changed_files: int
+    state: str
+    merged: bool = False
 
     @property
     def changed_lines(self) -> int:
         """Added plus deleted: what the line cap is measured against."""
         return self.additions + self.deletions
+
+    @property
+    def is_open(self) -> bool:
+        """Whether reviewing this pull request can still be read by anybody.
+
+        Carried here because this read is the *only* moment between a
+        trigger being queued and the money being spent at which GitHub is
+        asked about the pull request at all. A trigger queued while the
+        pull request was open waits its turn in the queue, and by the time
+        a worker claims it the pull request may have been merged or
+        closed -- at which point the review costs the same and nobody will
+        read it.
+
+        ``merged`` is checked as well as ``state`` because the two are
+        answered by different fields: a merged pull request reads
+        ``closed`` today, but the flag is what says so without depending on
+        that.
+        """
+        return self.state == "open" and not self.merged
 
 
 @dataclass(frozen=True)

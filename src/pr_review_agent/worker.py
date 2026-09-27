@@ -184,6 +184,38 @@ def _log_start(claim: Claim, mode: Mode) -> None:
     )
 
 
+def _log_closed(claim: Claim, facts: PullRequestFacts) -> None:
+    """Why nothing was reviewed, and what an operator can do about it.
+
+    The two cases read differently and the difference is not cosmetic. A
+    merged pull request is over, and there is nothing to say beyond what
+    was skipped. A ``closed`` one can be reopened -- and reopening it
+    brings nothing back, because every trigger in this design is gated on a
+    timestamp that has already passed (``pr_opened`` on ``created_at``, a
+    mention on the comment's ``updated_at``) and this row's dedupe key
+    blocks it being enqueued a second time. A fresh ``@claude`` comment
+    after the reopen does work, and it is the only thing that does, so the
+    line says so rather than leaving an operator to discover it.
+    """
+    recovery = (
+        ""
+        if facts.merged
+        else " Reopening it re-triggers nothing; a fresh @claude comment does."
+    )
+    logger.info(
+        "%s was %s before it was reviewed, so nothing was spent on it.%s",
+        claim.trigger.dedupe_key,
+        "merged" if facts.merged else facts.state,
+        recovery,
+        extra={
+            "repo": claim.trigger.repo,
+            "pr": claim.trigger.pr_number,
+            "state": facts.state,
+            "merged": facts.merged,
+        },
+    )
+
+
 def _log_reviewed(claim: Claim, result: ReviewResult, usage: Usage) -> None:
     """What the review produced and what it cost."""
     logger.info(
@@ -427,6 +459,9 @@ class ReviewWorker:
         facts = await fetch_pull_request_facts(
             self.client, self.endpoints, claim.trigger.pr_number
         )
+        if not facts.is_open:
+            self._abandon_closed(claim, facts)
+            return None
         config = self.governor.config
         # Read before the engine runs, so the reviewer can be shown what the
         # last round found. Costs one query on a table the worker already
@@ -462,6 +497,33 @@ class ReviewWorker:
                 )
             )
         return self._reviewed(claim, result, facts=facts, history=history, lines=lines)
+
+    def _abandon_closed(self, claim: Claim, facts: PullRequestFacts) -> None:
+        """End a claim whose pull request was merged or closed while it waited.
+
+        Placed before the checkout because that is where the money starts:
+        a trigger is queued while the pull request is open and claimed
+        some time later, and nothing between those two moments asks GitHub
+        whether it still is. Without this the agent clones the tree, runs
+        the engine and posts a review on a pull request nobody will read --
+        paid for in full. The read that answers the question is the one
+        ``_attempt`` already makes for ``head_sha``, so refusing here costs
+        no extra request.
+
+        It mirrors the pre-flight refusal below deliberately: settle at
+        zero, then abandon. Zero because no engine ran, which is provable
+        rather than assumed; abandon because the answer is deterministic --
+        GitHub will not reopen a merged pull request, and another attempt
+        would reserve allowance only to read the same state again.
+        """
+        self.governor.settle(
+            claim,
+            Usage(0, UsageConfidence.EXACT, engine=self.engine.name),
+            now=_now(),
+            stop_reason=StopReason.CLOSED,
+        )
+        self.queue.abandon(claim)
+        _log_closed(claim, facts)
 
     def _reviewed(
         self,

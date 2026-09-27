@@ -106,6 +106,14 @@ because that leg answers `304` whenever nothing changed, and a `304` means
 filter is off — failing open costs a few `DEBUG` lines, whereas failing closed
 would silently drop every mention.
 
+That window used to reopen on every restart, and it was not a few lines. The
+set is in memory and a restart empties it; the ETag that refills it is in
+SQLite and a restart does not, so the daemon asked conditionally, got a
+`304`, and ran with the filter off until some open pull request happened to
+change — days, on a quiet repository. The `/pulls` ETag is therefore dropped
+at startup so the first response of a new process is a `200`; see
+[POLLER.md](POLLER.md#one-etag-is-thrown-away-at-every-startup).
+
 Both legs belong to one sweep and the pulls leg is classified first, so a
 comment on a pull request opened in that very cycle is still matched. The
 trade-off worth stating: **a mention posted on a pull request that closes

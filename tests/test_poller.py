@@ -68,6 +68,42 @@ async def test_second_poll_sends_the_etag_from_the_first():
     assert etags_seen[3:] == ['"same"', '"same"', '"same"']
 
 
+async def test_forget_etag_clears_only_the_endpoint_named():
+    """One endpoint's payload is process state; the other two are not.
+
+    ``/pulls?state=open`` refills the daemon's set of open pull requests,
+    which a restart empties, so its ETag is dropped at startup. Dropping
+    the other two as well would be two unconditional GETs a restart buys
+    nothing with.
+    """
+    etags_seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        etags_seen.append((request.url.path, request.headers.get("if-none-match")))
+        return httpx.Response(200, json=[], headers={"etag": '"e"'})
+
+    poller = make_poller(handler)
+    await poller.poll_once()
+    poller.forget_etag(Endpoint.OPEN_PULLS)
+    etags_seen.clear()
+
+    await poller.poll_once()
+
+    assert dict(etags_seen) == {
+        "/repos/o/r/pulls": None,
+        "/repos/o/r/issues/comments": '"e"',
+        "/repos/o/r/pulls/comments": '"e"',
+    }
+
+
+async def test_forget_etag_on_a_cold_cache_is_harmless():
+    """Called at every startup, including the first one, when there is none."""
+    poller = make_poller(all_200_empty)
+    poller.forget_etag(Endpoint.OPEN_PULLS)
+    cycle = await poller.poll_once()
+    assert cycle.any_changed
+
+
 async def test_interval_snaps_to_floor_when_something_changes():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[{"id": 1}], headers={"etag": '"e"'})

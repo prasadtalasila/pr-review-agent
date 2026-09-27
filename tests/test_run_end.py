@@ -32,6 +32,7 @@ FACTS = PullRequestFacts(
     additions=9_000,
     deletions=1_000,
     changed_files=900,
+    state="open",
 )
 
 

@@ -267,6 +267,24 @@ A refused row records `used_tokens = 0` at confidence `exact` — the cost is
 not unknown, it is known to be nothing — and leaves `reviewed_lines` NULL, so
 a refusal never contributes to the fit.
 
+### The free refusal before the checkout
+
+`preflight` is the last free refusal; it is not the first. One question is
+asked earlier still, the moment `GET /pulls/{n}` returns: **is this pull
+request still open?** A trigger enqueued while it was open can be claimed
+after it has been merged, and reviewing it then costs exactly as much as
+reviewing a live one and produces something nobody will read.
+
+That row settles the same way a refusal does — `used_tokens = 0` at `exact`,
+`reviewed_lines` NULL, then `abandon` — but records `stop_reason = closed`
+rather than `refused`. Both mean *no engine ran*; they differ in what an
+operator should do about a lot of them. `refused` says a limit may be too
+tight. `closed` says the queue is draining more slowly than the repository
+moves, and the answer is workers or pacing, not tokens. Collapsing them
+would make `GROUP BY stop_reason` unable to tell those apart, which is the
+thing the column exists for. See
+[WORKER.md](WORKER.md#the-closed-pull-request-is-refused-before-the-checkout).
+
 ## 🧍 Human headroom
 
 The agent is capped at a configurable *share* of each plan window
@@ -761,7 +779,10 @@ And in `tests/test_config.py`, `tests/test_store.py` and
 - an adapter whose subprocess never started settles at **zero** and reads as
   `engine_unavailable`, because the reservation exists to cover a spend that
   might have happened and this one could not have;
-- a pre-flight refusal reads as `refused` rather than as a failure.
+- a pre-flight refusal reads as `refused` rather than as a failure;
+- a claim whose pull request was merged or closed while it waited settles at
+  **zero** and reads as `closed`, having reached neither a checkout nor an
+  engine.
 
 Terminating a review that is *over budget*, as opposed to over time, is the
 [gap named above](#where-layer-3s-three-ceilings-ended-up). It is not tested

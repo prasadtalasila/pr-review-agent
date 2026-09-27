@@ -111,6 +111,7 @@ def payload(head_sha: str, **overrides) -> dict:
         "additions": 2,
         "deletions": 0,
         "changed_files": 1,
+        "state": "open",
         **overrides,
     }
 
@@ -137,6 +138,8 @@ class GitHubDouble:
         comment_id: int = 555,
         write_status: int = 201,
         head_moves_to: str | None = None,
+        pull_state: str = "open",
+        merged: bool = False,
     ):
         self.requests: list[httpx.Request] = []
         self._head_sha = head_sha
@@ -146,6 +149,11 @@ class GitHubDouble:
         # so a superseded head is a head that changes *between* those two
         # reads -- not one that was always wrong.
         self._head_moves_to = head_moves_to
+        # What `/pulls/{n}` says the pull request's state is, which is the
+        # only thing standing between a claim and a paid review of
+        # something nobody can read any more.
+        self._pull_state = pull_state
+        self._merged = merged
         self._reads = 0
 
     def client(self) -> GitHubClient:
@@ -160,7 +168,10 @@ class GitHubDouble:
             head = self._head_sha
             if self._head_moves_to is not None and self._reads > 1:
                 head = self._head_moves_to
-            return httpx.Response(200, json=payload(head))
+            return httpx.Response(
+                200,
+                json=payload(head, state=self._pull_state, merged=self._merged),
+            )
         if self._write_status >= 400:
             return httpx.Response(self._write_status, text="nope")
         return httpx.Response(self._write_status, json={"id": self._comment_id})
@@ -768,6 +779,91 @@ async def test_an_unusable_payload_is_abandoned(wired):
     await fixture.worker.run_once()
 
     assert fixture.queue.status(opened().dedupe_key) is QueueStatus.ABANDONED
+
+
+async def test_a_pull_request_closed_before_the_claim_is_never_reviewed(
+    wired, git_remote
+):
+    """The leak this guard closes: a trigger outliving the pull request.
+
+    The row was enqueued while the pull request was open and claimed after
+    it was not. Nothing between those two moments asks GitHub, so without
+    the check the agent clones, reviews and posts on something nobody will
+    read -- at full price.
+    """
+    fixture = wired(github=GitHubDouble(git_remote.head_sha, pull_state="closed"))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.engine.requests == []
+    # Refused *before* the checkout, so the mirror was never even cloned.
+    assert not fixture.worker.workspace.mirror.exists()
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.ABANDONED
+    (row,) = ledger_rows(fixture.store)
+    assert (row[3], row[4]) == (0, str(UsageConfidence.EXACT))
+    assert stop_reasons(fixture.store) == [str(StopReason.CLOSED)]
+
+
+async def test_a_merged_pull_request_is_never_reviewed(wired, git_remote):
+    """`merged` is read as well as `state`, and settles the same way."""
+    fixture = wired(
+        github=GitHubDouble(git_remote.head_sha, pull_state="open", merged=True)
+    )
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.engine.requests == []
+    assert not fixture.worker.workspace.mirror.exists()
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.ABANDONED
+    (row,) = ledger_rows(fixture.store)
+    assert (row[3], row[4]) == (0, str(UsageConfidence.EXACT))
+    assert stop_reasons(fixture.store) == [str(StopReason.CLOSED)]
+
+
+async def test_a_closed_pull_request_posts_nothing(wired, git_remote):
+    """Refused before the spend, so there is no comment to post either."""
+    fixture = wired(github=GitHubDouble(git_remote.head_sha, pull_state="closed"))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.github is not None
+    assert fixture.github.comments == []
+
+
+async def test_a_closed_pull_request_names_the_recovery_in_the_log(
+    wired, git_remote, caplog
+):
+    """A reopen re-triggers nothing, so the line has to say what does.
+
+    Every trigger is gated on a timestamp already in the past and the
+    abandoned row's dedupe key blocks a second enqueue, so an operator who
+    reopens the pull request and waits is waiting for nothing. A fresh
+    ``@claude`` comment is what works.
+    """
+    fixture = wired(github=GitHubDouble(git_remote.head_sha, pull_state="closed"))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    with caplog.at_level(logging.INFO):
+        await fixture.worker.run_once()
+
+    assert "@claude" in caplog.text
+
+
+async def test_a_merged_pull_request_is_offered_no_recovery(wired, git_remote, caplog):
+    """Merged is terminal -- GitHub will not reopen it -- so the line says less."""
+    fixture = wired(
+        github=GitHubDouble(git_remote.head_sha, pull_state="closed", merged=True)
+    )
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    with caplog.at_level(logging.INFO):
+        await fixture.worker.run_once()
+
+    assert "merged before it was reviewed" in caplog.text
+    assert "@claude" not in caplog.text
 
 
 async def test_an_abandoned_trigger_is_never_offered_again(wired):

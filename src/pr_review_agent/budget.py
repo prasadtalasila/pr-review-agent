@@ -178,6 +178,13 @@ class StopReason(StrEnum):
     #: The pre-flight estimate refused the run. Settles at zero: no engine
     #: ran, so nothing was spent.
     REFUSED = "refused"
+    #: The pull request was merged or closed before the claim reached a
+    #: checkout. Settles at zero for the same reason as the two above: no
+    #: engine ran. Apart from ``REFUSED`` because the two answer different
+    #: questions for an operator counting them -- "the budget said no" is a
+    #: limit to raise, "we got there too late" is a queue that is draining
+    #: more slowly than the repository moves.
+    CLOSED = "closed"
     #: GitHub or the workspace failed before the engine started.
     INFRASTRUCTURE = "infrastructure"
     #: The *account's* limit was reached, not this run's ceiling. The one
