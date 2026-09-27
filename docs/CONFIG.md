@@ -464,19 +464,21 @@ Every key below is required; everything else has a default. This is
 no comments: it is meant to be copied and edited, and the reasoning belongs
 on this page rather than in a file that becomes somebody's `config.yaml`.
 
-`9206466` is the maintainer's account, and it appears once — in the
-allowlist, where it decides whether that account may start a review. It is
-also the account this deployment's agent posts as, which is no longer a
-contradiction: nothing keys on the agent's identity any more.
+Both values are **placeholders**, and neither runs as shipped. `owner/name`
+is refused at startup by name, so a file that was generated and never edited
+cannot poll and post against somebody else's repository under your token; an
+empty allowlist is valid and allows nobody, and startup says so at WARNING
+because "the agent never answers" and "nobody is allowlisted" look identical
+from the outside. Put the numeric user ids of the people who may summon a
+review in the list — never their logins, for the reason
+[`triggers`](#triggers) gives.
 
 ```yaml
 github:
-  repo: prasadtalasila/pr-review-agent
+  repo: owner/name
 
 triggers:
-  allowlist:
-    - 114395272
-    - 9206466
+  allowlist: []
 
 budget:
   session_tokens: 88000

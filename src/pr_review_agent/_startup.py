@@ -18,11 +18,21 @@ being a file the repository could swallow. It is never printed: a
 
 from __future__ import annotations
 
+import logging
 import os
 
 from .config import Config, ConfigError
 
+logger = logging.getLogger(__name__)
+
 TOKEN_ENV = "GITHUB_TOKEN"
+
+#: What the shipped template carries in ``github.repo``. It parses -- one
+#: slash, both halves non-empty -- so the loader accepts it, and every
+#: command that is about to *act* refuses it instead. An operator who edits
+#: the allowlist and forgets the repository would otherwise be polling and
+#: posting somewhere they do not own.
+PLACEHOLDER_REPO = "owner/name"
 
 
 class StartupError(RuntimeError):
@@ -48,11 +58,32 @@ def load_config(config_path: str) -> Config:
     ``ConfigError`` is re-raised as ``StartupError`` so a caller has one
     exception type to catch for "this host is not set up", whichever half
     of the setup is missing.
+
+    Two checks live here rather than in the loader, because they are about
+    a file being *ready to run* rather than being well-formed: the shipped
+    template has to stay parseable by the tests that read it, while a
+    command that is about to poll, spend or post refuses it.
     """
     try:
-        return Config.load(config_path)
+        config = Config.load(config_path)
     except ConfigError as exc:
         raise StartupError(str(exc)) from exc
+    if config.github.repo == PLACEHOLDER_REPO:
+        raise StartupError(
+            f"{config_path}: github.repo is still the template placeholder "
+            f"{PLACEHOLDER_REPO!r}; set it to the repository to watch"
+        )
+    if not config.triggers.allowlist.user_ids:
+        # Not an error: an empty allowlist is the safe starting state and
+        # the loader documents it as "allows nobody". But a daemon that
+        # polls correctly and never reviews anything looks identical to a
+        # broken one, so it says so once, loudly, at startup.
+        logger.warning(
+            "%s: triggers.allowlist is empty, so NO ONE can start a review. "
+            "Add the numeric GitHub user ids that may summon the agent.",
+            config_path,
+        )
+    return config
 
 
 def startup(config_path: str) -> tuple[Config, str]:

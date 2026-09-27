@@ -89,3 +89,11 @@ def validate(config_path: str) -> None:
     click.echo(f"  repository:  {config.github.repo}")
     click.echo(f"  allowlisted: {len(config.triggers.allowlist.user_ids)} user id(s)")
     click.echo(f"  budget:      enabled={config.budget.enabled}")
+    if not config.triggers.allowlist.user_ids:
+        # `load_config` logs this too, but logging is not configured for
+        # this command -- and this is the command an operator runs *to be
+        # told* what is wrong with the file.
+        click.echo(
+            "warning: the allowlist is empty, so no one can start a review",
+            err=True,
+        )

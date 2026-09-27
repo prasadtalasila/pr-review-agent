@@ -1,10 +1,8 @@
 github:
-  repo: prasadtalasila/pr-review-agent
+  repo: owner/name
 
 triggers:
-  allowlist:
-    - 114395272
-    - 9206466
+  allowlist: []
 
 budget:
   session_tokens: 88000

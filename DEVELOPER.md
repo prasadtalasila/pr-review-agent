@@ -339,8 +339,10 @@ committed; `pyproject.toml`'s `readme` has to keep naming README.md, because
 CI additionally rejects any direct-URL (`file://`, `git+`, `https://`)
 dependency that leaked into the built metadata, since such a package cannot be
 installed from an index. It then installs the wheel into a throwaway venv and
-walks the documented first run — `--help`, then `config generate` and
-`config validate` in an empty directory. A wheel can import perfectly while
+walks the documented first run — `--help`, then `config generate`, a
+`config validate` that must **fail** because the shipped template still says
+`owner/name`, and a second one that must pass once the repository is filled
+in. A wheel can import perfectly while
 shipping no command, which is what `[project.scripts]` being absent did for
 twelve releases; and it can ship a command while omitting the config
 templates the quickstart tells the operator to copy, which is what the

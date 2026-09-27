@@ -83,7 +83,7 @@ requests it will act on, and it is a separate control:
 ```yaml
 triggers:
   allowlist:
-    - 114395272        # numeric GitHub user id, never a login
+    - 1234567          # numeric GitHub user id, never a login
 ```
 
 Allowlisting is on the numeric user id, never the login. A login can be renamed
