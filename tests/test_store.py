@@ -239,6 +239,32 @@ def test_an_existing_database_adopts_the_stop_reason_column(tmp_path):
             assert conn.execute("SELECT stop_reason FROM ledger").fetchone() == (None,)
 
 
+def test_a_statement_carrying_a_semicolon_is_applied_whole(tmp_path):
+    """Migrations are statements, not a script split on ``;`` at runtime.
+
+    A ``CHECK`` listing a value with a semicolon in it -- or a trigger body,
+    or a comment -- would be cut in half by such a split, half-applying the
+    migration inside its own transaction and leaving the operator to read a
+    syntax error about a fragment nobody wrote.
+    """
+    path = tmp_path / "state.db"
+    SqliteStore(path).close()
+
+    semicolons = (
+        *store_module._MIGRATIONS,
+        ("CREATE TABLE odd (sep TEXT NOT NULL CHECK (sep IN ('a;b', 'c')))",),
+    )
+    with (
+        mock.patch.object(store_module, "_MIGRATIONS", semicolons),
+        SqliteStore(path) as store,
+    ):
+        assert store.schema_version == len(semicolons)
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO odd (sep) VALUES ('a;b')")
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute("INSERT INTO odd (sep) VALUES ('nope')")
+
+
 def test_a_failed_migration_leaves_the_version_behind(tmp_path):
     """The script and its version bump commit together, or neither does.
 
@@ -249,7 +275,7 @@ def test_a_failed_migration_leaves_the_version_behind(tmp_path):
     path = tmp_path / "state.db"
     SqliteStore(path).close()
 
-    broken = (*store_module._MIGRATIONS, "CREATE TABLE ok (a INTEGER); NOT SQL;")
+    broken = (*store_module._MIGRATIONS, ("CREATE TABLE ok (a INTEGER)", "NOT SQL"))
     with (
         mock.patch.object(store_module, "_MIGRATIONS", broken),
         pytest.raises(sqlite3.OperationalError),

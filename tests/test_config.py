@@ -1,7 +1,9 @@
 """Config loading: reject anything that could silently weaken a safety rule."""
 
+from dataclasses import fields
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 import yaml
@@ -687,45 +689,42 @@ def test_the_comprehensive_example_loads():
     assert config.workspace.cache_dir == ".cache/repos"
 
 
+#: Section name -> the dataclass that holds it, read off ``Config`` itself so
+#: this cannot be the thing that drifts.
+SECTIONS = get_type_hints(Config)
+
+
+def _field_names(schema: type) -> set[str]:
+    return {field.name for field in fields(schema)}
+
+
 def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
-    """A key the loader takes but the example omits is undiscoverable."""
-    data = yaml.safe_load((EXAMPLES / "config.example.yaml").read_text())
-    assert set(data) == {
-        "github",
-        "triggers",
-        "budget",
-        "store",
-        "workspace",
-        "engine",
-        "worker",
-        "publish",
-        "logging",
-    }
-    assert set(data["logging"]) == {"level", "format"}
-    assert set(data["github"]) == {"repo"}
-    assert set(data["triggers"]) == {"allowlist", "handle"}
-    assert set(data["budget"]) == {
-        "enabled",
-        "authority",
-        "comply",
-        "session_tokens",
-        "weekly_tokens",
-        "max_run_tokens",
-        "reviewer_share_pct",
-        "max_changed_files",
-        "max_changed_lines",
-        "excluded_paths",
-    }
-    assert set(data["store"]) == {"path"}
-    assert set(data["publish"]) == {"dry_run"}
-    assert set(data["workspace"]) == {"cache_dir", "git"}
-    assert set(data["engine"]) == {
-        "binary",
-        "model",
-        "timeout_seconds",
-        "standards_paths",
-        "expected_version",
-    }
+    """A key the loader takes but the example omits is undiscoverable.
+
+    Derived from the dataclasses rather than spelled out beside them, which
+    is the drift this file is meant to catch rather than join: a field added
+    to a section fails here until the template shows it. A field whose
+    default is to be *absent* -- ``per_contributor_pct`` means no cap at all
+    -- is shown commented out, which counts.
+    """
+    text = (EXAMPLES / "config.example.yaml").read_text()
+    data = yaml.safe_load(text)
+    assert set(data) == set(SECTIONS)
+    for name, schema in SECTIONS.items():
+        shown = set(data[name])
+        names = _field_names(schema)
+        assert shown <= names, f"{name!r} advertises keys the loader rejects"
+        for missing in sorted(names - shown):
+            assert f"# {missing}:" in text, f"{name}.{missing} is undiscoverable"
+
+
+def test_every_section_rejects_a_key_its_dataclass_cannot_hold():
+    """Unknown-key rejection is per section, not only at the top level."""
+    for name in SECTIONS:
+        data = yaml.safe_load((EXAMPLES / "config.example.yaml").read_text())
+        data[name]["not_a_field"] = 1
+        with pytest.raises(ConfigError, match=f"unknown keys in '{name}'"):
+            Config.from_mapping(data)
 
 
 def test_the_comprehensive_example_states_the_real_defaults():

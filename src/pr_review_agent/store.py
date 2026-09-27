@@ -48,110 +48,119 @@ from pathlib import Path
 from ._time import parse, stamp, to_utc
 
 # Applied in order; the file's ``user_version`` records how many have run.
+# One migration is a tuple of whole statements, not a script: a statement is
+# never split up at runtime, so a ``CHECK (x IN ('a;b'))``, a trigger body or
+# a comment carrying a semicolon cannot half-apply a migration.
 #
 # The ``CREATE`` statements are all ``IF NOT EXISTS`` because a database
 # created before this list existed already carries the first migration's
 # tables at ``user_version = 0``, and would otherwise fail to adopt it.
 #
 # They no longer have to be idempotent for crash-safety: ``_migrate`` applies
-# each script and its version bump in one transaction, so a crash rolls the
-# pair back together. ``ALTER TABLE ADD COLUMN`` has no ``IF NOT EXISTS``
+# each migration and its version bump in one transaction, so a crash rolls
+# the pair back together. ``ALTER TABLE ADD COLUMN`` has no ``IF NOT EXISTS``
 # form in SQLite and could not have been written any other way.
-_MIGRATIONS: tuple[str, ...] = (
-    """
-    CREATE TABLE IF NOT EXISTS etags (
-        path TEXT PRIMARY KEY,
-        etag TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS watermarks (
-        name TEXT PRIMARY KEY,
-        at   TEXT NOT NULL
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS queue (
-        dedupe_key   TEXT PRIMARY KEY,
-        kind         TEXT NOT NULL,
-        repo         TEXT NOT NULL,
-        pr_number    INTEGER NOT NULL,
-        head_sha     TEXT,
-        actor_id     INTEGER NOT NULL,
-        status       TEXT NOT NULL,
-        attempts     INTEGER NOT NULL DEFAULT 0,
-        enqueued_at  TEXT NOT NULL,
-        leased_until TEXT,
-        owner        TEXT
-    );
-    CREATE INDEX IF NOT EXISTS queue_claimable ON queue (status, enqueued_at);
-    CREATE INDEX IF NOT EXISTS queue_by_pr ON queue (repo, pr_number, status);
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS ledger (
-        id               INTEGER PRIMARY KEY AUTOINCREMENT,
-        dedupe_key       TEXT NOT NULL,
-        owner            TEXT NOT NULL,
-        actor_id         INTEGER NOT NULL,
-        mode             TEXT NOT NULL,
-        reserved_tokens  INTEGER NOT NULL,
-        used_tokens      INTEGER,
-        usage_confidence TEXT,
-        engine           TEXT,
-        model            TEXT,
-        reserved_at      TEXT NOT NULL,
-        settled_at       TEXT
-    );
-    CREATE INDEX IF NOT EXISTS ledger_window ON ledger (reserved_at);
-    """,
+_MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    (
+        """
+        CREATE TABLE IF NOT EXISTS etags (
+            path TEXT PRIMARY KEY,
+            etag TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS watermarks (
+            name TEXT PRIMARY KEY,
+            at   TEXT NOT NULL
+        )
+        """,
+    ),
+    (
+        """
+        CREATE TABLE IF NOT EXISTS queue (
+            dedupe_key   TEXT PRIMARY KEY,
+            kind         TEXT NOT NULL,
+            repo         TEXT NOT NULL,
+            pr_number    INTEGER NOT NULL,
+            head_sha     TEXT,
+            actor_id     INTEGER NOT NULL,
+            status       TEXT NOT NULL,
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            enqueued_at  TEXT NOT NULL,
+            leased_until TEXT,
+            owner        TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS queue_claimable ON queue (status, enqueued_at)",
+        "CREATE INDEX IF NOT EXISTS queue_by_pr ON queue (repo, pr_number, status)",
+    ),
+    (
+        """
+        CREATE TABLE IF NOT EXISTS ledger (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            dedupe_key       TEXT NOT NULL,
+            owner            TEXT NOT NULL,
+            actor_id         INTEGER NOT NULL,
+            mode             TEXT NOT NULL,
+            reserved_tokens  INTEGER NOT NULL,
+            used_tokens      INTEGER,
+            usage_confidence TEXT,
+            engine           TEXT,
+            model            TEXT,
+            reserved_at      TEXT NOT NULL,
+            settled_at       TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ledger_window ON ledger (reserved_at)",
+    ),
     # The per-contributor window measures one ``actor_id`` over a trailing
     # duration, which is the first query to select on anything but time.
-    """
-    CREATE INDEX IF NOT EXISTS ledger_by_actor ON ledger (actor_id, reserved_at);
-    """,
-    """
-    ALTER TABLE ledger ADD COLUMN reviewed_lines INTEGER;
-    """,
+    ("CREATE INDEX IF NOT EXISTS ledger_by_actor ON ledger (actor_id, reserved_at)",),
+    ("ALTER TABLE ledger ADD COLUMN reviewed_lines INTEGER",),
     # Why a run stopped, which is a different question from how far its
     # recorded cost can be trusted. A run killed on the wall clock and one
     # whose envelope would not parse both settle `unavailable` at the full
     # reservation, so without this column nothing says which control bound
     # the run.
-    """
-    ALTER TABLE ledger ADD COLUMN stop_reason TEXT;
-    """,
+    ("ALTER TABLE ledger ADD COLUMN stop_reason TEXT",),
     # What the publisher acknowledges on. Both are NULL for a `pr_opened`
     # row, and for any row enqueued before this migration -- the publisher
     # falls back to reacting on the pull request rather than guessing an id.
-    """
-    ALTER TABLE queue ADD COLUMN comment_id INTEGER;
-    ALTER TABLE queue ADD COLUMN comment_source TEXT;
-    """,
+    (
+        "ALTER TABLE queue ADD COLUMN comment_id INTEGER",
+        "ALTER TABLE queue ADD COLUMN comment_source TEXT",
+    ),
     # What a paid review produced. The only table holding review content,
     # and therefore the only one the retention sweep purges; the ledger's
     # metrics survive that purge because they live elsewhere. See runs.py.
-    """
-    CREATE TABLE IF NOT EXISTS runs (
-        dedupe_key        TEXT PRIMARY KEY,
-        repo              TEXT NOT NULL,
-        pr_number         INTEGER NOT NULL,
-        head_sha          TEXT NOT NULL,
-        outcome           TEXT NOT NULL,
-        findings          TEXT NOT NULL,
-        comment_id        INTEGER,
-        recorded_at       TEXT NOT NULL,
-        published_at      TEXT,
-        content_purged_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS runs_by_pr ON runs (repo, pr_number);
-    """,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS runs (
+            dedupe_key        TEXT PRIMARY KEY,
+            repo              TEXT NOT NULL,
+            pr_number         INTEGER NOT NULL,
+            head_sha          TEXT NOT NULL,
+            outcome           TEXT NOT NULL,
+            findings          TEXT NOT NULL,
+            comment_id        INTEGER,
+            recorded_at       TEXT NOT NULL,
+            published_at      TEXT,
+            content_purged_at TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS runs_by_pr ON runs (repo, pr_number)",
+    ),
     # The circuit breaker's three scalars. A separate table from `ledger`
     # because ledger rows are tokens genuinely consumed and the rolling
     # windows sum them; breaker state is not usage and must not be summed.
-    """
-    CREATE TABLE IF NOT EXISTS budget_state (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-    );
-    """,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS budget_state (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """,
+    ),
     # The shared budget policy: whose configuration governs the pool when
     # several daemons share this file. One row, held there by the CHECK,
     # because a second row would be a second opinion about one allowance --
@@ -161,14 +170,16 @@ _MIGRATIONS: tuple[str, ...] = (
     # Separate from `budget_state` even though both are one-row-ish scalars:
     # that one is what the breaker *learned*, this is what an operator
     # *declared*, and a reset of either must not touch the other.
-    """
-    CREATE TABLE IF NOT EXISTS budget_policy (
-        id             INTEGER PRIMARY KEY CHECK (id = 1),
-        authority_repo TEXT NOT NULL,
-        policy         TEXT NOT NULL,
-        written_at     TEXT NOT NULL
-    );
-    """,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS budget_policy (
+            id             INTEGER PRIMARY KEY CHECK (id = 1),
+            authority_repo TEXT NOT NULL,
+            policy         TEXT NOT NULL,
+            written_at     TEXT NOT NULL
+        )
+        """,
+    ),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)
@@ -206,22 +217,21 @@ class SqliteStore:
     def _migrate(self) -> None:
         """Apply every migration this database has not seen yet.
 
-        Each script and its version bump commit together. ``executescript``
-        would be the natural way to run a multi-statement script, but it
-        issues a ``COMMIT`` of its own first, which would split the pair --
-        so the statements are executed individually inside one transaction
-        instead. A crash mid-migration therefore rolls back to the previous
-        version and the migration is simply re-applied, rather than needing
-        every statement to be independently idempotent.
+        Each migration and its version bump commit together. ``executescript``
+        would be the natural way to run several statements, but it issues a
+        ``COMMIT`` of its own first, which would split the pair -- so the
+        statements are executed individually inside one transaction instead.
+        A crash mid-migration therefore rolls back to the previous version
+        and the migration is simply re-applied, rather than needing every
+        statement to be independently idempotent.
         """
-        for index, script in enumerate(
+        for index, statements in enumerate(
             _MIGRATIONS[self.schema_version :], start=self.schema_version + 1
         ):
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                for statement in script.split(";"):
-                    if statement.strip():
-                        self._conn.execute(statement)
+                for statement in statements:
+                    self._conn.execute(statement)
                 # PRAGMA does not accept a bound parameter; `index` is a loop
                 # counter over a module constant, never user input.
                 self._conn.execute(f"PRAGMA user_version = {index:d}")

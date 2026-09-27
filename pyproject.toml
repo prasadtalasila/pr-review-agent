@@ -1,6 +1,6 @@
 [project]
 name = "pr-review-agent"
-version = "1.1.8"
+version = "1.1.9"
 description = "Locally-hosted LLM-based PR review agent with enforced usage budgets"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
