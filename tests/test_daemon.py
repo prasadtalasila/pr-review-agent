@@ -590,7 +590,7 @@ async def test_the_backoff_doubles_while_the_worker_makes_no_progress(monkeypatc
         waits.append(seconds)
 
     monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 1.0)
-    monkeypatch.setattr("pr_review_agent.daemon._wait", record)
+    monkeypatch.setattr("pr_review_agent.daemon.wait_until", record)
     worker = CrashingWorker(crashes=3)
 
     await asyncio.wait_for(
@@ -608,7 +608,7 @@ async def test_a_worker_that_reviewed_something_starts_over_at_the_floor(monkeyp
         waits.append(seconds)
 
     monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 1.0)
-    monkeypatch.setattr("pr_review_agent.daemon._wait", record)
+    monkeypatch.setattr("pr_review_agent.daemon.wait_until", record)
     worker = CrashingWorker(crashes=3, progress_after=2)
 
     await asyncio.wait_for(
@@ -626,7 +626,7 @@ async def test_the_backoff_is_capped(monkeypatch):
 
     monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 1.0)
     monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF_MAX", 2.0)
-    monkeypatch.setattr("pr_review_agent.daemon._wait", record)
+    monkeypatch.setattr("pr_review_agent.daemon.wait_until", record)
     worker = CrashingWorker(crashes=4)
 
     await asyncio.wait_for(

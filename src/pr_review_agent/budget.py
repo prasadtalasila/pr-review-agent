@@ -62,9 +62,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ._compat import StrEnum
+from ._time import parse, stamp, to_utc
 from .config import BudgetConfig
 from .queue import Claim
-from .store import SqliteStore, parse_timestamp, read_budget_policy, to_utc
+from .store import SqliteStore, read_budget_policy
 from .triggers.models import TriggerKind
 
 logger = logging.getLogger(__name__)
@@ -411,7 +412,7 @@ class Governor:
                 "actor": claim.trigger.actor_id,
                 "mode": str(headroom.mode),
                 "tokens": config.max_run_tokens,
-                "now": _stamp(now),
+                "now": stamp(now),
             },
         )
         return True
@@ -454,7 +455,7 @@ class Governor:
                         "model": usage.model,
                         "lines": reviewed_lines,
                         "reason": str(stop_reason),
-                        "now": _stamp(now),
+                        "now": stamp(now),
                         "key": claim.trigger.dedupe_key,
                         "owner": claim.owner,
                     },
@@ -485,8 +486,8 @@ class Governor:
             _set_breaker(
                 conn,
                 calibrated_pct=str(calibrated),
-                tripped_until=_stamp(at + TRIP_HOLD),
-                last_trip_at=_stamp(at),
+                tripped_until=stamp(at + TRIP_HOLD),
+                last_trip_at=stamp(at),
             )
         logger.warning(
             "usage limit reached: refusing every claim for %s, and the effective "
@@ -710,7 +711,7 @@ def _used_since(
     Scoped to one contributor when ``actor_id`` is given, which is the whole
     of the per-contributor window: the same arithmetic, a narrower ``WHERE``.
     """
-    params: dict[str, object] = {"start": _stamp(start)}
+    params: dict[str, object] = {"start": stamp(start)}
     if actor_id is None:
         return int(conn.execute(_USED_SINCE, params).fetchone()[0])
     params["actor"] = actor_id
@@ -734,8 +735,8 @@ def _breaker(conn: sqlite3.Connection) -> Breaker:
     last_trip_at = stored.get("last_trip_at")
     return Breaker(
         calibrated_pct=int(stored.get("calibrated_pct", FULL_CALIBRATION)),
-        tripped_until=None if tripped_until is None else parse_timestamp(tripped_until),
-        last_trip_at=None if last_trip_at is None else parse_timestamp(last_trip_at),
+        tripped_until=None if tripped_until is None else parse(tripped_until),
+        last_trip_at=None if last_trip_at is None else parse(last_trip_at),
     )
 
 
@@ -752,13 +753,3 @@ def _mode_for(utilisation: float) -> Mode:
     if utilisation >= MENTION_ONLY_AT:
         return Mode.MENTION_ONLY
     return Mode.FULL
-
-
-def _stamp(value: datetime) -> str:
-    """Format a timestamp for storage and for comparison inside SQL.
-
-    The same fixed-width aware-UTC form ``queue._stamp`` writes, so ISO-8601
-    sorts lexicographically in the order the instants occur and a window's
-    start can be a plain SQL comparison.
-    """
-    return to_utc(value, "timestamp").isoformat()

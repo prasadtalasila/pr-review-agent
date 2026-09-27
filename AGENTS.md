@@ -52,6 +52,8 @@ locally-hosted PR review agent.
 src/pr_review_agent/          importable package (src layout)
   _compat.py                  stdlib shims for the oldest supported Python
   _startup.py                 token + config, shared by both entry points
+  _subprocess.py              run a child under a clock; terminate, then kill
+  _time.py                    the aware-UTC clock and the SQLite stamp format
   bootstrap.py                pre-flight egress checks for a new host
   budget.py                   rolling windows, ladder, reserve-then-settle
   config.py                   config.yaml loader and validation

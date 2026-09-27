@@ -51,12 +51,13 @@ looping.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 
+from ._time import now as _now
+from ._time import wait_until
 from .budget import Governor, StopReason, Usage, UsageConfidence
 from .engine import (
     EngineTimeout,
@@ -146,7 +147,7 @@ class ReviewWorker:
         """Drain the queue until ``stop`` is set."""
         while not stop.is_set():
             if not await self.run_once():
-                await _wait(stop, WORKER_IDLE)
+                await wait_until(stop, WORKER_IDLE)
 
     def admit(self, conn, claim: Claim, now: datetime) -> bool:
         """Whether this claim may be taken: the governor, plus one bypass.
@@ -535,14 +536,3 @@ class ReviewWorker:
         if published.outcome is PublishOutcome.SUPERSEDED:
             logger.info("%s was superseded before it could be posted", key)
         return True
-
-
-def _now() -> datetime:
-    """The current instant, aware and in UTC, as the store requires."""
-    return datetime.now(timezone.utc)
-
-
-async def _wait(stop: asyncio.Event, seconds: float) -> None:
-    """Wait ``seconds``, or until ``stop`` is set -- whichever comes first."""
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(stop.wait(), timeout=seconds)
