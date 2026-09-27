@@ -18,7 +18,13 @@ from pr_review_agent.config import PublishConfig
 from pr_review_agent.engine import Finding, Outcome, ReviewResult, Severity
 from pr_review_agent.poller.client import GitHubClient, GitHubClientError
 from pr_review_agent.poller.endpoints import RepoEndpoints
-from pr_review_agent.publisher import TRAILER, Publisher, PublishOutcome, render
+from pr_review_agent.publisher import (
+    TRAILER,
+    Publisher,
+    PublishOutcome,
+    refusal,
+    render,
+)
 from pr_review_agent.runs import RecordedRun, RunStore
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.mention import has_mention
@@ -243,6 +249,64 @@ async def test_a_dry_run_still_acknowledges(runs, posted):
     transport = Transport()
     await make_publisher(runs, posted, transport, dry_run=True).acknowledge(opened())
     assert transport.paths == ["/repos/o/r/issues/7/reactions"]
+
+
+# -- the refusal notice --------------------------------------------------
+#
+# Issue #78: the 👀 goes on minutes before anyone knows a review is
+# possible, so a deterministic refusal used to leave it as the last thing
+# the agent ever said on that pull request.
+
+NOTICE = "`max_changed_lines`: 6120 exceeds the configured 5000."
+
+
+async def test_a_refusal_notice_is_posted_as_an_ordinary_comment(runs, posted):
+    transport = Transport()
+    await make_publisher(runs, posted, transport).notify(opened(), NOTICE)
+
+    assert transport.paths == ["/repos/o/r/issues/7/comments"]
+    assert NOTICE in _body(transport)
+
+
+async def test_a_refusal_notice_says_nothing_was_charged(runs, posted):
+    """The first thing a refused contributor wants to know."""
+    transport = Transport()
+    await make_publisher(runs, posted, transport).notify(opened(), NOTICE)
+    assert "nothing was charged" in _body(transport)
+
+
+def test_a_refusal_notice_cannot_summon_the_review_it_explains():
+    """Its own advice is a mention, on a pull request known to be unreviewable.
+
+    The reader still sees the handle -- the entity renders as `@` -- but the
+    raw body a later poll reads back has no `@` for `has_mention` to find.
+    """
+    body = refusal(NOTICE, handle="claude")
+    assert "claude" in body
+    assert not has_mention(body, "claude")
+
+
+async def test_a_dry_run_posts_no_refusal_notice(runs, posted):
+    """Unlike the 👀: this writes a comment, which is what the brake stops."""
+    transport = Transport()
+    await make_publisher(runs, posted, transport, dry_run=True).notify(opened(), NOTICE)
+    assert transport.requests == []
+
+
+async def test_a_failed_refusal_notice_does_not_raise(runs, posted):
+    """The row it explains is already closed; letting this escape reopens it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    await make_publisher(runs, posted, handler).notify(opened(), NOTICE)
+
+
+async def test_a_refusal_notice_is_recorded_as_the_agents_own(runs, posted):
+    """Every comment the agent posts, not only the ones a review is behind."""
+    transport = Transport()
+    await make_publisher(runs, posted, transport).notify(opened(), NOTICE)
+    assert posted.ids_for(REPO) == frozenset({555})
 
 
 # -- the head re-check ---------------------------------------------------

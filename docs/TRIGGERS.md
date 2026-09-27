@@ -21,7 +21,7 @@ outside contributions still get reviewed when we want them to".
                      polled pull request or comment
                                   │
                                   ▼
-          at or below the watermark? ──yes──► not_fresh
+                below the watermark? ──yes──► not_fresh
                                   │no
                   ┌───────────────┴────────────────┐
              pull request                       comment
@@ -44,8 +44,8 @@ outside contributions still get reviewed when we want them to".
                             Trigger ──► enqueue
 ```
 
-Freshness comes first because anything at or below the watermark has already
-been decided, whoever wrote it — so no other reason is informative, and a
+Freshness comes first because anything below the watermark has already been
+decided, whoever wrote it — so no other reason is informative, and a
 a re-seen item is reported as `not_fresh` rather than repeating
 `bot_commenter` on every cycle. No accept/reject outcome depends on the
 order: every one of these paths rejects either way.
@@ -66,7 +66,7 @@ Every row below is logged at `DEBUG`, accepted decisions included.
 | Any bot account | `bot_author` / `bot_commenter` |
 | `@claude` in a fence, code span or blockquote | `no_mention` |
 | Already-open pull request seen below the watermark | `not_fresh` |
-| Comment last updated at or below the watermark | `not_fresh` |
+| Comment last updated before the watermark | `not_fresh` |
 | Comment on a pull request that is not open | `pr_not_open` |
 
 They are reached with `--log-level DEBUG`,
@@ -287,6 +287,16 @@ Two properties follow:
   construction instead.
 - **It must survive a restart, and only move forward.** See
   [STORAGE.md](STORAGE.md).
+- **It is compared against strictly** — `<`, not `<=`. GitHub stamps to the
+  second and its listings are eventually consistent, so two items opened in
+  the same second can arrive in different poll cycles. The first advances the
+  watermark to that second; at `<=` the second one is then *at* the watermark
+  and is never classified again. `<` re-offers the boundary second instead,
+  and re-offering is free: `dedupe_key` is the queue's primary key and
+  enqueue is `INSERT OR IGNORE`, so an already-seen item inserts nothing
+  however often it is classified. This is the same argument
+  [DAEMON.md](DAEMON.md) makes for never advancing the watermark to
+  wall-clock now, one second further in.
 
 ### Comments are watermarked too
 
@@ -294,7 +304,7 @@ The same argument applies to mentions, and the cost of getting it wrong is
 higher: a pull request below the watermark is merely re-offered, whereas every
 historical `@claude` in the newest hundred comments would be replayed as a
 fresh request. A comment is therefore compared against the `comments`
-watermark on `updated_at`, and rejected `not_fresh` at or below it.
+watermark on `updated_at`, and rejected `not_fresh` below it.
 
 Two consequences are deliberate:
 

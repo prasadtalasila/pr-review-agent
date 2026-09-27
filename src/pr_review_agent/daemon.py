@@ -19,6 +19,9 @@ as a new request.
 **A watermark advances to the newest timestamp seen in the payload**, never
 to wall-clock now. An item that exists but is not yet visible to the API
 would otherwise fall into the gap between the two and be skipped forever.
+The classifier compares against it *strictly* for the same reason one second
+further in: the newest timestamp seen is a second that may still have items
+left in it.
 
 **A watermark advances only after the enqueue.** A crash in between costs one
 re-classification, which ``INSERT OR IGNORE`` makes free; the reverse order

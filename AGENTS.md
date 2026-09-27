@@ -56,6 +56,7 @@ src/pr_review_agent/          importable package (src layout)
   _subprocess.py              run a child under a clock; terminate, then kill
   _time.py                    the aware-UTC clock and the SQLite stamp format
   bootstrap.py                pre-flight egress checks for a new host
+  breaker.py                  what a real usage limit teaches the guessed ones
   budget.py                   rolling windows, ladder, reserve-then-settle
   config/                     config.yaml loader, one module per section group
     __init__.py               the document: which sections exist, and Config

@@ -45,6 +45,50 @@ latency — the acknowledgement is what makes that latency *feel* short, which
 is exactly why [DESIGN.md](DESIGN.md#-alternatives-considered) could reject a
 lower-latency relay design for it.
 
+## 🪧 The refusal notice
+
+The gap the acknowledgement opens has to be closed at both ends. A 👀 goes
+on as soon as the claim is made, minutes before anyone knows whether a
+review is possible — and when the size gate or the
+[pre-flight](BUDGET.md#-the-pre-flight-token-estimate) then refuses, the row
+is abandoned. Until 1.4.0 that was the whole of the contributor's
+experience: an acknowledgement, and then silence, with the reason visible
+only in the operator's journal. A maintainer who typed the handle on a
+6 000-line pull request had no way to learn that raising `max_changed_lines`
+is the fix (issue #78).
+
+`Publisher.notify` posts one short comment saying which refusal fired and
+which setting would undo it. The sentence comes from whichever component
+refused — `PullRequestTooLarge.notice` for the size gate,
+`Governor.preflight` for the other two — because that is where the numbers
+are, and a second copy of the rule here would drift.
+
+**Only deterministic refusals are announced.** A transient failure is
+retried and the review it eventually produces speaks for itself; a closed
+pull request is told nothing, because nobody is reading it; and a
+`PayloadError` is a bug in the agent rather than something a contributor can
+act on. What is left is the set somebody can actually do something about,
+which is what makes a notice worth the comment it costs.
+
+**It cannot accumulate.** One notice ends one trigger, and the row is
+abandoned in the same breath, so nothing re-offers it. A second notice means
+a second deliberate `@handle` — somebody asking again — and answering that
+one too is the point rather than a leak.
+
+**A dry run posts none**, unlike the acknowledgement. The reaction says
+"your trigger arrived", which is true in a dry run; this writes a comment
+under the agent's account, which is exactly what the brake is on to prevent.
+
+**It never raises**, for the same reason the acknowledgement does not: the
+row it explains is already closed and settled at zero, and letting a failed
+courtesy propagate would turn a free refusal into a retried failure that
+reserves allowance to reach the same answer.
+
+**Its own advice is a mention**, so it goes through `neutralise` like every
+other body — otherwise the comment telling a reader to type `@claude` again
+would summon the review it is explaining the absence of. See
+[below](#-nothing-it-posts-can-summon-another-review).
+
 ## 🔁 The head is re-read immediately before posting
 
 A review describes one commit. By the time it finishes the pull request may

@@ -19,6 +19,7 @@ src/pr_review_agent/
 ├── _subprocess.py     # a child process under a clock: terminate, then kill
 ├── _time.py           # the aware-UTC clock and the SQLite stamp format
 ├── bootstrap.py       # pre-flight egress checks for a new host
+├── breaker.py         # what a real usage limit teaches the guessed ones
 ├── budget.py          # rolling windows, the ladder, reserve-then-settle
 ├── config/
 │   ├── __init__.py    # the document: which sections exist, and `Config`

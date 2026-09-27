@@ -398,6 +398,12 @@ class ReviewWorker:
         deterministic one abandons it: an oversized pull request and an
         unusable payload will fail identically on attempt two, having
         reserved allowance again to do it.
+
+        Two of those endings say so on the pull request rather than only in
+        the journal -- the size gate here and the pre-flight in
+        :meth:`_attempt`. Both are refusals a reader can act on, and both
+        would otherwise leave a 👀 as the last thing the agent ever said
+        (issue #78). See :meth:`Publisher.notify`.
         """
         # Before the reservation lookup, not after: a publication item is
         # admitted without reserving, so it has no ledger row for
@@ -425,13 +431,20 @@ class ReviewWorker:
         # free, so the run would settle at nothing until `_attempt` reaches
         # the engine and raises the floor to the ceiling it reserved.
         spend = _Spend(Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name))
+        refused: PullRequestTooLarge | None = None
         try:
             end = await self._attempt(claim, mode, spend)
         except _FAILURES as exc:
             end = self._failed(claim, exc, spend.usage)
+            # The one failure a contributor can act on: every other arm of
+            # the taxonomy is either retried, or an agent-side bug that
+            # says nothing useful on a pull request.
+            refused = exc if isinstance(exc, PullRequestTooLarge) else None
         if end is None:
             return
         await self._settle_publish_and_finish(claim, end)
+        if refused is not None:
+            await self.publisher.notify(claim.trigger, refused.notice)
         if end.reviewed is not None:
             self._fold(claim, started, end.reviewed.head_sha)
 
@@ -477,11 +490,15 @@ class ReviewWorker:
             # run settles, and it is the worker's own number rather than the
             # adapter's: see `Governor.settle`.
             lines = checkout.reviewed.lines
-            if not self.governor.preflight(claim, lines, _now()):
+            refused = self.governor.preflight(claim, lines, _now())
+            if refused is not None:
                 # The last free refusal, and it released the reservation
                 # inside that call -- so this path must not settle again.
                 # Deterministic for this head, so the row ends here.
                 self.queue.abandon(claim)
+                # After the row is closed, never before: the notice is a
+                # courtesy and the bookkeeping is the record.
+                await self.publisher.notify(claim.trigger, refused)
                 return None
             # From here on a failure may have cost tokens, so it settles at
             # the ceiling it reserved. The assignment sits on the line before

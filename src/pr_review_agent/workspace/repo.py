@@ -152,6 +152,9 @@ class PullRequestTooLarge(WorkspaceError):
     the message also reports the API's own totals, because "refused at 120
     files" is baffling next to a pull request GitHub says has 900. The gap
     between the two numbers *is* the explanation.
+
+    That explanation is owed to the contributor as much as to the operator,
+    which is what :attr:`notice` is for.
     """
 
     def __init__(
@@ -165,6 +168,30 @@ class PullRequestTooLarge(WorkspaceError):
             f"{cap}: {observed} exceeds the configured {limit} "
             f"(the pull request reports {facts.changed_files} files, "
             f"{facts.changed_lines} lines, before exclusions)"
+        )
+
+    @property
+    def notice(self) -> str:
+        """The same refusal, addressed to whoever asked for the review.
+
+        A sibling of the log message rather than a second source of truth:
+        both read the same four fields, so the number an operator sees in
+        the journal is the number the pull request is told. What differs is
+        only what each reader can do about it, so this one names the setting
+        to change.
+
+        No markup beyond backticks and the emphasis the publisher adds. It
+        is assembled from a cap name this process chose and three integers,
+        with no engine prose anywhere in it -- which is why the escaping
+        :mod:`pr_review_agent.sanitise` does for a review is not needed here
+        and would have nothing to bite on.
+        """
+        return (
+            f"`{self.cap}`: {self.observed} exceeds the configured "
+            f"{self.limit}, counting only what survives "
+            f"`budget.excluded_paths`. The pull request itself reports "
+            f"{self.facts.changed_files} changed files and "
+            f"{self.facts.changed_lines} changed lines."
         )
 
 

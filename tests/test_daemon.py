@@ -40,6 +40,11 @@ from pr_review_agent.workspace import Workspace
 NOW = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 OLD = NOW - timedelta(days=30)
 RECENT = NOW - timedelta(minutes=5)
+#: A pull request the watermark has already moved past, for the tests that
+#: need one open but not classified. Strictly older than the watermark
+#: rather than equal to it: the classifier compares strictly, so an item
+#: stamped the watermark second is deliberately re-offered (issue #73).
+SEEN = OLD - timedelta(days=1)
 
 ALICE_ID = 7
 ALICE = {"id": ALICE_ID, "login": "alice", "type": "User"}
@@ -367,7 +372,7 @@ async def test_a_comment_the_agent_posted_is_not_enqueued(tmp_path):
     daemon = make_daemon(
         tmp_path,
         responder(
-            pulls=[pr_item(12, OLD)],
+            pulls=[pr_item(12, SEEN)],
             issue_comments=[issue_comment(11, RECENT)],
         ),
     )
@@ -386,7 +391,7 @@ async def test_a_contributors_comment_in_the_same_cycle_is_enqueued(tmp_path):
     daemon = make_daemon(
         tmp_path,
         responder(
-            pulls=[pr_item(12, OLD)],
+            pulls=[pr_item(12, SEEN)],
             issue_comments=[issue_comment(11, RECENT), issue_comment(13, RECENT)],
         ),
     )
@@ -404,7 +409,7 @@ async def test_another_repositorys_recorded_comment_does_not_apply(tmp_path):
     daemon = make_daemon(
         tmp_path,
         responder(
-            pulls=[pr_item(12, OLD)],
+            pulls=[pr_item(12, SEEN)],
             issue_comments=[issue_comment(11, RECENT)],
         ),
     )
@@ -427,7 +432,7 @@ async def test_a_comment_on_a_closed_pull_request_is_not_enqueued(tmp_path):
     daemon = make_daemon(
         tmp_path,
         responder(
-            pulls=[pr_item(3, OLD)],
+            pulls=[pr_item(3, SEEN)],
             issue_comments=[issue_comment(11, RECENT)],
         ),
     )
@@ -445,7 +450,7 @@ async def test_a_comment_on_a_pull_request_opened_this_cycle_is_enqueued(tmp_pat
     daemon = make_daemon(
         tmp_path,
         responder(
-            pulls=[pr_item(12, OLD)],
+            pulls=[pr_item(12, SEEN)],
             issue_comments=[issue_comment(11, RECENT)],
         ),
     )
@@ -460,7 +465,7 @@ async def test_the_open_pull_request_set_survives_a_304(tmp_path):
     cycles = iter(
         [
             # First: pr 12 is open, no comments yet.
-            responder(pulls=[pr_item(12, OLD)]),
+            responder(pulls=[pr_item(12, SEEN)]),
             # Second: the pulls leg 304s, and the mention arrives.
             responder(issue_comments=[issue_comment(11, RECENT)]),
         ]

@@ -45,6 +45,19 @@ class Classifier:
     poll would treat every already-open pull request as fresh and review the
     whole backlog at once.
 
+    **The comparison against it is strict, and that is not a rounding
+    detail.** GitHub timestamps have one-second resolution and the listing
+    endpoints are eventually consistent, so two items stamped the same second
+    can surface in different cycles. The first advances the watermark to that
+    second; at ``<=`` the second one is then at the watermark and is dropped
+    permanently, which is the one failure mode a watermark must not have.
+    ``<`` re-offers the boundary second instead, and re-offering is free:
+    ``dedupe_key`` is the queue's primary key and enqueue is
+    ``INSERT OR IGNORE``, so an item already seen inserts nothing however
+    often it is classified again. It is the argument :mod:`.daemon` makes for
+    never advancing the watermark to wall-clock ``now``, carried one second
+    further (issue #73).
+
     ``open_pull_requests`` is the set of numbers the ``/pulls?state=open``
     leg of the same sweep reported. The two comment endpoints are repo-wide
     and carry no state filter of their own, so without it every comment on
@@ -85,7 +98,7 @@ class Classifier:
         return decision
 
     def _decide_pull_request(self, pr: PullRequest) -> Decision:
-        if pr.created_at <= self.since:
+        if pr.created_at < self.since:
             return Decision(None, "not_fresh")
         if pr.author.is_bot:
             return Decision(None, "bot_author")
@@ -132,7 +145,7 @@ class Classifier:
         return decision
 
     def _decide_comment(self, comment: Comment) -> Decision:
-        if comment.updated_at <= self.since:
+        if comment.updated_at < self.since:
             return Decision(None, "not_fresh")
         if (
             self.open_pull_requests is not None
