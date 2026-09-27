@@ -1,0 +1,45 @@
+# Nothing here bumps anything on its own: Dependabot opens a pull request and
+# CI decides. That is the point -- the same five checks every human change
+# goes through are what say whether an upgrade is safe.
+#
+# Two ecosystems, because this repository has exactly two kinds of pinned
+# dependency and they fail differently. A stale Action is pinned by SHA (see
+# the comments beside each `uses:`), which is the right pin and also the one
+# nothing renews. A stale `poetry.lock` is a known-vulnerable library running
+# under a metered credential beside a real GitHub token.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One pull request for all of them. Actions are bumped together in
+    # practice, and seven separate pull requests a week is how an operator
+    # learns to stop reading them.
+    groups:
+      actions:
+        patterns:
+          - '*'
+    commit-message:
+      prefix: 'ci'
+    labels:
+      - dependencies
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    # Runtime and dev are separated because they carry different risk. A
+    # runtime bump changes what the daemon executes against a real token; a
+    # dev bump changes only what checks it. Reviewing them in one diff makes
+    # the second hide the first.
+    groups:
+      runtime:
+        dependency-type: production
+      dev:
+        dependency-type: development
+    commit-message:
+      prefix: 'deps'
+    labels:
+      - dependencies
