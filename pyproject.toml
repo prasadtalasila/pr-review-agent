@@ -57,9 +57,9 @@ include = [
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.3"
-pytest-cov = "^6.0"
-ruff = "^0.9"
-pylint = "^3.3"
+pytest-cov = "^7.1"
+ruff = "^0.16"
+pylint = "^4.0"
 pyright = "^1.1"
 pytest-asyncio = "^1.2"
 cryptography = ">=42"
