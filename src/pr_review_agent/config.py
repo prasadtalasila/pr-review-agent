@@ -39,6 +39,9 @@ DEFAULT_STORE_PATH = "state.db"
 #: way, and logged absolute for the same reason.
 DEFAULT_CACHE_DIR = ".cache/repos"
 
+#: The git the checkout runs when the operator does not name one.
+DEFAULT_GIT_BINARY = "git"
+
 #: Review concurrency. One to start with: a second worker does not merely
 #: review faster, it doubles the allowance held in reservations at any
 #: moment, and that is a decision an operator should take deliberately.
@@ -419,13 +422,19 @@ class StoreConfig:
 
 @dataclass(frozen=True)
 class WorkspaceConfig:
-    """Where a pull request is checked out.
+    """Where a pull request is checked out, and what checks it out.
 
-    A path and nothing else. The cap that bounds what a checkout may cost
-    lives in ``budget`` with every other spending rail.
+    The cap that bounds what a checkout may cost lives in ``budget`` with
+    every other spending rail.
+
+    ``git`` exists so an operator can name an absolute path. The default is
+    the plain name, resolved through the ``PATH`` the checkout passes
+    through -- which is the one place a writable directory early on that
+    ``PATH`` can defeat every other control in ``gitcmd``.
     """
 
     cache_dir: str = DEFAULT_CACHE_DIR
+    git: str = DEFAULT_GIT_BINARY
 
     @classmethod
     def parse(cls, data: dict) -> WorkspaceConfig:
@@ -435,7 +444,10 @@ class WorkspaceConfig:
             raise ConfigError(
                 f"workspace.cache_dir must be a non-empty path, got {cache_dir!r}"
             )
-        return cls(cache_dir=cache_dir)
+        git = data.get("git", DEFAULT_GIT_BINARY)
+        if not isinstance(git, str) or not git.strip():
+            raise ConfigError(f"workspace.git must be a non-empty path, got {git!r}")
+        return cls(cache_dir=cache_dir, git=git)
 
 
 @dataclass(frozen=True)
@@ -700,7 +712,7 @@ class Config:
             # argument: it holds a path and nothing else, because the cap
             # that could spend lives in `budget`.
             workspace=WorkspaceConfig.parse(
-                _section(data, "workspace", {"cache_dir"})
+                _section(data, "workspace", {"cache_dir", "git"})
                 if "workspace" in data
                 else {}
             ),

@@ -606,6 +606,25 @@ def test_unknown_key_in_publish_is_rejected():
         Config.from_mapping(data)
 
 
+# -- which git the checkout runs -----------------------------------------
+
+
+def test_workspace_git_defaults_to_the_plain_name():
+    assert Config.from_mapping(VALID).workspace.git == "git"
+
+
+def test_workspace_git_accepts_an_absolute_path():
+    data = dict(VALID, workspace={"git": "/opt/git/bin/git"})
+    assert Config.from_mapping(data).workspace.git == "/opt/git/bin/git"
+
+
+@pytest.mark.parametrize("value", ["", "   ", 7, None])
+def test_a_non_path_workspace_git_is_refused(value):
+    data = dict(VALID, workspace={"git": value})
+    with pytest.raises(ConfigError, match="workspace.git"):
+        Config.from_mapping(data)
+
+
 # -- the shipped examples, which documentation has already got wrong once --
 
 EXAMPLES = Path(__file__).resolve().parent.parent
@@ -699,7 +718,7 @@ def test_the_comprehensive_example_shows_every_key_the_loader_accepts():
     }
     assert set(data["store"]) == {"path"}
     assert set(data["publish"]) == {"dry_run"}
-    assert set(data["workspace"]) == {"cache_dir"}
+    assert set(data["workspace"]) == {"cache_dir", "git"}
     assert set(data["engine"]) == {
         "binary",
         "model",
@@ -723,6 +742,7 @@ def test_the_comprehensive_example_states_the_real_defaults():
     assert shown.budget.excluded_paths == defaults.budget.excluded_paths
     assert shown.store.path == defaults.store.path
     assert shown.workspace.cache_dir == defaults.workspace.cache_dir
+    assert shown.workspace.git == defaults.workspace.git
     assert shown.worker.count == defaults.worker.count
     assert shown.publish.dry_run == defaults.publish.dry_run
     assert shown.engine.binary == defaults.engine.binary

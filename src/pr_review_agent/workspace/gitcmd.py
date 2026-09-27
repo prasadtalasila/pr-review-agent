@@ -26,9 +26,12 @@ config-nulling does not: ``core.symlinks`` and ``transfer.fsckObjects``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 #: The release that added ``GIT_CONFIG_GLOBAL`` / ``GIT_CONFIG_SYSTEM``.
 MINIMUM_GIT_VERSION = (2, 32)
@@ -36,7 +39,16 @@ MINIMUM_GIT_VERSION = (2, 32)
 #: The only transport the agent will ever speak.
 ALLOWED_PROTOCOL = "https"
 
-#: Patched in tests; a plain name resolved through the passed-through PATH.
+#: The git every ``run_git`` runs. A plain name is resolved by the kernel
+#: through the ``PATH`` this module deliberately passes through -- so a
+#: writable directory early on the daemon user's ``PATH`` shadows it and
+#: defeats ``HARDENING_FLAGS`` and ``git_environment`` together, without
+#: touching either. ``workspace.git`` may name an absolute path instead;
+#: ``use_git`` is how it gets here. Patched directly in tests.
+#:
+#: Module state rather than a parameter because ``run_git`` is a free
+#: function called from a dozen places, and a binary threaded through all of
+#: them would be the same value on every call. This is roadmap item A5.
 GIT = "git"
 
 GIT_TIMEOUT_SECONDS = 300.0
@@ -118,6 +130,25 @@ def git_environment() -> dict[str, str]:
         if value is not None:
             env[name] = value
     return env
+
+
+def use_git(binary: str) -> None:
+    """Point every later ``run_git`` at ``binary``.
+
+    Called once at startup. A relative name still works -- it is the
+    documented default, and requiring an absolute path would break every
+    host where ``git`` is simply on the ``PATH`` -- but it says so, because
+    a shadowed binary is invisible from the inside and the log line is the
+    only place an operator meets the question.
+    """
+    global GIT  # pylint: disable=global-statement
+    GIT = binary
+    if not Path(binary).is_absolute():
+        logger.warning(
+            "workspace.git is %r, which resolves through PATH; "
+            "an absolute path is what makes the checkout's hardening certain",
+            binary,
+        )
 
 
 async def run_git(

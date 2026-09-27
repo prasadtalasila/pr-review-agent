@@ -719,6 +719,24 @@ def test_the_engine_carries_the_configured_binary_and_standards():
     assert engine.standards_paths == ("AGENTS.md",)
 
 
+def test_a_relative_engine_binary_warns(caplog):
+    """A writable directory early on PATH defeats every argv control there is."""
+    with caplog.at_level(logging.WARNING):
+        build_engine(CONFIG)
+    assert "resolves through PATH" in caplog.text
+
+
+def test_an_absolute_engine_binary_does_not_warn(caplog, tmp_path):
+    # tmp_path rather than a literal: "/opt/claude" is not an absolute path
+    # on Windows, where the suite also runs.
+    config = replace(
+        CONFIG, engine=replace(CONFIG.engine, binary=str(tmp_path / "claude"))
+    )
+    with caplog.at_level(logging.WARNING):
+        build_engine(config)
+    assert "resolves through PATH" not in caplog.text
+
+
 def test_no_fake_engine_reaches_a_running_daemon(tmp_path):
     """FakeEngine is a test double; a daemon running one would review nothing."""
     workers = make_workers(tmp_path, 2)

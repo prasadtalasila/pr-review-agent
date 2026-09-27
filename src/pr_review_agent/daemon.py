@@ -53,6 +53,7 @@ from .store import BudgetPolicy, SqliteStore
 from .triggers.models import Decision
 from .worker import ReviewWorker
 from .workspace import Workspace
+from .workspace.gitcmd import use_git
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +396,15 @@ def build_engine(config: Config) -> ClaudeCliEngine:
     widening it to the protocol would claim a choice that is not being made.
     """
     engine = config.engine
+    if not Path(engine.binary).is_absolute():
+        # Same reasoning as `use_git`: a plain name resolves through the
+        # `PATH` `cli_environment` passes through, and a writable directory
+        # early on it shadows the binary and every argv control with it.
+        logger.warning(
+            "engine.binary is %r, which resolves through PATH; "
+            "an absolute path is what makes the containment flags certain",
+            engine.binary,
+        )
     return ClaudeCliEngine(
         model=engine.model,
         expected_version=engine.expected_version,
@@ -516,6 +526,8 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
     logger.info("state database: %s", path)
     client = GitHubClient(token)
     endpoints = RepoEndpoints(config.github.owner, config.github.name)
+    # Before any checkout: which git the hardened invocation runs.
+    use_git(config.workspace.git)
     workspace = Workspace(config.github.repo, config.workspace.cache_dir)
     # Same reason as the store path above: the configured default is
     # relative, so what it means depends on where the daemon was started.

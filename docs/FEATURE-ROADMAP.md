@@ -107,7 +107,8 @@ the confinement is the same — read the worktree, write the worktree and
 `/tmp`, reach the model endpoint and nothing else, and in particular not
 `github.com`, which the engine has no reason to touch.
 
-**A3. Assert at preflight that the containment flags still exist.**
+**A3. Assert at preflight that the containment flags still exist.** *(landed
+in 1.1.4 — see [ENGINE.md](ENGINE.md#-preflight-refuses-an-unconfined-run).)*
 The sharpest concrete defect on the list. `preflight` in
 `engine/claude.py` only *warns* on an unexpected CLI version, so a future
 `claude` that renamed or dropped `--restricted` would either error out (fine)
@@ -125,7 +126,9 @@ reviewer's uid; with A2 it is the sandbox's own proxy. The vendor's caveat
 applies — a hostname allowlist without TLS termination is defeatable by
 domain fronting — so this is depth, not the boundary.
 
-**A5. Resolve `git` and `claude` to absolute, pinned paths.**
+**A5. Resolve `git` and `claude` to absolute, pinned paths.** *(landed in
+1.1.4: `workspace.git` and `engine.binary` accept absolute paths, `host
+check` reports where each resolved, and startup warns on a plain name.)*
 `GIT = "git"` in [`workspace/gitcmd.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/workspace/gitcmd.py)
 and `binary = "claude"` in `engine/claude.py` both resolve through the
 inherited `PATH`, which `cli_environment` passes through. A shadowed binary
@@ -443,10 +446,11 @@ has to be able to read in the logs, or a full disk becomes a silent stall.
 
 Ordered by value per unit of diff, not by section:
 
-1. **A3, the flag check, and A5, absolute binaries.** Both are small, pure,
-   offline and spend nothing, and each one is a live defect rather than a
-   missing layer: today an upgraded CLI can silently stop being restricted,
-   and a shadowed `PATH` entry defeats everything else here.
+1. ~~**A3, the flag check, and A5, absolute binaries.**~~ *Landed in 1.1.4.*
+   Both were small, pure, offline and spent nothing, and each was a live
+   defect rather than a missing layer: an upgraded CLI could silently stop
+   being restricted, and a shadowed `PATH` entry defeated everything else
+   here.
 2. **A1, the reviewer's own uid.** The largest reduction in what a
    read-and-quote chain can reach, bought with a `setpriv` prefix and a
    systemd unit rather than a design.

@@ -1,6 +1,7 @@
 """Bootstrap checks: can this host actually reach what the daemon needs?"""
 
 import sys
+from pathlib import Path
 
 import httpx
 import pytest
@@ -9,6 +10,7 @@ from pr_review_agent import bootstrap
 from pr_review_agent.bootstrap import (
     CheckResult,
     check_anthropic,
+    check_binaries,
     check_git,
     check_github,
 )
@@ -177,6 +179,13 @@ def _stub_git_checks(monkeypatch, results: list[CheckResult]) -> None:
         return results
 
     monkeypatch.setattr(bootstrap, "check_git", canned)
+    # Likewise: the engine binary is not installed on a CI runner, and
+    # whether it happens to be is not what these two tests are about.
+    monkeypatch.setattr(
+        bootstrap,
+        "check_binaries",
+        lambda _config: [CheckResult("git binary", True, "'git' -> /usr/bin/git")],
+    )
 
 
 async def test_run_checks_covers_github_git_and_anthropic(monkeypatch, tmp_path):
@@ -204,6 +213,7 @@ async def test_run_checks_covers_github_git_and_anthropic(monkeypatch, tmp_path)
     # The checkout's route is a different host from the API's, so it has to
     # be its own line in the report rather than assumed from the poller's.
     assert "git version" in names and "git fetch route" in names
+    assert "git binary" in names
     assert all(result.ok for result in results)
 
 
@@ -222,6 +232,56 @@ async def test_a_failed_git_check_fails_the_run(monkeypatch, tmp_path):
     results = await bootstrap.run_checks(config(tmp_path), "fake-token")
 
     assert not all(result.ok for result in results)
+
+
+# -- which file will actually run ----------------------------------------
+
+
+def binaries(tmp_path, *, git="git", engine="claude") -> dict:
+    written = CONFIG_YAML + f"workspace:\n  git: {git}\n"
+    written = written.replace(
+        "  timeout_seconds: 900\n", f"  timeout_seconds: 900\n  binary: {engine}\n"
+    )
+    path = tmp_path / "config.yaml"
+    path.write_text(written, encoding="utf-8")
+    return by_name(check_binaries(Config.load(path)))
+
+
+def test_a_name_on_path_reports_where_it_resolved(tmp_path):
+    """Found is not the answer: which file runs is."""
+    result = binaries(tmp_path)["git binary"]
+    assert result.ok
+    assert result.detail.startswith("'git' -> ")
+    assert result.detail.endswith("(through PATH)")
+    # The point of the line: an absolute path, whatever this platform
+    # spells one as.
+    resolved = result.detail[len("'git' -> ") : -len(" (through PATH)")]
+    assert Path(resolved).is_absolute()
+
+
+def test_an_absolute_path_is_reported_as_configured(tmp_path):
+    target = tmp_path / "mygit"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    result = binaries(tmp_path, git=str(target))["git binary"]
+    assert result.ok
+    assert "as configured" in result.detail
+    assert str(target) in result.detail
+
+
+def test_an_absolute_path_that_is_not_there_fails(tmp_path):
+    result = binaries(tmp_path, git=str(tmp_path / "absent"))["git binary"]
+    assert not result.ok
+    assert "resolves to nothing" in result.detail
+
+
+def test_a_name_that_resolves_to_nothing_fails(tmp_path):
+    result = binaries(tmp_path, engine="claude-not-installed")["engine binary"]
+    assert not result.ok
+    assert "resolves to nothing" in result.detail
+
+
+def test_both_binaries_are_checked(tmp_path):
+    assert set(binaries(tmp_path)) == {"git binary", "engine binary"}
 
 
 def test_report_prints_each_result_and_succeeds(capsys):

@@ -30,15 +30,24 @@ be in force.
 **Anthropic is reachable.** No API key is sent and none is needed: any HTTP
 status proves the route exists, and only a transport error is a failure.
 
+**The two binaries resolve, and to where.** `git` and the review engine are
+the only programs this agent executes, and a plain name resolves through the
+daemon user's `PATH` -- where a writable directory early on it shadows the
+binary and defeats every argv control with it. The check *reports the
+absolute path each name resolved to* rather than only that it was found,
+because the whole question is which file will run.
+
 The token is read from the environment, never from `config.yaml`, and is
 never printed -- the checks report what happened, not what was sent.
 """
 
 from __future__ import annotations
 
+import shutil
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -162,6 +171,36 @@ async def check_git(repo: str, base_url: str = GITHUB_BASE) -> list[CheckResult]
     return results
 
 
+def check_binaries(config: Config) -> list[CheckResult]:
+    """Where ``git`` and the engine binary actually resolve to.
+
+    Pure and offline: it runs neither. A name that resolves to nothing is a
+    failure -- the daemon would raise on its first checkout or its first
+    review -- and a name that resolves says so with the absolute path, so an
+    operator can see at a glance whether it is the file they meant.
+    """
+    return [
+        _resolves(f"{label} binary", configured)
+        for label, configured in (
+            ("git", config.workspace.git),
+            ("engine", config.engine.binary),
+        )
+    ]
+
+
+def _resolves(name: str, configured: str) -> CheckResult:
+    """One binary: found or not, and where."""
+    if Path(configured).is_absolute():
+        found = configured if Path(configured).exists() else None
+        where = "as configured"
+    else:
+        found = shutil.which(configured)
+        where = "through PATH"
+    if found is None:
+        return CheckResult(name, False, f"{configured!r} resolves to nothing")
+    return CheckResult(name, True, f"{configured!r} -> {found} ({where})")
+
+
 async def check_anthropic(client: httpx.AsyncClient) -> CheckResult:
     """Prove the route to Anthropic exists; any HTTP status counts."""
     name = "anthropic reachable"
@@ -179,6 +218,7 @@ async def run_checks(config: Config, token: str) -> list[CheckResult]:
     anthropic = httpx.AsyncClient()
     try:
         results = await check_github(github, endpoints)
+        results.extend(check_binaries(config))
         results.extend(await check_git(config.github.repo))
         results.append(await check_anthropic(anthropic))
     finally:

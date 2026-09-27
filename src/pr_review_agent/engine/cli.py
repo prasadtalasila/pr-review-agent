@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 #: How long a terminated agent gets to exit before the kill.
 TERMINATE_GRACE_SECONDS = 5.0
 
+#: The wall clock on the two probes that run *before* the timed review:
+#: ``--version`` and ``--help``. Neither does any work, so 30 s is generous
+#: -- and unbounded is not an option, because both are awaited inside
+#: ``review()`` before ``run()``'s own clock starts. A ``claude --version``
+#: that hangs on a network update check would block the worker until the
+#: lease lapsed and nothing claimed the pull request again until a restart.
+PROBE_TIMEOUT_SECONDS = 30.0
+
 #: Passed to every adapter's child. ``PATH`` is what finds the binary;
 #: ``HOME`` is where a subscription credential lives. Nothing else is
 #: inherited, and an adapter that needs more names it explicitly.
@@ -240,15 +248,42 @@ class CliEngine(ABC):
 
     async def version(self) -> str:
         """Whatever ``<binary> --version`` prints, stripped."""
+        return await self._probe("--version")
+
+    async def help_text(self) -> str:
+        """Whatever ``<binary> --help`` prints, stripped.
+
+        The preflight's evidence that the containment flags an adapter
+        passes are flags the binary still has. Read rather than asserted,
+        because a flag that was removed in an upgrade is exactly the case
+        the check exists for.
+        """
+        return await self._probe("--help")
+
+    async def _probe(self, flag: str) -> str:
+        """Run ``<binary> <flag>`` under a wall clock, and return its stdout.
+
+        ``EngineUnavailable`` on every failure, including the timeout: a
+        probe that hangs executed no review, so the worker settling it at a
+        provable zero is right.
+        """
         try:
             process = await asyncio.create_subprocess_exec(
                 self.binary,
-                "--version",
+                flag,
                 env=cli_environment(self.env_prefixes),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
         except OSError as exc:
             raise EngineUnavailable(f"cannot run {self.binary!r}: {exc}") from exc
-        stdout, _ = await process.communicate()
+        try:
+            stdout, _ = await asyncio.wait_for(
+                process.communicate(), PROBE_TIMEOUT_SECONDS
+            )
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            await self._stop(process)
+            raise EngineUnavailable(
+                f"{self.binary!r} {flag} did not answer within {PROBE_TIMEOUT_SECONDS}s"
+            ) from exc
         return stdout.decode(errors="replace").strip()

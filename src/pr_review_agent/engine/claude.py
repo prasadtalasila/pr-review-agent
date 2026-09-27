@@ -22,7 +22,7 @@ import json
 import logging
 
 from ..budget import Usage, UsageConfidence
-from .cli import CliEngine, EngineProtocolError, UsageLimited
+from .cli import CliEngine, EngineProtocolError, EngineUnavailable, UsageLimited
 from .models import (
     Capabilities,
     Finding,
@@ -38,6 +38,26 @@ logger = logging.getLogger(__name__)
 
 #: The whole tool set. Adding a write tool has to break a test.
 TOOLS = "Read,Grep,Glob"
+
+#: Every long flag ``argv`` passes. Preflight refuses unless ``--help``
+#: still lists all of them, because a flag the binary silently ignores is a
+#: control that is not there. Spelled out rather than derived from a call to
+#: ``argv``, which needs a request it has no use for; a test asserts the two
+#: agree, so they cannot drift.
+REQUIRED_FLAGS: tuple[str, ...] = (
+    "--disable-slash-commands",
+    "--json-schema",
+    "--model",
+    "--no-session-persistence",
+    "--output-format",
+    "--permission-mode",
+    "--permission-prompts",
+    "--restricted",
+    "--setting-sources",
+    "--strict-mcp-config",
+    "--system-prompt",
+    "--tools",
+)
 
 #: What the envelope's ``subtype`` means for publishability. Anything absent
 #: from here is a failure: an unrecognised subtype is not a clean review.
@@ -139,11 +159,24 @@ class ClaudeCliEngine(CliEngine):
         return build_prompt(request, standards)
 
     async def preflight(self) -> None:
-        """Warn on a version this adapter was not written against.
+        """Check the version, then *refuse* if the containment is gone.
 
-        A warning rather than a refusal: the parse is what actually protects
-        us and it already fails loudly, while refusing would take the
-        reviewer offline on a routine upgrade that changed nothing we read.
+        The two halves answer different questions and so end differently.
+
+        An unexpected ``--version`` only warns: the parse is what protects
+        against output changing shape and it already fails loudly, while
+        refusing would take the reviewer offline on a routine upgrade that
+        changed nothing we read.
+
+        A missing containment flag refuses. ``--restricted``, ``--tools``
+        and ``--permission-prompts`` are the whole sandbox -- if a future
+        ``claude`` drops one, every argv control in this module is argv the
+        binary ignores, and the review runs unconfined over an attacker's
+        tree while the log says "output parsing may fail". Offline is the
+        right failure for that. ``EngineUnavailable`` is the shape, because
+        nothing was executed and the run settles at a provable zero.
+
+        This is roadmap item A3.
         """
         if self._version_checked:
             return
@@ -156,6 +189,17 @@ class ClaudeCliEngine(CliEngine):
                 self.binary,
                 found,
                 self.expected_version,
+            )
+        await self._verify_flags()
+
+    async def _verify_flags(self) -> None:
+        """Refuse unless every long flag this adapter passes is still real."""
+        help_text = await self.help_text()
+        missing = [flag for flag in REQUIRED_FLAGS if flag not in help_text]
+        if missing:
+            raise EngineUnavailable(
+                f"{self.binary} --help does not list {', '.join(missing)}; "
+                "refusing to review unconfined"
             )
 
     def usage_limited(self, text: str) -> bool:
