@@ -68,6 +68,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ._compat import StrEnum
+from .comments import AgentComments
 from .config import PublishConfig
 from .engine import Finding, Severity
 from .poller.client import GitHubClient, GitHubClientError
@@ -161,6 +162,11 @@ class Publisher:
     client: GitHubClient
     endpoints: RepoEndpoints
     runs: RunStore
+    #: Every comment this posts, so the classifier can tell the agent's own
+    #: words from a contributor's. Written here rather than in ``runs``
+    #: because it has to cover any comment the publisher learns to post,
+    #: not only the ones a review is behind.
+    posted: AgentComments
     config: PublishConfig
     #: The handle ``render`` must not leave in anything it posts. Set once at
     #: construction rather than through ``reload``: ``Daemon.reload_config``
@@ -273,10 +279,14 @@ class Publisher:
             )
             return self._stamp(run, comment_id=None, outcome=PublishOutcome.DRY_RUN)
 
-        posted = await self.client.post(
+        response = await self.client.post(
             self.endpoints.issue_comments(run.pr_number), {"body": body}
         )
-        comment_id = int(posted["id"])
+        comment_id = int(response["id"])
+        # Before the run is stamped: a crash between the two leaves a
+        # comment the agent will not answer, where the other order leaves
+        # one it might.
+        self.posted.record(run.repo, comment_id, now=datetime.now(timezone.utc))
         logger.info(
             "published %s on %s#%d as comment %d",
             run.dedupe_key,

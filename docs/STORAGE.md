@@ -156,6 +156,12 @@ CREATE TABLE runs (
     publish_attempts  INTEGER NOT NULL DEFAULT 0,  -- posts tried for this run
     publish_failed_at TEXT              -- set once it is given up on
 );
+CREATE TABLE agent_comments (
+    repo       TEXT NOT NULL,
+    comment_id INTEGER NOT NULL,   -- a comment this agent posted
+    posted_at  TEXT NOT NULL,
+    PRIMARY KEY (repo, comment_id)
+);
 CREATE TABLE budget_state (
     key   TEXT PRIMARY KEY,           -- calibrated_pct|tripped_until|last_trip_at
     value TEXT NOT NULL
@@ -244,7 +250,7 @@ comment a mention was written in; version 8 adds `runs`; version 9 adds
 `ledger.repo`, `ledger.pr_number` and the `(repo, pr_number, reserved_at)`
 index the [pacer](BUDGET.md#-the-pacer-one-pull-requests-rate) reads; version
 12 adds `runs.publish_outcome`; version 13 adds `runs.publish_attempts` and
-`runs.publish_failed_at`.
+`runs.publish_failed_at`; version 14 adds `agent_comments`.
 
 Version 13's counter starts at **zero on every row written before it**, which
 is the honest reading: nothing counted those posts. A run carrying a stamp is
@@ -259,6 +265,18 @@ UPDATE runs SET publish_failed_at = NULL, publish_attempts = 0
 
 The daemon picks it up the next time a publication item names that run; until
 then the findings sit in `runs`, which is where they have been all along.
+
+Version 14's `agent_comments` is the agent's memory of what it has said: the
+classifier reads it once per poll cycle and drops any comment whose id is
+there, which is what stops the agent reviewing its own review
+([TRIGGERS.md](TRIGGERS.md#-the-agent-cannot-summon-itself)). It is a table
+of its own rather than a column on `runs` because it has to cover every
+comment the publisher posts, whether or not a review is behind it, and
+because it is **never pruned** — a retention sweep that deletes `runs` rows
+must not make the agent forget what it said. It starts empty on an existing
+store, which reads the same as a first run: comments posted before the
+migration are not known to be the agent's, and `mention.neutralise` is what
+covers them.
 
 Version 11's two columns are **NULL on every row written before it**, and
 that is the reading the pacer is built around: no repository and no pull

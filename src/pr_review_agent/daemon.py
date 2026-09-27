@@ -40,6 +40,7 @@ from ._startup import StartupError
 from ._time import now as utcnow
 from ._time import wait_until
 from .budget import Governor
+from .comments import AgentComments
 from .config import Config, ConfigError
 from .engine import ReviewEngine
 from .engine.claude import ClaudeCliEngine
@@ -298,7 +299,14 @@ class Daemon:
         if not batches:
             return EMPTY
         since = self._since(COMMENTS, now=now)
-        classifier = self.config.classifier(since, self.open_pull_requests)
+        # Read once per cycle rather than per comment: the set is this
+        # agent's own output, so it changes only when a review is published,
+        # and one query is cheaper than one lookup per polled comment.
+        classifier = self.config.classifier(
+            since,
+            self.open_pull_requests,
+            AgentComments(self.store).ids_for(self.config.github.repo),
+        )
         newest, summary = since, EMPTY
         for batch in batches:
             for comment in payloads.comments(self.config.github.repo, batch):
@@ -542,6 +550,7 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
                     client=client,
                     endpoints=endpoints,
                     runs=RunStore(store),
+                    posted=AgentComments(store),
                     config=config.publish,
                     handle=config.triggers.handle,
                     # The one credential this process holds. A review that

@@ -204,14 +204,24 @@ A comment the agent posts is a comment the poller reads back on the next
 cycle.
 
 Left alone that is a loop: the agent posts, the classifier accepts what it
-posted, and the agent reviews the pull request again. Until 1.3.0 the dedupe
-key bounded it to one extra paid review per pull request, because the comment
-was rewritten and its id never changed. Now that each review posts a *new*
-comment with a new id, that bound is gone — the loop would be bounded only by
-[the pacer](BUDGET.md#-the-pacer)'s interval and per-pull-request daily cap.
-So the mitigation below is no longer defence in depth behind a cheap
-structural limit; it is the thing that closes the loop, and the test that
-pins it is not optional.
+posted, and the agent reviews the pull request again. Two things stop it, and
+this module holds both ends.
+
+**The id is recorded.** Every comment posted here is written to
+`agent_comments`, and the classifier drops a comment whose id it finds there
+as `self_comment` — see
+[TRIGGERS.md](TRIGGERS.md#-the-agent-cannot-summon-itself). That is the
+structural half. It replaces the bound that came for free while the agent
+rewrote one comment per pull request: the id never changed, so the dedupe key
+capped a runaway loop at one extra paid review. A comment per review mints a
+new id every round ([issue #108](https://github.com/prasadtalasila/pr-review-agent/issues/108)),
+and the recorded set is stricter than what it replaces — no extra review at
+all. The write happens **before** the run is stamped: a crash between the two
+leaves a comment the agent will not answer, where the other order leaves one
+it might.
+
+**The text is neutralised.** Below, and unchanged. The set is database state
+and the escape is in the posted bytes, so neither subsumes the other.
 
 So `render` returns `triggers.mention.neutralise(body, handle)`. It rewrites
 the `@` of exactly the mentions `has_mention` would find into `&#64;`, which

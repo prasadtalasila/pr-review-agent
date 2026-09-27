@@ -153,19 +153,37 @@ There is **no check on which account the agent posts as**. There used to be:
 The loop they guarded is real. A review body is engine prose over the tree
 being reviewed, and when that tree is *this* repository the prose names
 `@claude` readily, and a comment the agent posts comes back to the poller on
-the next cycle. Left alone, the agent answers itself. Until 1.3.0 the dedupe
-key bounded that to one extra paid review per pull request, because the agent
-rewrote one comment whose id never changed; since each review posts its own
-comment, a new id means a new key, and the only bound left would be
-[the pacer](BUDGET.md#-the-pacer). So the mitigation below carries the whole
-weight now.
+the next cycle. Left alone, the agent answers itself.
 
-It is closed in the publisher instead. `publisher.render` runs every body it
-posts through `mention.neutralise`, which rewrites exactly the mentions
-`has_mention` would find — and only those, so a handle inside a code span is
-left as the reader wrote it — into `&#64;`. GitHub renders the entity as `@`,
-so a reader sees no difference; the raw body a later poll reads back has no
-`@` for the detector to match.
+It is closed in **two** places, neither of them an identity check.
+
+**The comment it posted.** The publisher records the id of every comment it
+posts, and the classifier rejects a comment whose id is in that set as
+`self_comment` — before the mention test, so a body that somehow carries a
+live handle is stopped anyway. This is the same question an identity check
+asked, put to the *comment* rather than the account: *did I post this?* — and
+nobody configures it, so nobody can configure it wrong. It replaces a bound
+that used to come for free: until 1.3.0 the agent rewrote one comment per
+pull request whose id never changed, so the dedupe key capped a runaway loop
+at one extra paid review. Posting
+[a comment per review](PUBLISHER.md#-one-comment-per-review) made every round
+mint a new id and a new key, which is [issue #108](https://github.com/prasadtalasila/pr-review-agent/issues/108).
+The set is stricter than what it replaces: the old bound allowed one extra
+review, this allows none.
+
+**The text it wrote.** `publisher.render` runs every body it posts through
+`mention.neutralise`, which rewrites exactly the mentions `has_mention` would
+find — and only those, so a handle inside a code span is left as the reader
+wrote it — into `&#64;`. GitHub renders the entity as `@`, so a reader sees
+no difference; the raw body a later poll reads back has no `@` for the
+detector to match.
+
+Both, rather than either. The id set is database state, so a store restored
+from scratch, a second instance watching the same repository, or a crash
+between the `POST` and the row written for it all leave an id the set never
+learned — and the escaped text is what covers those. Conversely the escape is
+a string rewrite over engine prose, and the id set is what covers a shape it
+one day fails to catch.
 
 That is the stronger place for the check, and issue #36 is why. An identity
 check rejects an **account**: on a deployment where one account is both the
@@ -182,8 +200,10 @@ an ordinary word in prose where `/review` is not, so the exclusion has to be
 made rather than inherited.
 
 **What it widens.** Events from the account the agent posts from are no
-longer rejected on identity. The allowlist is now the only thing gating that
-account — and it already was, for every other account.
+longer rejected on identity — a human typing `@claude` from that account
+still gets a review, which is the whole point of #36. What that account
+*posted as the agent* is rejected, by id. The allowlist gates the rest of it,
+as it does for every other account.
 `tests/test_classifier.py::test_the_account_the_agent_posts_from_can_still_trigger_a_review`
 and `::test_the_allowlist_is_the_only_thing_that_was_loosened` pin both
 halves of that bound.

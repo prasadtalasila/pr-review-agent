@@ -162,7 +162,10 @@ class Config:
         return cls.from_mapping(data)
 
     def classifier(
-        self, since: datetime, open_pull_requests: frozenset[int] | None = None
+        self,
+        since: datetime,
+        open_pull_requests: frozenset[int] | None = None,
+        posted_comment_ids: frozenset[int] = frozenset(),
     ) -> Classifier:
         """Build the classifier this configuration describes."""
         return Classifier(
@@ -170,4 +173,5 @@ class Config:
             since=since,
             handle=self.triggers.handle,
             open_pull_requests=open_pull_requests,
+            posted_comment_ids=posted_comment_ids,
         )
