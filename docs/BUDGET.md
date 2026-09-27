@@ -355,6 +355,12 @@ interval apart.
 The cost of a deferral is one indexed `SELECT` over a table the governor
 already writes. No GitHub call, no engine, no reservation.
 
+The cap's trailing day is the governor's own `DAILY`, imported rather than
+restated. Both now live in `config/budget.py`, because the governor imports
+the pacer and a duration owned by either would have to be copied into the
+other to reach it — and copied is how two definitions of "a day" come to
+disagree.
+
 ### Why the ledger, and not `runs`
 
 `runs` holds reviews that produced findings. A run that reached an engine and

@@ -14,9 +14,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from pr_review_agent.budget import Governor
+from pr_review_agent.budget import DAILY, Governor
 from pr_review_agent.config import BudgetConfig
-from pr_review_agent.pacing import CAP_WINDOW
 from pr_review_agent.queue import QueueStatus, ReviewQueue
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
@@ -198,7 +197,7 @@ def test_the_cap_is_a_trailing_window_rather_than_a_total(store):
     )
     queue = ReviewQueue(store, repo=REPO)
     review(queue, governor, opened(), now=NOON)
-    tomorrow = NOON + CAP_WINDOW + timedelta(minutes=1)
+    tomorrow = NOON + DAILY + timedelta(minutes=1)
 
     assert claim_one(queue, governor, mention(), now=tomorrow) is not None
 

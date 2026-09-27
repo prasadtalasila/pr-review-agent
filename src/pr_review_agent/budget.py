@@ -64,22 +64,13 @@ from datetime import datetime, timedelta
 from ._compat import StrEnum
 from ._time import parse, stamp, to_utc
 from .config import BudgetConfig
+from .config.budget import DAILY, SESSION, WEEKLY
 from .pacing import paced
 from .queue import Claim
 from .store import SqliteStore, read_budget_policy
 from .triggers.models import TriggerKind
 
 logger = logging.getLogger(__name__)
-
-#: The rolling windows, in the order they are reported. ``DAILY`` is a flat
-#: seventh of the weekly limit rather than ``weekly_remaining / days_left``:
-#: a rolling window never resets, so "days remaining" has no value, and
-#: anchoring one would mean inventing a reset day the plan does not publish.
-#: "At most a seventh of the week in any day" needs no anchor and is stricter
-#: -- an agent idle since Monday cannot burn four days' allowance on Friday.
-SESSION = timedelta(hours=5)
-WEEKLY = timedelta(days=7)
-DAILY = timedelta(days=1)
 
 #: The ladder. Below the first, everything is admitted; at the first, fresh
 #: pull requests stop being auto-reviewed so the remainder is conserved for a

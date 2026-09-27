@@ -11,6 +11,24 @@ from datetime import timedelta
 
 from ._sections import ConfigError
 
+#: The rolling windows every limit in this section is measured over, and the
+#: one duration the per-pull-request cap is counted over. They live in the
+#: config section rather than beside the arithmetic in
+#: :mod:`pr_review_agent.budget` because two modules now measure against
+#: them -- the governor's windows and the pacer's daily cap -- and the
+#: governor imports the pacer, so a constant owned by either one would have
+#: to be copied into the other to reach it. Copied is how they drift.
+#:
+#: ``DAILY`` is a flat seventh of the weekly limit rather than
+#: ``weekly_remaining / days_left``: a rolling window never resets, so "days
+#: remaining" has no value, and anchoring one would mean inventing a reset
+#: day the plan does not publish. "At most a seventh of the week in any day"
+#: needs no anchor and is stricter -- an agent idle since Monday cannot burn
+#: four days' allowance on Friday.
+SESSION = timedelta(hours=5)
+WEEKLY = timedelta(days=7)
+DAILY = timedelta(days=1)
+
 #: BUDGET.md's human-headroom default: the agent may use this percentage of
 #: each plan window, never the whole allowance.
 DEFAULT_REVIEWER_SHARE_PCT = 40

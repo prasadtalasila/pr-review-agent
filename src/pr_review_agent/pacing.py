@@ -35,19 +35,15 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from ._time import parse, stamp
 from .config import BudgetConfig
+from .config.budget import DAILY
 from .queue import Claim
 from .triggers.models import TriggerKind
 
 logger = logging.getLogger(__name__)
-
-#: The window the per-pull-request review cap is counted over. The daily
-#: window's duration, because the cap answers the same question the daily
-#: window does -- what may be spent in a day -- scoped to one pull request.
-CAP_WINDOW = timedelta(days=1)
 
 _LAST_RESERVED_AT = """
 SELECT MAX(reserved_at) FROM ledger WHERE repo = :repo AND pr_number = :pr
@@ -108,7 +104,13 @@ def _within_interval(
 def _under_cap(
     conn: sqlite3.Connection, claim: Claim, now: datetime, config: BudgetConfig
 ) -> bool:
-    """Whether this pull request has reviews left in its trailing day."""
+    """Whether this pull request has reviews left in its trailing day.
+
+    ``DAILY`` is the governor's own window duration, imported rather than
+    restated: the cap answers the question the daily window answers -- what
+    may be spent in a day -- scoped to one pull request, and two copies of
+    "a day" are two things that can disagree.
+    """
     cap = config.max_reviews_per_pull_request
     if cap is None:
         return True
@@ -117,7 +119,7 @@ def _under_cap(
         {
             "repo": claim.trigger.repo,
             "pr": claim.trigger.pr_number,
-            "start": stamp(now - CAP_WINDOW),
+            "start": stamp(now - DAILY),
         },
     ).fetchone()
     reviews = int(row[0]) if row else 0
