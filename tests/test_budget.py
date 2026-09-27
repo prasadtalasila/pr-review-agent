@@ -270,6 +270,70 @@ def test_a_crashed_run_stays_charged_past_its_lease(store):
     assert governor.headroom(long_after_the_lease).remaining == before
 
 
+def test_re_admitting_a_trigger_closes_the_reservation_it_left_open(store):
+    """Issue #70: one open reservation per trigger, held by the schema.
+
+    ``daemon.supervise`` restarts a crashed worker under the same ``owner``,
+    so a retry reserved under the same ``(dedupe_key, owner)`` the crash
+    left open. Two rows then matched one settle, which updated both and
+    reported no single reservation -- and the worker discarded a review it
+    had already paid for. ``admit`` closes the predecessor instead.
+    """
+    governor = Governor(
+        store, budget(max_run_tokens=100, min_review_interval_seconds=0)
+    )
+    queue = ReviewQueue(store, repo=REPO)
+    queue.enqueue(opened(pr=1), now=NOON)
+    assert queue.claim(now=NOON, owner="w", admit=governor.admit) is not None
+
+    after_the_lease = NOON + timedelta(hours=2)
+    retry = queue.claim(now=after_the_lease, owner="w", admit=governor.admit)
+    assert retry is not None
+
+    with store.transaction() as conn:
+        rows = conn.execute(
+            "SELECT stop_reason, reserved_tokens, used_tokens, usage_confidence "
+            "FROM ledger ORDER BY id"
+        ).fetchall()
+    # The crashed attempt is charged the whole of what it reserved: what it
+    # actually spent is unknowable, and for a spending control the
+    # pessimistic answer is the safe one. The retry's row is the only open
+    # one, so its settle is unambiguous.
+    assert rows == [
+        (str(StopReason.LOST), 100, 100, str(UsageConfidence.UNAVAILABLE)),
+        (None, 100, None, None),
+    ]
+    assert governor.settle(
+        retry,
+        Usage(40, UsageConfidence.EXACT, engine="claude"),
+        now=after_the_lease,
+        stop_reason=StopReason.COMPLETED,
+    )
+
+
+def test_closing_a_lost_reservation_hands_back_no_allowance(store):
+    """Settling it as ``lost`` is bookkeeping, not an amnesty.
+
+    The windows counted the open reservation in full while it sat there and
+    they count it in full afterwards. All that changes is that the charge is
+    now a row saying why, which an operator can group and count.
+    """
+    governor = Governor(
+        store, budget(max_run_tokens=100, min_review_interval_seconds=0)
+    )
+    queue = ReviewQueue(store, repo=REPO)
+    queue.enqueue(opened(pr=1), now=NOON)
+    assert queue.claim(now=NOON, owner="w", admit=governor.admit) is not None
+    charged = governor.headroom(NOON).remaining
+
+    after_the_lease = NOON + timedelta(hours=2)
+    assert queue.claim(now=after_the_lease, owner="w", admit=governor.admit)
+
+    # One reservation closed, one opened: the remainder moves by exactly the
+    # new one, never by the old one being handed back.
+    assert governor.headroom(after_the_lease).remaining == charged - 100
+
+
 # -- the ladder ---------------------------------------------------------
 
 

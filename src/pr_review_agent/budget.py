@@ -185,6 +185,22 @@ class StopReason(StrEnum):
     #: limit to raise, "we got there too late" is a queue that is draining
     #: more slowly than the repository moves.
     CLOSED = "closed"
+    #: Nobody settled this reservation: the worker holding it died, and the
+    #: next admission of the same trigger closed it on the way past. Its own
+    #: value because it is the one reason no run ever reported -- it is
+    #: written *about* a run by whatever came after it, never by the run.
+    #:
+    #: Settles at the FULL reservation, unlike ``REFUSED``,
+    #: ``ENGINE_UNAVAILABLE`` and ``CLOSED``, which settle at zero because
+    #: they provably reached no engine. A lost worker may have spent
+    #: anything, and pessimism is the safe direction for a spending
+    #: control.
+    #:
+    #: An operator reads it as "this was paid for and nobody knows what it
+    #: bought". One is a crash. A run of them is a worker dying mid-review,
+    #: and what they charge is a ceiling rather than a measurement -- so the
+    #: windows they fill are tighter than the real spend, never looser.
+    LOST = "lost"
     #: GitHub or the workspace failed before the engine started.
     INFRASTRUCTURE = "infrastructure"
     #: The *account's* limit was reached, not this run's ceiling. The one
@@ -280,6 +296,18 @@ INSERT INTO ledger
 VALUES (:key, :owner, :actor, :mode, :tokens, :now, :repo, :pr)
 """
 
+# The predecessor `_RESERVE` would collide with, closed at what it reserved.
+# Unguarded by owner on purpose: the row belongs to whoever crashed holding
+# it, which the restarted worker may or may not be. The stop reason and the
+# confidence are constants of the statement rather than of the call, because
+# every row it closes is the same kind of row -- a spend nobody measured.
+_SETTLE_LOST = f"""
+UPDATE ledger SET used_tokens = reserved_tokens, settled_at = :now,
+    usage_confidence = '{UsageConfidence.UNAVAILABLE}',
+    stop_reason = '{StopReason.LOST}'
+WHERE dedupe_key = :key AND settled_at IS NULL
+"""
+
 # An unsettled row counts its whole reservation, which is what stops a second
 # worker in the next transaction from spending allowance the first has
 # already committed to.
@@ -301,6 +329,13 @@ WHERE dedupe_key = :key AND owner = :owner AND settled_at IS NULL
 
 # Guarded on the owner, exactly as ``queue._FINISH`` is: a worker whose lease
 # lapsed and was re-claimed must not settle the row the newer worker holds.
+#
+# The `ledger_open` index, not this guard, is what makes at most one row
+# match: the two clauses answer different questions now. Uniqueness -- is
+# there exactly one open reservation for this trigger? -- is the schema's
+# job. Entitlement -- is it *ours*? -- is the owner's, and dropping it would
+# hand a lapsed worker a successful settle and with it the right to post a
+# review the row's new holder is already running.
 _SETTLE = """
 UPDATE ledger
 SET used_tokens = :used, usage_confidence = :confidence,
@@ -376,6 +411,14 @@ class Governor:
         Runs inside the transaction :meth:`~pr_review_agent.queue.ReviewQueue.claim`
         opened, so the reservation and the claim commit together or not at
         all. Never opens or closes a transaction of its own.
+
+        A reservation left open by a worker that died is closed first, by
+        :func:`_settle_lost`, in that same transaction: ``ledger_open``
+        permits one open row per trigger, so there is no second reservation
+        to write until the first is settled. The happy side effect is that a
+        lost worker's spend stops being an implicit charge -- an unsettled
+        row whose reservation the windows count without saying why -- and
+        becomes an explicit ledger row an operator can group and count.
         """
         config = self._effective(conn)
         if not config.enabled:
@@ -406,6 +449,7 @@ class Governor:
             return False
         if not paced(conn, claim, at, config):
             return False
+        _settle_lost(conn, claim.trigger.dedupe_key, now)
         conn.execute(
             _RESERVE,
             {
@@ -730,6 +774,25 @@ def _calibrated(limit: int, calibration: int) -> int:
     reach zero and raise where it should refuse.
     """
     return max(1, limit * calibration // FULL_CALIBRATION)
+
+
+def _settle_lost(conn: sqlite3.Connection, key: str, now: datetime) -> None:
+    """Close the reservation a previous admission of ``key`` left open.
+
+    There is one at most, and only when the worker that took it died without
+    settling: every other path settles its own row. It is charged its full
+    ``reserved_tokens`` because that is the only defensible number -- the run
+    reached an engine for all anyone knows, and a spending control that
+    guesses low hands back allowance that was really spent.
+
+    Nothing here is a release, then. The windows counted that reservation in
+    full while it sat open and they count it in full afterwards; what changes
+    is that the charge is now a row saying ``lost`` rather than a row saying
+    nothing, and that the next reservation for this trigger has somewhere to
+    go. Called from :meth:`Governor.admit`, inside the claim's transaction.
+    """
+    if conn.execute(_SETTLE_LOST, {"now": stamp(now), "key": key}).rowcount:
+        logger.warning("%s left a reservation open: settling it as lost", key)
 
 
 def _breaker(conn: sqlite3.Connection) -> Breaker:

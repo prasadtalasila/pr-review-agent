@@ -226,6 +226,41 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )
         """,
     ),
+    # What identifies a reservation while it is open: the trigger it was
+    # taken for, and nothing else. `settle` matches on the key and the owner,
+    # so a worker that crashed holding a reservation and then re-claimed the
+    # same row under the same owner left two open rows for one settle to
+    # match -- which updated both, reported no single reservation, and made
+    # the worker throw away a review it had already paid for. The rule was
+    # always one open reservation per key; only the schema can hold it.
+    #
+    # The cleanup runs first because the index cannot be created over a
+    # database that already holds duplicates, and a daemon whose store will
+    # not migrate does not start. Live databases exist, so that is not a
+    # theoretical case. The newest open row per key survives -- it is the one
+    # a running worker may still settle -- and the older ones close at their
+    # full `reserved_tokens`: what a worker that never settled actually spent
+    # is unknowable, and for a spending control the pessimistic reading is
+    # the safe one. `settled_at` is the row's own `reserved_at` rather than
+    # the migration's clock, because nothing was learned about that run after
+    # the instant it opened, and a later timestamp would suggest otherwise.
+    #
+    # Both statements are one migration, so the cleanup and the constraint
+    # commit together: a crash between them cannot leave a database with
+    # duplicates and no index, or an index nothing enforced.
+    (
+        """
+        UPDATE ledger
+        SET used_tokens = reserved_tokens, usage_confidence = 'unavailable',
+            stop_reason = 'lost', settled_at = reserved_at
+        WHERE settled_at IS NULL AND id NOT IN (
+            SELECT MAX(id) FROM ledger WHERE settled_at IS NULL
+            GROUP BY dedupe_key
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS ledger_open "
+        "ON ledger (dedupe_key) WHERE settled_at IS NULL",
+    ),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)
