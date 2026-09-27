@@ -45,7 +45,8 @@ src/pr_review_agent/
 │   ├── cmd_config.py  # config generate | validate
 │   ├── cmd_daemon.py  # daemon start
 │   ├── cmd_host.py    # host check
-│   └── cmd_service.py # service install — place the systemd user unit
+│   ├── cmd_service.py # service install — place the systemd user unit
+│   └── cmd_skill.py   # skill install — place the review skill for a person
 ├── engine/
 │   ├── models.py      # ReviewEngine protocol, Capabilities, request/result
 │   ├── cli.py         # the subprocess boundary every CLI adapter shares
@@ -61,6 +62,12 @@ src/pr_review_agent/
 │   ├── payloads.py    # raw GitHub dicts → trigger models
 │   ├── pulls.py       # one pull request → PullRequestFacts
 │   └── poller.py      # one sweep across all three endpoints
+├── skills/
+│   ├── __init__.py    # the packaged review skill: one source, two deliveries
+│   └── review-report/ # SKILL.md, references, assets, and three scripts:
+│       ├── collect_context.py # header facts out of git
+│       ├── render_report.py   # findings.json → a report, via publisher.render
+│       └── check_report.py    # a hand-written report against the contract
 ├── templates/
 │   ├── *.example.yaml # the two config templates the wheel ships
 │   ├── pr-review-agent.service    # the single-repository user unit

@@ -1,11 +1,16 @@
 """The root ``pr-review-agent`` group, and the exit codes every verb shares.
 
 Every command follows one grammar -- ``pr-review-agent <noun> <verb>`` --
-with four nouns: ``config``, ``host``, ``daemon``, ``service``. Each noun
-is a Click group in its own ``cmd_<noun>.py`` module, attached here in the
-order an operator meets them: write a config, check the host can reach what
-the daemon needs, then start it -- and, for an unattended install, hand it to
-systemd instead.
+with five nouns: ``config``, ``host``, ``daemon``, ``service`` and
+``skill``. Each noun is a Click group in its own ``cmd_<noun>.py`` module,
+attached here in the order an operator meets them: write a config, check the
+host can reach what the daemon needs, then start it -- and, for an unattended
+install, hand it to systemd instead.
+
+``skill`` is last because it is the one noun that has nothing to do with
+running the daemon. It installs the review skill for a *person* writing a
+review by hand; the daemon's own reviewer is given the same text through the
+prompt, and cannot load a skill at all. See ``skills/__init__.py``.
 
 ``host`` carries a single verb, which the grammar would normally argue
 against. It stays a noun of its own because the checks are about the
@@ -34,11 +39,12 @@ from .cmd_config import config_group
 from .cmd_daemon import daemon_group
 from .cmd_host import host_group
 from .cmd_service import service_group
+from .cmd_skill import skill_group
 
 #: What the operator does, in the order they do it. ``--help`` lists the
 #: nouns this way rather than alphabetically, so the help text doubles as
 #: the setup sequence.
-_WORKFLOW_ORDER = ("config", "host", "daemon", "service")
+_WORKFLOW_ORDER = ("config", "host", "daemon", "service", "skill")
 
 
 class WorkflowGroup(click.Group):
@@ -84,6 +90,7 @@ cli.add_command(config_group)
 cli.add_command(host_group)
 cli.add_command(daemon_group)
 cli.add_command(service_group)
+cli.add_command(skill_group)
 
 #: The ``pr-review-agent`` console script. A Click group is already callable
 #: as one, so there is nothing for a wrapper to add.

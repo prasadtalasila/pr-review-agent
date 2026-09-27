@@ -1,0 +1,27 @@
+{
+  "findings": [
+    {
+      "number": 2,
+      "path": "script/docs.sh",
+      "line": 46,
+      "severity": "blocker",
+      "title": "`script/docs.sh` copies an asset this PR deletes, so the docs build breaks.",
+      "body": "Line 46 still copies `docs/assets/dtaas-logo-with-text.png`, which `251170e` removes. The landing page beside it now references `assets/brand/dtaas-logo-full.svg`, and nothing copies that into `site/assets` either, so the published redirect page loses its image on both paths.\n\nUpdate the publish path in the same commit that moves the assets."
+    },
+    {
+      "number": 9,
+      "path": "script/build_brand.py",
+      "line": 14,
+      "severity": "minor",
+      "title": "The generators assume they are run from the repo root.",
+      "body": "`build_brand.py` writes to `pathlib.Path('docs/assets/brand')`, so running it from its own directory silently creates a wrong tree. They also sit outside whatever `.pylintrc` currently covers.\n\nEither wire them into the project's Python checks, or mark them as one-shot generators in the brand README and resolve the output path relative to `__file__`."
+    },
+    {
+      "path": "src/components/BrandMark.tsx",
+      "line": 31,
+      "severity": "nit",
+      "title": "`BrandMark` uses fixed `clipPath` ids (`brand-mark-built`, `brand-mark-drawn`) while the generated SVGs use bare `built`/`drawn`; two marks in one document collide.",
+      "body": "Identical geometry hides it today — `useId()` plus a per-file prefix in the generator would remove the trap. The brand README also points a favicon at `png/dtaas-mark-32.png` while both mkdocs configs use the SVG."
+    }
+  ]
+}

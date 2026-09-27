@@ -83,6 +83,7 @@ src/pr_review_agent/          importable package (src layout)
     cmd_daemon.py             daemon start
     cmd_host.py               host check
     cmd_service.py            service install -- place the systemd user unit
+    cmd_skill.py              skill install -- place the review skill for a person
   engine/
     models.py                 ReviewEngine protocol, Capabilities, request/result
     cli.py                    the subprocess boundary every CLI adapter shares
@@ -98,6 +99,12 @@ src/pr_review_agent/          importable package (src layout)
     payloads.py               raw GitHub dicts to trigger models
     pulls.py                  one pull request to PullRequestFacts
     poller.py                 one sweep across all three endpoints
+  skills/                     the review skill the wheel ships
+    __init__.py               one source for the prompt and for Claude Code
+    review-report/            SKILL.md, references, assets, and its scripts:
+      collect_context.py      header facts out of git
+      render_report.py        findings.json to a report, via publisher.render
+      check_report.py         a hand-written report against the contract
   templates/                  the config templates and systemd units the wheel ships
     pr-review-agent.service   the single-repository user unit
     pr-review-agent@.service  the templated per-instance user unit

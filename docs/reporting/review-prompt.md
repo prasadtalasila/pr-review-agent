@@ -3,6 +3,18 @@
 The text a reviewer is given, drafted against a hand-written review used
 as the target quality. See issue #45 and `review-report.md` for the rendering contract.
 
+!!! note "Where this text now lives"
+
+    The sections from **Scope** to **Out of scope** below are no longer a
+    description of the prompt — they *are* the prompt. They ship as
+    `src/pr_review_agent/skills/review-report/references/finding-contract.md`,
+    `engine/prompt.py` reads that file into `REVIEW_INSTRUCTIONS`, and an
+    interactive Claude Code session loads the same file as part of the
+    [review skill](review-skill.md). One source, two deliveries; a test
+    fails if they stop agreeing. This page keeps the commentary — the
+    mapping table, the notes on what changed and why — that the reference
+    file deliberately does not carry.
+
 The prompt asks for *content*: a headline, an argument, evidence, a remedy. It never asks
 for markdown headings, section names or item numbers — those are `publisher.render`'s job,
 and a model that emits them would fight the renderer.
@@ -12,7 +24,8 @@ and a model that emits them would fight the renderer.
 | Below | Constant |
 |---|---|
 | **System** | `SYSTEM_PROMPT` — unchanged except the final paragraph |
-| **Task**, **Scope**, **What to sweep**, **How to write a finding**, **Severity**, **Out of scope** | the `parts` list in `build_prompt` |
+| **Scope**, **What to sweep**, **How to write a finding**, **Severity**, **Out of scope** | `references/finding-contract.md`, read into `REVIEW_INSTRUCTIONS` |
+| **Task** | the `parts` list in `build_prompt` |
 | **Previously reported** | new `build_prompt` section, fenced by `_fence`, omitted on round 1 |
 | **Review standards**, **Diff** | unchanged |
 
