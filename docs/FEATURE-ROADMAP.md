@@ -133,7 +133,8 @@ on `PATH` defeats every other control in this section. Make both absolute
 and configurable, and check them where the bootstrap already does its
 pre-flight.
 
-**A6. Neutralise the outbound comment, and canary it.**
+**A6. Neutralise the outbound comment, and canary it.** *(landed in 1.1.3 —
+see [PUBLISHER.md](PUBLISHER.md#-nothing-it-posts-can-act).)*
 `publisher.render`'s docstring argues correctly that engine output is
 harmless because the module can take no action. That covers actions, not
 what the text does to readers: an `@mention` in a finding body notifies
@@ -449,9 +450,9 @@ Ordered by value per unit of diff, not by section:
 2. **A1, the reviewer's own uid.** The largest reduction in what a
    read-and-quote chain can reach, bought with a `setpriv` prefix and a
    systemd unit rather than a design.
-3. **A6, the outbound comment.** Escaping, a length cap and the secret
-   canary — pure render-layer functions, and the canary is the only thing
-   standing between a leak and a public comment.
+3. ~~**A6, the outbound comment.**~~ *Landed in 1.1.3:* escaping, a length
+   cap and the secret canary — pure render-layer functions, and the canary is
+   the only thing standing between a leak and a public comment.
 4. **C2, incremental review.** The largest budget saving, and the ledger
    already holds the range it needs.
 5. **A2 and A4, the sandbox and default-deny egress.** Depth on top of A1,

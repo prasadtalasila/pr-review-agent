@@ -168,13 +168,14 @@ def runs_fixture(tmp_path):
         yield RunStore(store)
 
 
-def make_publisher(runs, transport, dry_run=False) -> Publisher:
+def make_publisher(runs, transport, dry_run=False, secrets=()) -> Publisher:
     return Publisher(
         client=GitHubClient(token="t", transport=httpx.MockTransport(transport)),
         endpoints=ENDPOINTS,
         runs=runs,
         config=PublishConfig(dry_run=dry_run),
         handle="claude",
+        secrets=secrets,
     )
 
 
@@ -607,6 +608,48 @@ async def test_the_body_actually_posted_carries_no_mention(runs):
         recorded(runs, findings=MENTIONS_THE_HANDLE)
     )
     assert not has_mention(json.loads(transport.writes[0].content)["body"])
+
+
+# -- a body that carries a credential is refused, not posted --------------
+
+TOKEN = "ghp_0123456789abcdef"
+
+LEAKS_THE_TOKEN = (
+    Finding(
+        path="src/x.py",
+        line=1,
+        severity=Severity.BLOCKER,
+        title="A credential is hard-coded.",
+        body=f"Line 1 reads {TOKEN}, which must be revoked.",
+        number=1,
+    ),
+)
+
+
+async def test_a_body_carrying_the_token_is_not_posted(runs):
+    """The worst outcome this module has: publishing the credential it posts with."""
+    transport = Transport()
+    published = await make_publisher(runs, transport, secrets=(TOKEN,)).publish(
+        recorded(runs, findings=LEAKS_THE_TOKEN)
+    )
+    assert published.outcome is PublishOutcome.REFUSED
+    assert transport.writes == []
+
+
+async def test_a_refused_body_is_not_offered_again(runs):
+    """Re-running would spend again to render the same comment."""
+    run = recorded(runs, findings=LEAKS_THE_TOKEN)
+    await make_publisher(runs, Transport(), secrets=(TOKEN,)).publish(run)
+    assert runs.unpublished_for(REPO, 7) is None
+
+
+async def test_a_publisher_with_no_secrets_still_posts(runs):
+    """The default is empty, so a test publisher is not accidentally muzzled."""
+    transport = Transport()
+    published = await make_publisher(runs, transport).publish(
+        recorded(runs, findings=LEAKS_THE_TOKEN)
+    )
+    assert published.outcome is PublishOutcome.PUBLISHED
 
 
 # -- helpers -------------------------------------------------------------
