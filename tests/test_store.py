@@ -7,7 +7,12 @@ from unittest import mock
 import pytest
 
 from pr_review_agent import store as store_module
-from pr_review_agent.store import SCHEMA_VERSION, BudgetPolicy, SqliteStore
+from pr_review_agent.store import (
+    SCHEMA_VERSION,
+    BudgetPolicy,
+    SqliteStore,
+    is_contention,
+)
 
 NOON = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 
@@ -599,3 +604,32 @@ def test_an_existing_database_settles_its_duplicate_open_reservations(tmp_path):
             "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
             ("ledger_open",),
         ).fetchone() == (1,)
+
+
+def test_contention_is_told_apart_from_a_real_fault():
+    # The daemon skips a cycle for the first and crashes for the second, so
+    # the message is load-bearing: `busy_timeout` reports a wait it lost as
+    # an ordinary OperationalError.
+    assert is_contention(sqlite3.OperationalError("database is locked"))
+    assert is_contention(sqlite3.OperationalError("database table is locked"))
+    assert not is_contention(sqlite3.OperationalError("no such table: queue"))
+    assert not is_contention(
+        sqlite3.OperationalError("attempt to write a readonly database")
+    )
+
+
+def test_a_held_write_lock_really_does_raise_what_is_matched(tmp_path):
+    # Not a paraphrase of SQLite's wording: the real driver, a real held
+    # lock, and a timeout short enough to lose it.
+    path = tmp_path / "state.db"
+    with SqliteStore(path) as store:
+        holder = sqlite3.connect(str(path), isolation_level=None)
+        holder.execute("PRAGMA busy_timeout=0")
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            store._conn.execute("PRAGMA busy_timeout=0")  # noqa: SLF001
+            with pytest.raises(sqlite3.OperationalError) as caught:
+                store.advance_watermark("pulls", NOON)
+            assert is_contention(caught.value)
+        finally:
+            holder.close()

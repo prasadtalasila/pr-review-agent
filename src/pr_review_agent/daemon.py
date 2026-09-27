@@ -30,8 +30,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -51,7 +52,7 @@ from .poller.poller import PollCycle, Poller
 from .publisher import Publisher
 from .queue import ReviewQueue
 from .runs import RunStore
-from .store import BudgetPolicy, SqliteStore
+from .store import BudgetPolicy, SqliteStore, is_contention
 from .triggers.models import Decision
 from .worker import ReviewWorker
 from .workspace import Workspace
@@ -253,16 +254,23 @@ class Daemon:
         """Cycle until ``stop`` is set.
 
         A ``GitHubClientError`` is logged and the cycle skipped: a transient
-        network failure must not kill a daemon. Anything else propagates --
-        an unexpected bug should crash loudly rather than spin silently,
-        because a daemon that keeps polling while failing to enqueue looks
-        healthy and reviews nothing.
+        network failure must not kill a daemon. So is store contention --
+        another daemon sharing this database held the write lock for longer
+        than ``busy_timeout``, which says nothing about this process and is
+        over by the next cycle. Anything else propagates -- an unexpected bug
+        should crash loudly rather than spin silently, because a daemon that
+        keeps polling while failing to enqueue looks healthy and reviews
+        nothing.
         """
         while not stop.is_set():
             try:
                 await self.run_once()
             except GitHubClientError as exc:
                 logger.error("poll cycle failed, retrying after the interval: %s", exc)
+            except sqlite3.OperationalError as exc:
+                if not is_contention(exc):
+                    raise
+                logger.error("store busy, retrying after the interval: %s", exc)
             await wait_until(stop, self.poller.interval.seconds)
 
     def _process(self, cycle: PollCycle, *, now: datetime) -> CycleSummary:
@@ -512,6 +520,42 @@ async def supervise(worker: ReviewWorker, stop: asyncio.Event) -> None:
             backoff = min(backoff * 2, RESPAWN_BACKOFF_MAX)
 
 
+async def run_together(
+    stop: asyncio.Event, *coros: Coroutine, grace: float = RESPAWN_BACKOFF
+) -> None:
+    """Run ``coros`` until one raises, then stop the rest before re-raising.
+
+    ``asyncio.gather`` re-raises the first failure while leaving its siblings
+    running, which is wrong here for one specific reason: the caller's
+    ``with SqliteStore(...)`` block unwinds on that exception and closes the
+    connection under a worker still mid-review. The worker's teardown then
+    runs against a closed store and logs a second, misleading traceback over
+    the first.
+
+    So a failure sets ``stop`` -- the same event ``SIGTERM`` sets, which both
+    loops already wait on -- and the others are given ``grace`` to finish the
+    review they are holding and settle it. Only what is still running after
+    that is cancelled, because an engine subprocess killed mid-answer costs
+    the allowance already spent on it. ``TaskGroup`` is not this: it cancels
+    siblings immediately, and the package supports 3.10 regardless.
+    """
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        errors = [exc for exc in (task.exception() for task in done) if exc is not None]
+        if not errors:
+            return
+        logger.error("stopping the other tasks after a failure", exc_info=errors[0])
+        stop.set()
+        if pending:
+            await asyncio.wait(pending, timeout=grace)
+        raise errors[0]
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def _install_signal_handlers(stop: asyncio.Event, reload_config: Callable) -> None:
     """Set ``stop`` on ``SIGINT``/``SIGTERM``, reload on ``SIGHUP``.
 
@@ -606,7 +650,8 @@ async def run(config: Config, token: str, config_path: Path | None = None) -> No
             # The poll cycle and a review have different cadences -- 10-600 s
             # against minutes -- so they are separate tasks. A review must
             # never hold up a poll.
-            await asyncio.gather(
+            await run_together(
+                stop,
                 daemon.run_forever(stop),
                 *[supervise(worker, stop) for worker in workers],
             )

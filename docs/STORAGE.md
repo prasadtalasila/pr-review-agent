@@ -25,6 +25,14 @@ WAL mode is on because the later phases (queue, lease, budget governor) read
 this file while the poller writes it. The write lock stays single-writer
 either way, which is the property the reservation depends on.
 
+`busy_timeout` is 5 s, so a connection that meets that lock waits rather than
+failing on the spot. Several daemons sharing one file can still exceed it —
+the reviews are minutes long and the writes are not staggered — and SQLite
+reports the lost wait as a plain `OperationalError`. `is_contention` tells
+that apart from a genuine fault by its message, because the poll loop skips a
+cycle for the first and crashes for the second; see
+[DAEMON.md](DAEMON.md#-errors-and-shutdown).
+
 ## 🧭 Watermarks
 
 The poller sees open pull requests and recent comments, not `opened` events, so
