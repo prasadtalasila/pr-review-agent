@@ -103,10 +103,19 @@ class Comment:
 
 
 class TriggerKind(StrEnum):
-    """The only two events that may start a review."""
+    """What a queued work item is.
+
+    Two of them are events that may start a review, and they are the only
+    two the classifier ever produces. ``PUBLISH`` is not an event at all: it
+    is work the worker enqueues for itself when a review it has already paid
+    for could not be posted, so that republishing is a unit of work with its
+    own row rather than something the next mention gets spent on. See
+    ``docs/PUBLISHER.md``.
+    """
 
     PR_OPENED = "pr_opened"
     MENTION = "mention"
+    PUBLISH = "publish"
 
 
 @dataclass(frozen=True)

@@ -26,6 +26,15 @@ comment, inserts nothing.
 gets a new key and is genuinely new work; a mention never does, because its key
 carries the comment id instead of the head.
 
+## 📮 Not every row is a review
+
+Two kinds of row come from the [classifier](TRIGGERS.md) — `pr_opened` and
+`mention` — and one the worker enqueues for itself: `publish`, naming a
+recorded run a post could not deliver. It is an ordinary row, so it takes
+the ordinary lease and the ordinary dedupe, and it is the only kind the
+budget governor is not asked about: posting a review reaches no engine. See
+[PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
+
 ## 🔒 One pull request, one worker
 
 A claim is refused while any *other* row for the same `(repo, pr_number)`

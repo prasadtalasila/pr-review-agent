@@ -40,7 +40,7 @@ from pr_review_agent.poller.client import GitHubClient, GitHubClientError
 from pr_review_agent.poller.endpoints import RepoEndpoints
 from pr_review_agent.publisher import Publisher
 from pr_review_agent.queue import Claim, QueueStatus, ReviewQueue
-from pr_review_agent.runs import RunStore
+from pr_review_agent.runs import RecordedRun, RunStore, publication_of
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import CommentSource, Trigger, TriggerKind
 from pr_review_agent.worker import ReviewWorker
@@ -355,9 +355,7 @@ async def test_a_refusal_reaches_no_engine(wired):
     assert ledger_rows(fixture.store) == []
 
 
-async def test_the_governor_is_bypassed_only_for_a_run_already_paid_for(
-    wired, git_remote
-):
+async def test_an_exhausted_budget_still_admits_a_publication_item(wired, git_remote):
     """An exhausted budget must not hold a paid review hostage.
 
     The allowance this run cost was spent days ago and has already settled.
@@ -365,10 +363,10 @@ async def test_the_governor_is_bypassed_only_for_a_run_already_paid_for(
     refusing to spend nothing.
     """
     fixture = wired()
-    fixture.runs.record(
+    run = fixture.runs.record(
         opened(), head_sha=git_remote.head_sha, result=_recorded_result(), now=NOW
     )
-    fixture.queue.enqueue(opened(), now=NOW)
+    fixture.queue.enqueue(publication_of(opened(), run), now=NOW)
     fixture.worker.governor.admit = lambda conn, claim, now: False
 
     assert await fixture.worker.run_once() is True
@@ -376,6 +374,43 @@ async def test_the_governor_is_bypassed_only_for_a_run_already_paid_for(
     assert fixture.engine.requests == []  # nothing was reviewed
     assert ledger_rows(fixture.store) == []  # and nothing was reserved
     assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
+
+
+async def test_an_unposted_run_does_not_admit_a_fresh_review(wired, git_remote):
+    """The exemption is read off the item, never off the pull request.
+
+    A recorded, unposted run used to admit *any* claim for its pull request
+    without reserving -- so a fresh mention arriving under an exhausted
+    budget was let through, and then spent on republishing that older run
+    instead of reviewing the head it was written against.
+    """
+    fixture = wired()
+    fixture.runs.record(
+        opened(), head_sha=git_remote.head_sha, result=_recorded_result(), now=NOW
+    )
+    fixture.queue.enqueue(mention(), now=NOW)
+    fixture.worker.governor.admit = lambda conn, claim, now: False
+
+    assert await fixture.worker.run_once() is False
+
+    assert fixture.github.comments == []  # the old run was not posted
+    assert fixture.queue.status(mention().dedupe_key) is QueueStatus.PENDING
+
+
+async def test_a_mention_reviews_its_own_head_while_a_run_waits_to_be_posted(
+    wired, git_remote
+):
+    """The superseded-run swallow: a mention is a review request, always."""
+    fixture = wired()
+    fixture.runs.record(
+        opened(), head_sha=git_remote.head_sha, result=_recorded_result(), now=NOW
+    )
+    fixture.queue.enqueue(mention(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert len(fixture.engine.requests) == 1  # it was reviewed, not republished
+    assert fixture.queue.status(mention().dedupe_key) is QueueStatus.DONE
 
 
 def _recorded_result():
@@ -1088,7 +1123,10 @@ async def test_a_failed_publish_is_retried_without_a_second_review(wired, git_re
     fixture.queue.enqueue(opened(), now=NOW)
 
     await fixture.worker.run_once()
-    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.PENDING
+    # The review is done and is not re-offered; what is outstanding is the
+    # posting, and it is a row of its own.
+    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+    assert fixture.queue.status(_publish_key()) is QueueStatus.PENDING
     assert len(fixture.engine.requests) == 1
 
     github._write_status = 201  # GitHub recovers
@@ -1096,11 +1134,29 @@ async def test_a_failed_publish_is_retried_without_a_second_review(wired, git_re
 
     assert len(fixture.engine.requests) == 1  # the engine was not run again
     assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
-    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+    assert fixture.queue.status(_publish_key()) is QueueStatus.DONE
+
+
+def _publish_key(trigger=None):
+    """The queue key of the publication item for ``trigger``'s recorded run."""
+    trigger = opened() if trigger is None else trigger
+    return publication_of(trigger, _run_named(trigger.dedupe_key)).dedupe_key
+
+
+def _run_named(key):
+    return RecordedRun(
+        dedupe_key=key,
+        repo=REPO,
+        pr_number=PR,
+        head_sha="abc123",
+        outcome=Outcome.COMPLETED,
+        findings=(),
+        comment_id=None,
+    )
 
 
 async def test_a_republished_run_writes_no_ledger_row(wired, git_remote):
-    """A resume reserves nothing, so there is nothing to settle."""
+    """A publication item reserves nothing, so there is nothing to settle."""
     github = GitHubDouble(git_remote.head_sha, write_status=502)
     fixture = wired(github=github)
     fixture.queue.enqueue(opened(), now=NOW)
@@ -1110,7 +1166,7 @@ async def test_a_republished_run_writes_no_ledger_row(wired, git_remote):
     github._write_status = 201
     await fixture.worker.run_once()
 
-    assert len(ledger_rows(fixture.store)) == 1  # the resume added none
+    assert len(ledger_rows(fixture.store)) == 1  # the item added none
 
 
 async def test_failed_posts_never_abandon_a_paid_review(wired, git_remote):
@@ -1127,29 +1183,45 @@ async def test_failed_posts_never_abandon_a_paid_review(wired, git_remote):
     for _ in range(5):
         await fixture.worker.run_once()
 
-    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.PENDING
+    assert fixture.queue.status(_publish_key()) is QueueStatus.PENDING
     assert len(fixture.engine.requests) == 1
 
     github._write_status = 201
     await fixture.worker.run_once()
 
     assert fixture.runs.comment_for_pull_request(REPO, PR) == 555
-    assert fixture.queue.status(opened().dedupe_key) is QueueStatus.DONE
+    assert fixture.queue.status(_publish_key()) is QueueStatus.DONE
 
 
-async def test_a_resume_whose_lease_lapsed_posts_nothing(wired, git_remote):
+async def test_a_publication_whose_lease_lapsed_posts_nothing(wired, git_remote):
     """The owner guards on `complete` run after the write; this runs before."""
     fixture = wired()
-    fixture.runs.record(
+    run = fixture.runs.record(
         opened(), head_sha=git_remote.head_sha, result=_recorded_result(), now=NOW
     )
-    fixture.queue.enqueue(opened(), now=NOW)
+    fixture.queue.enqueue(publication_of(opened(), run), now=NOW)
     claim = fixture.queue.claim(now=NOW, owner="worker-1", admit=fixture.worker.admit)
     stale = replace(claim, owner="a-worker-that-died")
 
     await fixture.worker.run_one(stale)
 
     assert fixture.github.comments == []
+
+
+async def test_a_publication_item_for_a_posted_run_closes_itself(wired, git_remote):
+    """Two items can name runs the other already posted; neither loops."""
+    fixture = wired()
+    run = fixture.runs.record(
+        opened(), head_sha=git_remote.head_sha, result=_recorded_result(), now=NOW
+    )
+    fixture.runs.mark_published(run.dedupe_key, comment_id=555, now=NOW)
+    item = publication_of(opened(), run)
+    fixture.queue.enqueue(item, now=NOW)
+
+    await fixture.worker.run_once()
+
+    assert fixture.github.comments == []
+    assert fixture.queue.status(item.dedupe_key) is QueueStatus.DONE
 
 
 async def test_a_lapsed_lease_publishes_nothing(wired):
@@ -1177,7 +1249,7 @@ async def test_an_unfinished_run_publishes_nothing(wired, outcome):
     await fixture.worker.run_once()
 
     assert fixture.github.comments == []
-    assert fixture.runs.unpublished_for(REPO, PR) is None
+    assert fixture.runs.unpublished(opened().dedupe_key) is None
 
 
 async def test_a_dry_run_reviews_and_posts_nothing(wired):
@@ -1198,7 +1270,7 @@ async def test_a_dry_run_is_not_re_offered_forever(wired):
 
     await fixture.worker.run_once()
 
-    assert fixture.runs.unpublished_for(REPO, PR) is None
+    assert fixture.runs.unpublished(opened().dedupe_key) is None
 
 
 # -- the account's own limit -----------------------------------------------

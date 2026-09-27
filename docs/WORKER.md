@@ -38,6 +38,11 @@ claim(admit=governor.admit)        the lease and the reservation, one commit
   → complete / release / abandon   close the row
 ```
 
+A row whose kind is `publish` skips all of it: the worker looks the named
+run up, posts it, and closes the item. That path reaches no engine and
+writes no ledger row — see
+[PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
+
 ### The history read and the numbering
 
 Two steps were added so a re-review reads as a continuation rather than a

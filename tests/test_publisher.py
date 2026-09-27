@@ -286,7 +286,7 @@ async def test_a_clean_re_review_edits_rather_than_duplicates(runs):
 async def test_publishing_stamps_the_run(runs):
     transport = Transport()
     await make_publisher(runs, transport).publish(recorded(runs))
-    assert runs.unpublished_for(REPO, 7) is None
+    assert runs.unpublished("k1") is None
     assert runs.comment_for_pull_request(REPO, 7) == 555
 
 
@@ -477,7 +477,7 @@ async def test_a_dry_run_is_not_retried_forever(runs):
     """The pipeline ran; there is nothing left to publish."""
     transport = Transport()
     await make_publisher(runs, transport, dry_run=True).publish(recorded(runs))
-    assert runs.unpublished_for(REPO, 7) is None
+    assert runs.unpublished("k1") is None
 
 
 async def test_reload_turns_the_dry_run_off_without_a_restart(runs):
@@ -640,7 +640,7 @@ async def test_a_refused_body_is_not_offered_again(runs):
     """Re-running would spend again to render the same comment."""
     run = recorded(runs, findings=LEAKS_THE_TOKEN)
     await make_publisher(runs, Transport(), secrets=(TOKEN,)).publish(run)
-    assert runs.unpublished_for(REPO, 7) is None
+    assert runs.unpublished(run.dedupe_key) is None
 
 
 async def test_a_publisher_with_no_secrets_still_posts(runs):

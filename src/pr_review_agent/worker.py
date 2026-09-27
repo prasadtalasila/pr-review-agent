@@ -9,13 +9,15 @@ an ``admit`` predicate that consults the governor, so the reservation commits
 in the same transaction as the lease and no review starts that was not paid
 for in advance.
 
-The predicate has exactly one bypass, and it is the reason the rule is stated
-about *engines* rather than about claims. A pull request whose review is
-already recorded and unposted is admitted without reserving anything, because
-publishing it runs nothing and costs nothing. Without that bypass an
+The predicate has exactly one exemption, and it is the reason the rule is
+stated about *engines* rather than about claims: a ``PUBLISH`` item is
+admitted without reserving anything, because posting a review that has
+already been paid for runs nothing and costs nothing. Without it an
 exhausted budget would hold a review the allowance has *already been spent
 on* hostage until a window rolled -- refusing to spend nothing, to avoid a
-cost that was paid days ago.
+cost that was paid days ago. The exemption is read off the item's kind
+alone: admission asks what this row is, never what some other row left
+behind.
 
 **Every run settles, including a failed one.** A reservation that is never
 settled stays charged at its full ceiling until it ages out of a rolling
@@ -32,11 +34,13 @@ too, because there was no process to spend.
 **A paid review is published, or kept until it can be.** The engine is the
 only irreversible step, so the order after it is fixed: settle, record,
 publish, finish. Recording before publishing is what lets a GitHub write
-fail without costing a second review -- the next claim finds the unpublished
-run and posts it without reaching an engine at all. That resume path is the
-one way into this class that spends nothing: it reserves nothing, settles
-nothing, writes no ledger row, and hands the row back unattempted if the post
-fails again.
+fail without costing a second review -- the worker enqueues a ``PUBLISH``
+item naming that run, and posting it reaches no engine at all. Republication
+is therefore its own unit of work rather than something the next trigger for
+that pull request is spent on: a mention always reviews the head it was
+written against. The item is the one way into this class that spends
+nothing: it reserves nothing, settles nothing, writes no ledger row, and
+hands its row back unattempted if the post fails again.
 
 **A run leaves nothing behind.** No field on this class outlives the run that
 set it, because the tree under review is untrusted input and the next review
@@ -74,8 +78,8 @@ from .poller.endpoints import RepoEndpoints
 from .poller.pulls import fetch_pull_request_facts
 from .publisher import Publisher, PublishOutcome
 from .queue import Claim, ReviewQueue
-from .runs import RecordedRun, RunStore
-from .triggers.models import PayloadError
+from .runs import RecordedRun, RunStore, publication_of, published_run_key
+from .triggers.models import PayloadError, TriggerKind
 from .workspace import PullRequestTooLarge, Workspace, WorkspaceError
 
 logger = logging.getLogger(__name__)
@@ -150,18 +154,22 @@ class ReviewWorker:
                 await wait_until(stop, WORKER_IDLE)
 
     def admit(self, conn, claim: Claim, now: datetime) -> bool:
-        """Whether this claim may be taken: the governor, plus one bypass.
+        """Whether this claim may be taken: the governor, and one exemption.
 
         Runs inside the claim transaction, which is why the connection is
         passed down rather than a new one opened.
 
-        A pull request carrying a recorded, unpublished run is admitted
-        unconditionally and **reserves nothing**. That run reached an engine
-        once, under a reservation that has already settled; posting it
-        reaches none. Weighing it against a window would refuse to spend
-        nothing.
+        A ``PUBLISH`` item is admitted unconditionally and **reserves
+        nothing**. The run it names reached an engine once, under a
+        reservation that has already settled; posting it reaches none, so
+        weighing it against a window would refuse to spend nothing.
+
+        The question is asked of the item itself. It used to be asked of the
+        pull request -- *is any run here unposted?* -- which let one
+        trigger's claim be spent finishing another trigger's run, and made a
+        fresh mention mean whatever the oldest pending run happened to be.
         """
-        if self.runs.has_unpublished(conn, claim.trigger.repo, claim.trigger.pr_number):
+        if claim.trigger.kind is TriggerKind.PUBLISH:
             return True
         return self.governor.admit(conn, claim, now)
 
@@ -188,10 +196,11 @@ class ReviewWorker:
         unusable payload will fail identically on attempt two, having
         reserved allowance again to do it.
         """
-        # Before the reservation lookup, not after: a resume is admitted
-        # without reserving, so it has no ledger row for `admitted_mode` to
-        # find and would read as a lapsed lease.
-        if await self._resume_publication(claim):
+        # Before the reservation lookup, not after: a publication item is
+        # admitted without reserving, so it has no ledger row for
+        # `admitted_mode` to find and would read as a lapsed lease.
+        if claim.trigger.kind is TriggerKind.PUBLISH:
+            await self._publish_recorded(claim)
             return
 
         mode = self.governor.admitted_mode(claim)
@@ -327,7 +336,7 @@ class ReviewWorker:
             # this settles at what happened rather than at the ceiling.
             usage = limited.usage or Usage(0, UsageConfidence.EXACT)
             reason = StopReason.USAGE_LIMIT
-            # Unattempted, for the reason `_resume_publication` gives: the
+            # Unattempted, for the reason `_publish_recorded` gives: the
             # bound caps what one poison trigger may drain, and this trigger
             # drained nothing -- the account was already out when it arrived.
             finish = self.queue.release_unattempted
@@ -405,21 +414,20 @@ class ReviewWorker:
                 f"{self.engine.name} failed: {exc}", StopReason.ENGINE_ERROR
             ) from exc
 
-    async def _resume_publication(self, claim: Claim) -> bool:
-        """Publish a run an earlier attempt paid for but could not post.
+    async def _publish_recorded(self, claim: Claim) -> None:
+        """Post the run this ``PUBLISH`` item names, and close its row.
 
-        ``True`` when this claim was spent on that and nothing else. No
-        facts are fetched, no checkout is made, no engine is reached and --
-        because :meth:`admit` let this claim through without reserving --
-        there is nothing on the ledger to settle. A resume costs nothing and
+        No facts are fetched, no checkout is made, no engine is reached and
+        -- because :meth:`admit` let this claim through without reserving --
+        there is nothing on the ledger to settle. The item costs nothing and
         writes nothing, which is the honest record of it.
 
-        Taking the ordinary claim rather than a path of its own is what
-        keeps one pull request in one worker's hands: a second lease would
-        be a second chance to post the same comment twice. The lease is
-        re-checked immediately before the write, because the owner guards on
-        ``complete`` and ``release`` only run *after* it -- late enough to
-        discard a row, too late to unsay a comment.
+        It is an ordinary queue row, so it takes the ordinary per-pull-request
+        lease: one pull request stays in one worker's hands, and a second
+        lease would be a second chance to post the same comment twice. The
+        lease is re-checked immediately before the write, because the owner
+        guards on ``complete`` and ``release`` only run *after* it -- late
+        enough to discard a row, too late to unsay a comment.
 
         A failure hands the row back **unattempted**. The attempt bound caps
         what one poison trigger may drain, and a post that reached no engine
@@ -427,21 +435,22 @@ class ReviewWorker:
         failed posts and leave its findings recorded and permanently
         invisible.
         """
-        pending = self.runs.unpublished_for(claim.trigger.repo, claim.trigger.pr_number)
+        key = published_run_key(claim.trigger)
+        pending = self.runs.unpublished(key)
         if pending is None:
-            return False
-        logger.info(
-            "%s was reviewed already; publishing without a second review",
-            pending.dedupe_key,
-        )
+            # Posted, purged, or never recorded -- see `RunStore.unpublished`.
+            # Nothing to do and nothing to retry, so the item is finished.
+            logger.info("%s needs no publishing; closing the item", key)
+            self.queue.complete(claim)
+            return
+        logger.info("%s was reviewed already; publishing without a second review", key)
         if not self.queue.holds(claim, now=_now()):
-            logger.warning("lease lapsed before %s republished", pending.dedupe_key)
-            return True
+            logger.warning("lease lapsed before %s republished", key)
+            return
         if await self._published(claim, pending):
             self.queue.complete(claim)
         else:
             self.queue.release_unattempted(claim)
-        return True
 
     async def _settle_publish_and_finish(
         self,
@@ -495,15 +504,13 @@ class ReviewWorker:
                 "mode": headroom.mode,
             },
         )
-        if reviewed is not None:
-            # This attempt *did* reach an engine, so a failed post counts
-            # against the bound like any other retry -- unlike the
-            # publish-only resume, which spent nothing.
-            finish = (
-                self.queue.complete
-                if await self._published(claim, reviewed)
-                else self.queue.release
-            )
+        if reviewed is not None and not await self._published(claim, reviewed):
+            # The review itself is done and must not be run again, so this
+            # row is completed and what remains -- the posting -- is enqueued
+            # as work of its own. Handing *this* row back instead would make
+            # the next claim for this pull request a republication wearing a
+            # review trigger's name.
+            self.queue.enqueue(publication_of(claim.trigger, reviewed), now=_now())
         finish(claim)
 
     async def _published(self, claim: Claim, run: RecordedRun) -> bool:

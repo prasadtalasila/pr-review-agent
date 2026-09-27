@@ -6,7 +6,7 @@ import pytest
 
 from pr_review_agent.budget import Usage, UsageConfidence
 from pr_review_agent.engine import Finding, Outcome, ReviewResult, Severity
-from pr_review_agent.runs import RunStore
+from pr_review_agent.runs import RunStore, publication_of, published_run_key
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
 
@@ -71,7 +71,7 @@ def runs_fixture(tmp_path):
 
 def test_a_recorded_run_round_trips(runs):
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
-    recorded = runs.unpublished_for(REPO, 7)
+    recorded = runs.unpublished("pr_opened:o/r:7:deadbeef")
     assert recorded.dedupe_key == "pr_opened:o/r:7:deadbeef"
     assert recorded.head_sha == HEAD
     assert recorded.outcome is Outcome.COMPLETED
@@ -80,14 +80,14 @@ def test_a_recorded_run_round_trips(runs):
 
 def test_a_clean_run_records_no_findings(runs):
     runs.record(trigger(), head_sha=HEAD, result=result(findings=()), now=NOON)
-    assert runs.unpublished_for(REPO, 7).findings == ()
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef").findings == ()
 
 
 def test_recording_the_same_run_twice_refreshes_it(runs):
     """A resumed claim re-records rather than raising."""
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
     runs.record(trigger(), head_sha="newer", result=result(findings=()), now=LATER)
-    recorded = runs.unpublished_for(REPO, 7)
+    recorded = runs.unpublished("pr_opened:o/r:7:deadbeef")
     assert recorded.head_sha == "newer"
     assert recorded.findings == ()
 
@@ -95,18 +95,20 @@ def test_recording_the_same_run_twice_refreshes_it(runs):
 def test_a_published_run_is_not_offered_again(runs):
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
     runs.mark_published("pr_opened:o/r:7:deadbeef", comment_id=555, now=LATER)
-    assert runs.unpublished_for(REPO, 7) is None
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef") is None
 
 
-def test_an_unpublished_run_for_another_pull_request_is_not_offered(runs):
+def test_a_run_that_was_never_recorded_is_not_offered(runs):
     runs.record(trigger(pr=8, key="k8"), head_sha=HEAD, result=result(), now=NOON)
-    assert runs.unpublished_for(REPO, 7) is None
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef") is None
 
 
-def test_the_oldest_unpublished_run_is_offered_first(runs):
+def test_each_unpublished_run_is_offered_under_its_own_key(runs):
+    """A publication item names one run, not "the oldest here"."""
     runs.record(trigger(key="first"), head_sha=HEAD, result=result(), now=NOON)
     runs.record(trigger(key="second"), head_sha=HEAD, result=result(), now=LATER)
-    assert runs.unpublished_for(REPO, 7).dedupe_key == "first"
+    assert runs.unpublished("first").dedupe_key == "first"
+    assert runs.unpublished("second").dedupe_key == "second"
 
 
 def test_marking_published_records_the_comment(runs):
@@ -153,7 +155,7 @@ def test_a_purged_run_is_never_offered_for_publication(runs):
     """Its findings are gone, so there is nothing left to post."""
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
     runs.purge_content(REPO, 7, now=LATER)
-    assert runs.unpublished_for(REPO, 7) is None
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef") is None
 
 
 def test_a_naive_timestamp_is_refused(runs):
@@ -163,32 +165,24 @@ def test_a_naive_timestamp_is_refused(runs):
         )
 
 
-def test_has_unpublished_sees_a_waiting_run(runs):
-    """Asked inside the claim transaction, so it takes the connection."""
-    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
-    with runs._store.transaction() as conn:  # noqa: SLF001
-        assert runs.has_unpublished(conn, REPO, 7) is True
+def test_a_publication_item_names_the_run_it_posts(runs):
+    """The round trip the worker's `PUBLISH` item depends on."""
+    recorded = runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    item = publication_of(trigger(), recorded)
+
+    assert item.kind is TriggerKind.PUBLISH
+    assert item.dedupe_key != recorded.dedupe_key
+    assert item.repo == REPO and item.pr_number == 7
+    assert item.actor_id == 99  # still that contributor's review
+    assert published_run_key(item) == recorded.dedupe_key
+    assert runs.unpublished(published_run_key(item)).dedupe_key == recorded.dedupe_key
 
 
-def test_has_unpublished_is_false_once_published(runs):
-    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
-    runs.mark_published("pr_opened:o/r:7:deadbeef", comment_id=555, now=LATER)
-    with runs._store.transaction() as conn:  # noqa: SLF001
-        assert runs.has_unpublished(conn, REPO, 7) is False
-
-
-def test_has_unpublished_is_false_for_another_pull_request(runs):
-    runs.record(trigger(pr=8, key="k8"), head_sha=HEAD, result=result(), now=NOON)
-    with runs._store.transaction() as conn:  # noqa: SLF001
-        assert runs.has_unpublished(conn, REPO, 7) is False
-
-
-def test_has_unpublished_ignores_a_purged_run(runs):
-    """Its findings are gone, so it is not work waiting to be posted."""
-    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
-    runs.purge_content(REPO, 7, now=LATER)
-    with runs._store.transaction() as conn:  # noqa: SLF001
-        assert runs.has_unpublished(conn, REPO, 7) is False
+def test_a_review_trigger_names_no_recorded_run(runs):
+    """Reading a run key off a review row would be reading it off nothing."""
+    del runs
+    with pytest.raises(ValueError, match="not a publication item"):
+        published_run_key(trigger())
 
 
 def test_a_findings_title_and_number_survive_the_round_trip(runs):
@@ -203,7 +197,7 @@ def test_a_findings_title_and_number_survive_the_round_trip(runs):
         ),
     )
     runs.record(trigger(), head_sha=HEAD, result=result(numbered), now=NOON)
-    assert runs.unpublished_for(REPO, 7).findings == numbered
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef").findings == numbered
 
 
 def test_a_finding_stored_before_titles_existed_still_loads(runs):
@@ -215,7 +209,7 @@ def test_a_finding_stored_before_titles_existed_still_loads(runs):
             "UPDATE runs SET findings = :f WHERE repo = :r AND pr_number = :p",
             {"f": legacy, "r": REPO, "p": 7},
         )
-    assert runs.unpublished_for(REPO, 7).findings == (
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef").findings == (
         Finding(
             path="src/a.py",
             line=12,
