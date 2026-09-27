@@ -340,16 +340,19 @@ in agreement for the common cases — a local `.claude/`, a built `site/`,
 `dist/` — so the habit of typing `.` does not bury you in errors from files the
 repository does not own.
 
-`src` currently scores 9.95/10 and `tests` 9.36/10, both well above the 9.0
-gate. Every deduction in `src` is a size heuristic — `R0902`
-(too-many-instance-attributes) on the config and the two trigger models,
-`R0913`/`R0914`/`R0915` on the worker's one run and the governor's claim,
-`R0911` on the classifier's seven reason codes — plus one `R0801`
-(`duplicate-code`) on the terminate-then-kill helper that `engine/cli.py` and
-`workspace/gitcmd.py` each spell out for their own subprocess. None is worth
-the indirection that would silence it: a dataclass with seven fields instead
-of nine, or one shared process-killer imported into two modules that
-otherwise share nothing.
+`src` currently scores 9.97/10 and `tests` 9.37/10 under pylint 4.0, both well
+above the 9.0 gate. Every deduction in `src` is a size heuristic — `R0902`
+(too-many-instance-attributes) on the config, the daemon and the two trigger
+models, `R0914`/`R0915` on the worker's one run and `R0913` on the worker and
+the publisher — plus one `R0801` (`duplicate-code`) on the terminate-then-kill
+helper that `engine/cli.py` and `workspace/gitcmd.py` each spell out for their
+own subprocess. None is worth the indirection that would silence it: a
+dataclass with seven fields instead of nine, or one shared process-killer
+imported into two modules that otherwise share nothing.
+
+Quote the score from the pinned pylint rather than from whatever is on your
+`PATH`. The two disagree: 3.3 rated this same tree 9.95, and a number from the
+wrong version reads as a regression that is not one.
 
 The test pass disables the docstring checks because a test's name is its
 description; every other check still applies.

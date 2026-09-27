@@ -33,7 +33,7 @@ locally-hosted PR review agent.
 - Add comments only where logic is non-obvious. Prefer a docstring that
   explains *why* a rule exists over one that restates the signature.
 - Public modules, classes and functions carry a docstring: `pylint` scores
-  `src` at 9.95/10 against a 9.0 gate, and a missing docstring is a score
+  `src` at 9.97/10 against a 9.0 gate, and a missing docstring is a score
   regression.
 
 ## BEST PRACTICES
