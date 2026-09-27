@@ -97,11 +97,15 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev
 
+      # `src tests scripts` rather than `.`: the gate should name what it
+      # checks. `pyproject.toml`'s `extend-exclude` keeps a bare `ruff .` in
+      # agreement, but the explicit list is what stops a future directory
+      # being formatted to this project's rules by accident.
       - name: Check formatting
-        run: poetry run ruff format --check .
+        run: poetry run ruff format --check src tests scripts
 
       - name: Run ruff
-        run: poetry run ruff check .
+        run: poetry run ruff check src tests scripts
 
       - name: Run pylint on src (min score 9.0)
         run: poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
@@ -137,6 +141,68 @@ jobs:
           .venv/bin/python -m venv .audit
           .audit/bin/python -m pip install --quiet --upgrade pip pip-audit
           .audit/bin/pip-audit --strict --desc --requirement audit-requirements.txt
+
+  # The development container shipped for twelve releases with nothing but a
+  # note in its own header saying CI did not build it, and DOCKER.md asking
+  # the next person to verify it by hand. A break in `Dockerfile` or
+  # `entrypoint.sh` was therefore found by whoever needed the container next,
+  # which is the worst time. This does not re-run the whole gate inside the
+  # image -- the `test` and `quality` jobs already did that on the host. It
+  # proves the image builds, that PID 1 links the mounted checkout, and that
+  # the linked package imports and runs under the container's interpreter.
+  docker:
+    name: Build the development container
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        # v5.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Buildx
+        # v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      # The account is a build arg with no default, for the reason
+      # docker/.env.example gives: the entrypoint's editable install writes
+      # into the mounted checkout, so a uid mismatch is a permission error
+      # rather than a cosmetic one. Both args take the runner's `id -u`. The
+      # gid deliberately does *not* take `id -g`: the runner's primary group
+      # is `docker`, a low system gid the base image may already have spoken
+      # for, and `groupadd` fails on that collision. The account owns the
+      # files either way, which is what the editable install needs.
+      - name: Read the runner's account
+        id: account
+        run: echo "uid=$(id -u)" >> "$GITHUB_OUTPUT"
+
+      - name: Build the image
+        # v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: pr-review-agent-dev:ci
+          load: true
+          build-args: |
+            PRA_USER=ci
+            PRA_UID=${{ steps.account.outputs.uid }}
+            PRA_GID=${{ steps.account.outputs.uid }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run the entrypoint against the checkout
+        run: |
+          docker run --rm -v "$PWD":/workspace pr-review-agent-dev:ci \
+            bash -c 'python --version && git --version && claude --version'
+
+      # The entrypoint's `pip install --editable` is the one step that cannot
+      # happen at build time, so this is what proves it happened: an import
+      # of the linked package and the console script the quickstart uses.
+      - name: Prove the mounted checkout is importable and installed
+        run: |
+          docker run --rm -v "$PWD":/workspace pr-review-agent-dev:ci \
+            bash -c 'pytest -q -x tests/test_compat.py && pr-review-agent --help'
 
   build:
     name: Build package

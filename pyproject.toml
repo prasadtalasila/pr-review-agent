@@ -88,6 +88,13 @@ branch = true
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+# The gate names `src tests scripts`, and this makes a bare `ruff check .` --
+# which is what anyone reaches for first -- agree with it. Without it a
+# checkout carrying any untracked Python (a local `.claude/`, a scratch
+# directory, a built `site/`) reports thousands of errors from files the
+# project does not own, and `ruff format --check .` in CI would reformat a
+# committed helper outside those three trees without anyone deciding that.
+extend-exclude = [".claude", "docker/.claude", "site", "dist"]
 
 # Ruff 0.16 added `*.md` to the default `include`, so `ruff format` began
 # rewriting the Python blocks fenced inside Markdown. Spelling the previous

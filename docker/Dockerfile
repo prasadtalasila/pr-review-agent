@@ -10,9 +10,12 @@
 # installed into /opt/venv, plus the `claude` CLI the review engine shells
 # out to.
 #
-# Not exercised by CI -- nothing in .github/workflows builds this file -- so a
-# break here is caught by hand or not at all. DOCKER.md's "Verify the
-# container" is the check to re-run after changing this file or entrypoint.sh.
+# CI builds this file on every pull request: the `docker` job in
+# .github/workflows/python-ci.yml builds the image, runs entrypoint.sh against
+# the checkout and proves the linked package imports. That covers a build
+# break and a broken entrypoint. It does not cover the interactive shell or
+# the full gate inside the image, so DOCKER.md's "Verify the container" is
+# still the check to run by hand after changing this file or entrypoint.sh.
 #
 # Build (from the repository root -- the context is the root, not docker/):
 #   docker build -t pr-review-agent-dev -f docker/Dockerfile \

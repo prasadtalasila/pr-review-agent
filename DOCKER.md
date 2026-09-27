@@ -62,9 +62,18 @@ init"](#-why-pid-1-has-to-be-a-real-init).
 
 ## ✅ Verify the container
 
-Everything below was run inside the image on 2026-09-21, and re-running it is
-what this file asks of anyone who changes `docker/Dockerfile` or
-`docker/entrypoint.sh`. The toolchain first:
+CI now covers part of this. The `docker` job in
+[.github/workflows/python-ci.yml](.github/workflows/python-ci.yml) builds the
+image on every pull request, runs `entrypoint.sh` against the checkout and
+proves the linked package imports and its console script runs — so a build
+break or a broken entrypoint fails a pull request rather than waiting for the
+next person who needs the container.
+
+What CI does not cover is the interactive shell and the full gate inside the
+image, because both belong to a machine with your checkout mounted. So
+everything below — run inside the image on 2026-09-21 — is still what this
+file asks of anyone who changes `docker/Dockerfile` or `docker/entrypoint.sh`.
+The toolchain first:
 
 ```bash
 docker compose exec dev bash -c 'python --version; git --version; claude --version'
@@ -77,7 +86,7 @@ check — it is the same commands, run in the same way, and it passes:
 ```bash
 docker compose exec dev bash -c 'cd /workspace && poetry run pytest --cov --cov-report=term-missing'
 # 789 passed, 1 deselected, 31 warnings in 75.13s -- TOTAL coverage 97%
-docker compose exec dev bash -c 'cd /workspace && poetry run ruff format --check . && poetry run ruff check .'
+docker compose exec dev bash -c 'cd /workspace && poetry run ruff format --check src tests scripts && poetry run ruff check src tests scripts'
 # 76 files already formatted / All checks passed!
 docker compose exec dev bash -c 'cd /workspace && poetry run pylint src --rcfile=.pylintrc --fail-under=9.0'
 # rated at 9.95/10
@@ -211,7 +220,7 @@ container, and the cheaper one for a quick check:
 ```bash
 cd docker
 docker compose run --rm dev pytest -q
-docker compose run --rm dev ruff check /workspace
+docker compose run --rm dev ruff check /workspace/src /workspace/tests /workspace/scripts
 ```
 
 ## 🔁 When to rebuild

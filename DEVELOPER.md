@@ -18,22 +18,28 @@ src/pr_review_agent/
 ├── budget.py          # rolling windows, the ladder, reserve-then-settle
 ├── config.py          # config.yaml → frozen dataclasses
 ├── daemon.py          # the poll-classify-enqueue loop
+├── logs.py            # one level and one format, resolved from three layers
+├── numbering.py       # finding numbers that survive a re-review
+├── publisher.py       # the 👀, the head re-check, one comment per pull request
+├── queue.py           # claim protocol and per-pull-request leases
+├── runs.py            # what a paid review produced, so publishing can retry
+├── sanitise.py        # engine prose made inert before it is posted
+├── store.py           # SQLite: schema, watermarks, ETags, queue table
+├── worker.py          # claim → review → settle → close the row
 ├── cli/
 │   ├── __init__.py    # the root group, the nouns, the exit codes
 │   ├── _common.py     # the shared --config option and startup handling
 │   ├── cmd_config.py  # config generate | validate
+│   ├── cmd_daemon.py  # daemon start
 │   ├── cmd_host.py    # host check
-│   └── cmd_daemon.py  # daemon start
-├── templates/         # the two config templates the wheel ships
-├── sanitise.py        # engine prose made inert before it is posted
-├── queue.py           # claim protocol and per-pull-request leases
-├── worker.py          # claim → review → settle → close the row
-├── store.py           # SQLite: schema, watermarks, ETags, queue table
-├── triggers/
-│   ├── models.py      # payload-shaped dataclasses; PayloadError
-│   ├── allowlist.py   # numeric-user-id membership
-│   ├── mention.py     # @claude in *prose* only
-│   └── classifier.py  # PullRequest | Comment → Decision
+│   └── cmd_service.py # service install — place the systemd user unit
+├── engine/
+│   ├── models.py      # ReviewEngine protocol, Capabilities, request/result
+│   ├── cli.py         # the subprocess boundary every CLI adapter shares
+│   ├── claude.py      # the `claude` CLI adapter: the first engine that spends
+│   ├── prompt.py      # what the reviewer is told, and how untrusted text is fenced
+│   ├── standards.py   # review standards, read from the base ref
+│   └── fake.py        # an engine that spends nothing, for tests
 ├── poller/
 │   ├── endpoints.py   # the three repo-wide request paths, and /pulls/{n}
 │   ├── client.py      # async conditional GET, rate-limit handling
@@ -42,13 +48,26 @@ src/pr_review_agent/
 │   ├── payloads.py    # raw GitHub dicts → trigger models
 │   ├── pulls.py       # one pull request → PullRequestFacts
 │   └── poller.py      # one sweep across all three endpoints
-├── workspace/
-│   ├── gitcmd.py      # the one hardened `git` invocation
-│   └── repo.py        # bare mirror, per-run worktree, diff, teardown
-└── engine/
-    ├── models.py      # ReviewEngine protocol, Capabilities, request/result
-    └── fake.py         # an engine that spends nothing, for tests
+├── templates/
+│   ├── *.example.yaml # the two config templates the wheel ships
+│   ├── pr-review-agent.service    # the single-repository user unit
+│   └── pr-review-agent@.service   # the templated per-instance user unit
+├── triggers/
+│   ├── models.py      # payload-shaped dataclasses; PayloadError
+│   ├── allowlist.py   # numeric-user-id membership
+│   ├── mention.py     # @claude in *prose* only
+│   └── classifier.py  # PullRequest | Comment → Decision
+└── workspace/
+    ├── gitcmd.py      # the one hardened `git` invocation
+    ├── exclusions.py  # configured path patterns → git pathspec arguments
+    └── repo.py        # bare mirror, per-run worktree, diff, teardown
 ```
+
+`tests/test_docs_layout.py` walks `src/pr_review_agent` and fails if a module
+is missing from this tree or from the one in _AGENTS.md_. The two drifted for
+several releases before that test existed: the layout is the first thing a new
+reader trusts, and a layout that omits the module doing the spending is worse
+than none.
 
 ## 🐍 The Python 3.10 shim
 
@@ -265,11 +284,24 @@ printed. `--config` points at a config file other than `./config.yaml`.
 GITHUB_TOKEN=... poetry run pr-review-agent daemon start
 ```
 
-It polls on the adaptive interval, classifies what changed, and enqueues what
-the classifier accepts. It claims nothing and calls no review engine, so it
-cannot spend allowance — the queue fills and nothing drains it until the worker
-and the first engine adapter land. The [budget governor](docs/BUDGET.md) is already in place ahead
-of it, so the spending rails exist before anything can spend.
+It polls on the adaptive interval, classifies what changed, enqueues what the
+classifier accepts, and **drains that queue**: the worker claims a row, checks
+out the pull request, calls the configured review engine and posts the result.
+
+**This spends real allowance, and posts under a real account.** The engine
+adapter runs the `claude` CLI against a metered login, and a write-scoped
+token is what the publisher posts with. Two settings sit in front of that, and
+they are not interchangeable:
+
+- **`budget.enabled: false` is the brake.** The governor refuses every claim
+  while it is false, so nothing is reviewed and nothing is spent.
+- **`publish.dry_run: true` is not.** The whole pipeline runs and the comment
+  is logged instead of posted, so it costs exactly what a real review costs —
+  the engine has already run by the time the publisher is asked. Use it to see
+  what the agent would say, not to run it for free.
+
+Both are re-read on `SIGHUP`. The [budget governor](docs/BUDGET.md) has the
+rest of the rails: rolling windows, the ladder, reserve-then-settle.
 
 Same conventions as the host checks: `GITHUB_TOKEN` from the environment,
 `--config` for a config file elsewhere, exit `3` when either is missing. Exit
@@ -292,12 +324,21 @@ and the cold-start bound that stops a fresh database paying for the backlog.
 ## 🔍 Linting and formatting
 
 ```bash
-poetry run ruff check .
-poetry run ruff format --check .        # drop --check to reformat in place
+poetry run ruff check src tests scripts
+poetry run ruff format --check src tests scripts   # drop --check to rewrite
 poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
 poetry run pylint tests --rcfile=.pylintrc --fail-under=9.0 \
   --disable=missing-function-docstring,missing-module-docstring
 ```
+
+**Ruff is pointed at `src tests scripts`, not at `.`**, and CI names the same
+three. Those are the trees this project owns, and a gate should say what it
+checks: `ruff format` rewrites whatever it is handed, so a bare `.` would have
+formatted a future committed helper to this project's rules without anyone
+deciding that. `extend-exclude` in _pyproject.toml_ keeps a bare `ruff check .`
+in agreement for the common cases — a local `.claude/`, a built `site/`,
+`dist/` — so the habit of typing `.` does not bury you in errors from files the
+repository does not own.
 
 `src` currently scores 9.95/10 and `tests` 9.36/10, both well above the 9.0
 gate. Every deduction in `src` is a size heuristic — `R0902`
@@ -364,6 +405,14 @@ bootstraps Poetry into `.venv` exactly as the Setup section does.
 - `build` verifies the lock file, builds the wheel and sdist, rejects
   direct-URL dependencies in the built metadata, and installs the wheel to
   check the command it ships actually runs.
+- `docker` builds _docker/Dockerfile_, runs _docker/entrypoint.sh_ against the
+  checkout, and proves the package the entrypoint links is importable and its
+  console script runs. It does not re-run the gate inside the image — `test`
+  and `quality` already did that on the host — so what it buys is that a build
+  break or a broken entrypoint fails a pull request instead of being found by
+  the next person who needs the container. Layers are cached between runs;
+  [DOCKER.md](DOCKER.md#-verify-the-container) has the by-hand checks that
+  stay by hand.
 
 `quality` also runs [pip-audit](https://pypi.org/project/pip-audit/) over the
 dependencies, and a known vulnerability **fails the build**. The agent runs a
@@ -416,7 +465,8 @@ than predicting it:
 
 ```bash
 poetry run pytest --cov --cov-report=term-missing
-poetry run ruff format --check . && poetry run ruff check .
+poetry run ruff format --check src tests scripts
+poetry run ruff check src tests scripts
 poetry run pylint src --rcfile=.pylintrc --fail-under=9.0
 poetry run pyright src tests
 poetry build

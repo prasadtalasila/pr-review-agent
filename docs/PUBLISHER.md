@@ -317,11 +317,18 @@ mean deciding it against rows already written the wrong way.
 
 ## 🔑 Prerequisites
 
-The GitHub token needs **write** scope. `DESIGN.md` recorded that read-only
-sufficed for polling and that write scope was only needed once the publisher
-existed; it exists. `pr-review-agent host check` checks it, because
-the failure mode otherwise is a review that is polled for, claimed, paid for
-and computed, and then 403s on the last call.
+The GitHub token needs **write** scope -- Pull requests read/write and Issues
+read/write, the latter because a pull request's conversation comments are
+*issue* comments in the REST API ([TOKENS.md](TOKENS.md#-the-github-token)).
+`DESIGN.md` recorded that read-only sufficed for polling and that write scope
+was only needed once the publisher existed; it exists, and the failure mode
+without it is a review that is polled for, claimed, paid for and computed, and
+then 403s on the last call.
+
+`pr-review-agent host check` reports on this and cannot settle it. The only
+signal the repository response carries is `permissions.push`, which is
+*contents: write* -- so a correctly scoped fine-grained token reads as `false`
+there, and the check says so as a caution rather than refusing to start.
 
 Nothing else. `github.agent_user_id` used to be a prerequisite here, so the
 agent's own comment would be classified `self_commenter`; that key is gone,

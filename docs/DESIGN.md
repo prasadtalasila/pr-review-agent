@@ -296,8 +296,11 @@ deletion guarantee.
    account is also a contributor, list it like any other.
 4. **The remaining allowlist members.**
 5. **A GitHub token.** Read-only access to the three endpoints is enough for
-   polling, but the publisher exists now, so **write scope is required** --
-   `pr-review-agent host check` refuses to pass without it, because
-   the alternative is a review that is paid for and then 403s on the last
-   call. The checkout deliberately does **not** use it: the fetch is
-   anonymous, so no credential can reach the git command line or `.git/config`.
+   polling, but the publisher exists now, so **write scope is required**:
+   Pull requests read/write, Issues read/write, Metadata read
+   ([TOKENS.md](TOKENS.md#-the-github-token)). `pr-review-agent host check`
+   reports on it but cannot settle it -- the repository response exposes only
+   `permissions.push`, which is *contents: write*, a permission the list above
+   deliberately omits. The checkout deliberately does **not** use the token:
+   the fetch is anonymous, so no credential can reach the git command line or
+   `.git/config`.

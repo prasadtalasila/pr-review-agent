@@ -98,6 +98,12 @@ async def check_github(
     return results
 
 
+#: Named in every inconclusive write-scope result, because "check your token"
+#: without saying what to check is the same as saying nothing. Kept in step
+#: with docs/TOKENS.md, README.md and docs/SERVICE.md.
+_SCOPE = "confirm Pull requests: read/write, Issues: read/write, Metadata: read"
+
+
 async def _check_write_scope(
     client: GitHubClient, endpoints: RepoEndpoints
 ) -> CheckResult:
@@ -108,9 +114,24 @@ async def _check_write_scope(
     claimed, paid for and computed, and then fails on the last call -- the
     most expensive possible way to find out about a misconfigured token.
 
-    An absent ``permissions`` object warns rather than fails. A fine-grained
-    token need not report one, and refusing to start over a field GitHub
-    chose not to send would make the check worse than no check.
+    What can actually be read here is narrower than the question, and the
+    gap is worth stating because this check used to fail a correctly scoped
+    token. ``permissions.push`` on the repository object is *contents:
+    write*. That is what a classic PAT with ``repo`` carries, so ``push:
+    true`` settles it. It is **not** what the agent needs: the documented
+    scope is Pull requests read/write, Issues read/write and Metadata read
+    (TOKENS.md), and a fine-grained token holding exactly those reports
+    ``push: false`` while being able to post every comment and reaction the
+    publisher writes. GitHub exposes no per-resource breakdown on this
+    response, and the only way to be certain is to attempt a write, which is
+    not something a pre-flight check may do to somebody's pull request.
+
+    So ``push: false`` is reported as a caution naming the permissions to
+    check, not as a failure. An absent ``permissions`` object is the same
+    kind of caution: a fine-grained token need not report one, and refusing
+    to start over a field GitHub chose not to send would make the check
+    worse than no check. A repository that cannot be read at all is still a
+    hard failure -- that answers a question this response *can* answer.
     """
     name = "github write scope"
     try:
@@ -121,13 +142,9 @@ async def _check_write_scope(
         result.data.get("permissions") if isinstance(result.data, dict) else None
     )
     if not isinstance(permissions, dict) or "push" not in permissions:
-        return CheckResult(
-            name, True, "could not determine write scope from this token"
-        )
+        return CheckResult(name, True, f"could not determine write scope; {_SCOPE}")
     if not permissions["push"]:
-        return CheckResult(
-            name, False, "the token has no write access; the publisher cannot post"
-        )
+        return CheckResult(name, True, f"no contents:write on this token; {_SCOPE}")
     return CheckResult(name, True, "the token may post comments")
 
 

@@ -139,10 +139,12 @@ One line, no quotes, no `export`:
 GITHUB_TOKEN=github_pat_...
 ```
 
-A fine-grained PAT with read and write on pull requests for the one
-repository in `config.yaml` — see [TOKENS.md](TOKENS.md). It is passed to the daemon by
-`EnvironmentFile=` and never by `ExecStart=`, so it does not appear in
-`ps`, in `systemctl show` or in `systemctl cat`.
+A fine-grained PAT scoped to the one repository in `config.yaml`, with
+**Pull requests: read and write**, **Issues: read and write** and
+**Metadata: read only** — see [TOKENS.md](TOKENS.md#-the-github-token) for why
+each of the three. It is passed to the daemon by `EnvironmentFile=` and never
+by `ExecStart=`, so it does not appear in `ps`, in `systemctl show` or in
+`systemctl cat`.
 
 `service install` never overwrites this file, not even under `--force`: by
 the second install it holds a real credential.

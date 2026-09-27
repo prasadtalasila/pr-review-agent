@@ -113,12 +113,36 @@ before the next cycle is dropped.** That is a behaviour change rather than
 only a quieter log, and it is the intended reading — the agent has nothing
 useful to say about a closed pull request.
 
+There is a second, blunter limit on that set, and it is worth knowing before
+it surprises you. `/pulls?state=open` is requested with `per_page=100` and
+**page 1 only** — one request per endpoint per cycle is the whole polling
+design. So the set holds at most **the 100 most recently created open pull
+requests**. On a repository with more than 100 open at once, a mention on the
+101st-newest is rejected as `pr_not_open` even though it is open. The number
+is `PER_PAGE` in `poller/endpoints.py`; paginating would make the cost of a
+cycle grow with the backlog, which is the design that module's docstring
+rejects, so the cap is deliberate rather than an oversight.
+
 ### Drafts and mentions
 
 The draft check applies to **fresh pull requests only**. `draft` exists to stop
 the agent auto-reviewing work in progress nobody asked about; an allowlisted
 human typing `@claude` on a draft *is* the ask, and refusing it would make the
 handle unreliable exactly when a contributor wants early feedback.
+
+**Marking a draft ready for review never triggers an automatic review.** This
+catches people out, so it is worth being plain about. The only automatic
+trigger is `pr_opened`, and it is gated on `created_at` — the moment the pull
+request was opened, which "ready for review" does not change. A pull request
+opened as a draft was seen once, rejected as `draft`, and its `created_at`
+falls behind the watermark from then on; clicking *Ready for review* moves
+`updated_at` and nothing the classifier reads. The agent is also not watching
+for the event: the three polled endpoints are open pull requests and the two
+comment feeds, and draft state is not one of them.
+
+So on a pull request opened as a draft, a review is asked for by **commenting
+`@claude`** once it is ready. That path has no draft check at all, for the
+reason above.
 
 ## 🔁 The agent cannot summon itself
 

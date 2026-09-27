@@ -17,13 +17,40 @@ asking for help. A credential in it would leak the first time anyone did that.
 `config validate` therefore needs no token at all — it answers a question about
 the file, not about GitHub.
 
-**What it needs:** a fine-grained personal access token with **read and write on
-pull requests** for the one repository the config names. Read, so the poller can
-see pull requests and comments; write, so the publisher can post the
-acknowledgement and the review.
+**What it needs:** a fine-grained personal access token scoped to the one
+repository the config names, with exactly three permissions:
+
+| Permission | Access | Why |
+| --- | --- | --- |
+| **Pull requests** | Read and write | Read lists the open pull requests and the inline review comments; write is how the publisher posts the review. |
+| **Issues** | Read and write | A pull request's conversation comments are *issue* comments in the REST API. Read is the `@claude` feed; write posts the acknowledgement and the 👀 reaction. |
+| **Metadata** | Read only | Mandatory on every fine-grained token, and what `host check` reads the repository with. |
+
+Nothing else. In particular **Contents is not needed**: the checkout fetches
+the repository over anonymous `https` and no credential ever reaches `git`
+(see [WORKSPACE.md](WORKSPACE.md)), so a token that can write code is a blast
+radius the agent has no use for.
+
+A classic PAT with `repo` also works, and is coarser than all of the above put
+together. Prefer the fine-grained one.
 
 Scope it to that repository. A token that can reach more than the agent is
 configured for is a token whose blast radius is larger than the agent's.
+
+### What `host check` can and cannot tell you
+
+`pr-review-agent host check` reads `GET /repos/{owner}/{name}` and reports on
+`permissions.push`. Read its answer with the limit in mind: **`push` is
+*contents: write***, which is what a classic `repo` token carries and what the
+list above deliberately leaves out. So a correctly scoped fine-grained token
+reports `push: false`, and the check says so as a caution naming the three
+permissions rather than as a failure.
+
+That is the honest limit of a read-only pre-flight. GitHub publishes no
+per-resource permission breakdown on that response, and the only way to be
+certain a token may comment is to post a comment — which is not something a
+pre-flight check may do to somebody's pull request. What the check does still
+catch outright is a token that cannot read the repository at all.
 
 **What happens to it.** It is passed as a `Bearer` header and nothing else. It
 is never logged, never printed by the pre-flight checks — those report what
