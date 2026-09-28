@@ -144,14 +144,15 @@ The suite spawns `git` through asyncio, each child in its own session. When
 one finishes it reparents to PID 1, and a PID 1 that never calls `wait()` —
 `sleep infinity`, the obvious choice for a container you exec into — leaves
 every one of them as a zombie. About 200 accumulate by the time the suite
-reaches `tests/test_worker.py`, and the container is then SIGKILLed out from
+reaches the `tests/test_worker_*.py` family, and the container is then
+SIGKILLed out from
 under the run: `docker compose exec` returns 137, pytest's output stops
 mid-file, and nothing says why. `docker logs` is empty, `docker inspect`
 reports `OOMKilled=false`, and the cgroup's `memory.events` and `pids.events`
 are both all zeroes — memory peaked at 146MB against no limit, and
 `pids.current` at ~200 against a `pids.max` of 272806.
 
-Measured, not reasoned about: five runs of `tests/test_worker.py` with
+Measured, not reasoned about: five runs of the worker suite with
 `sleep infinity` as PID 1 died three times and passed twice. Five runs with
 `--init` passed five times, and the zombies are reaped as they appear. The
 full suite then passes 789/789.

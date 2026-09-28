@@ -110,8 +110,11 @@ src/pr_review_agent/          importable package (src layout)
     gitcmd.py                 the one hardened `git` invocation
     exclusions.py             configured path patterns to git pathspec arguments
     repo.py                   bare mirror, per-run worktree, diff, teardown
-tests/                        pytest suite, one test_*.py per module
-.github/workflows/python-ci.yml   the single CI workflow
+tests/                        pytest suite; a family per module under test
+  conftest.py                 the loopback https git remote, and the plugin list
+  *_harness.py                one family's doubles and fixtures, imported by it
+  fixtures/                   GitHub payloads recorded by scripts/record_fixtures.py
+.github/workflows/python-ci.yml   tests, lint, types, coverage: the gate
 ```
 
 `tests/test_docs_layout.py` fails if a module is missing from this tree or
@@ -127,7 +130,12 @@ commit.
 - Dependencies are managed by Poetry in `pyproject.toml`; `poetry.lock` is
   committed and must be regenerated (`poetry lock`) in the same commit as any
   dependency change.
-- Tests live in `tests/` and follow the `test_*.py` naming convention.
+- Tests live in `tests/` and follow the `test_*.py` naming convention. A
+  module whose suite outgrows the file limit is split into a family --
+  `test_worker_claim.py`, `test_worker_publish.py` -- over one
+  `*_harness.py` holding the doubles and fixtures they share. A harness
+  defining a fixture is registered in `tests/conftest.py`'s
+  `pytest_plugins`, so no test module imports a name it never calls.
 - The trigger and poller suites are pure functions over fixtures: they must
   stay free of network access and must never call a real LLM. The engine
   suite runs against `FakeEngine` for the same reason — that is what the
@@ -144,8 +152,8 @@ commit.
   that counted prose would be met by deleting the explanations -- which is the
   opposite of what it is for. Measured this way the limit says what it means:
   this much behaviour in one place, and no more.
-  `tests/test_module_size.py` enforces both on every file under `src/`, so
-  neither is a matter of judgement.
+  `tests/test_module_size.py` enforces both on every file under `src/`,
+  `tests/` and `scripts/`, so neither is a matter of judgement.
 - Implementations should be tested when practical.
 - Real credentials, tokens and account identifiers never enter the repository.
   `config.yaml` is gitignored; change `config.example.yaml` and

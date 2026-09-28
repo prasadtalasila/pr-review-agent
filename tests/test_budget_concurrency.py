@@ -64,6 +64,25 @@ def trigger(pr, repo=REPO):
     )
 
 
+def drain(path, owner, repo=REPO, *, comply=False):
+    """Claim until the governor refuses, over this thread's own connection.
+
+    A connection is not shareable across threads, so each worker opens the
+    same file rather than being handed a store -- which is what makes this a
+    test of SQLite's write lock rather than of Python's.
+    """
+    claimed = 0
+    with SqliteStore(path) as store:
+        governor = Governor(store, config(), comply=comply)
+        queue = ReviewQueue(store, repo=repo)
+        while (
+            claim := queue.claim(now=NOON, owner=owner, admit=governor.admit)
+        ) is not None:
+            claimed += 1
+            queue.complete(claim)
+    return claimed
+
+
 def test_concurrent_workers_cannot_breach_a_window(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as seed:
@@ -141,22 +160,14 @@ def test_two_repos_over_one_store_share_one_pool(tmp_path):
         # One authority publishes the pool arithmetic; the other complies.
         seed.publish_budget_policy(BudgetPolicy(REPO, config().shared()), now=NOON)
 
-    def drain(worker):
-        name, repo = worker
-        claimed = 0
-        with SqliteStore(path) as store:
-            governor = Governor(store, config(), comply=repo != REPO)
-            queue = ReviewQueue(store, repo=repo)
-            while True:
-                claim = queue.claim(now=NOON, owner=name, admit=governor.admit)
-                if claim is None:
-                    return claimed
-                claimed += 1
-                queue.complete(claim)
-
     workers = [(f"w{n}", REPO if n % 2 else OTHER_REPO) for n in range(WORKERS)]
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        admitted = sum(pool.map(drain, workers))
+        admitted = sum(
+            pool.map(
+                lambda w: drain(path, w[0], w[1], comply=w[1] != REPO),
+                workers,
+            )
+        )
 
     assert admitted == ADMISSIBLE
 
@@ -203,20 +214,10 @@ def test_a_stale_reservation_is_closed_exactly_once_under_contention(tmp_path):
             for pr in range(WORKERS * 5):
                 _reserve(conn, trigger(pr).dedupe_key, STALE_TOKENS)
 
-    def drain(name):
-        claimed = 0
-        with SqliteStore(path) as store:
-            governor = Governor(store, config())
-            queue = ReviewQueue(store, repo=REPO)
-            while True:
-                claim = queue.claim(now=NOON, owner=name, admit=governor.admit)
-                if claim is None:
-                    return claimed
-                claimed += 1
-                queue.complete(claim)
-
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        admitted = sum(pool.map(drain, [f"w{n}" for n in range(WORKERS)]))
+        admitted = sum(
+            pool.map(lambda name: drain(path, name), [f"w{n}" for n in range(WORKERS)])
+        )
 
     assert admitted == ADMISSIBLE
 
