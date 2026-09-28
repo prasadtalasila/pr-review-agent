@@ -43,6 +43,21 @@ def test_the_prompt_asks_for_a_consequence_not_a_description(tmp_path):
     assert "Not a description of the change." in prompt
 
 
+def test_the_prompt_names_what_not_to_report(tmp_path):
+    """The filter was skill-only once; a reviewer that never sees it reports noise."""
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "## What not to report" in prompt
+    for topic in ("Pre-existing problems", "Anything silenced on purpose"):
+        assert topic in prompt
+
+
+def test_the_filter_follows_the_contract_it_filters(tmp_path):
+    """What counts as a finding, then what to drop -- and both before the diff."""
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert prompt.index("## Severity") < prompt.index("## What not to report")
+    assert prompt.index("## What not to report") < prompt.index("## Diff")
+
+
 def test_the_diff_is_still_the_last_thing_in_the_prompt(tmp_path):
     """Instructions before data, so nothing in the diff trails the rules."""
     prompt = build_prompt(request(tmp_path), standards="")

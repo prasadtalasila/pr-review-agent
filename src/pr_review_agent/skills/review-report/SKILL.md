@@ -94,7 +94,13 @@ between them mean no skill, plugin or settings file is discovered. That is
 deliberate and must not be relaxed to make this skill loadable.
 
 The daemon gets the same text a different way: `engine/prompt.py` reads
-`references/finding-contract.md` out of this directory and splices it into
-the prompt. One source, two deliveries. If you edit a reference, you are
-editing what the daemon tells its reviewer — `tests/test_skill.py`
-fails if the two fall out of step.
+`references/finding-contract.md` and `references/false-positives.md` out of
+this directory and splices them into the prompt. One source, two deliveries.
+If you edit either, you are editing what the daemon tells its reviewer —
+`tests/test_skill.py` fails if they fall out of step.
+
+`references/report-contract.md` is the exception, and it is not an oversight:
+the daemon never needs to be told the report format, because it never writes
+one. It emits findings as JSON and `publisher.render` lays them out. That
+file is for you, for the case where you are rendering or repairing a report
+by hand.

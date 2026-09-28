@@ -27,7 +27,11 @@ import pytest
 
 from pr_review_agent import skills
 from pr_review_agent.engine.models import Finding
-from pr_review_agent.engine.prompt import FINDINGS_SCHEMA, REVIEW_INSTRUCTIONS
+from pr_review_agent.engine.prompt import (
+    FALSE_POSITIVES,
+    FINDINGS_SCHEMA,
+    REVIEW_INSTRUCTIONS,
+)
 from pr_review_agent.publisher import TRAILER, render
 
 ROOT = Path(str(skills.root()))
@@ -59,6 +63,11 @@ def example_findings() -> tuple[Finding, ...]:
 def test_prompt_reads_the_skill_reference() -> None:
     """The daemon's instructions are the skill's, not a paraphrase of them."""
     assert skills.reference("finding-contract.md") == REVIEW_INSTRUCTIONS
+
+
+def test_prompt_reads_the_false_positive_reference() -> None:
+    """Both readers are told what not to report, and told it from one file."""
+    assert skills.reference("false-positives.md") == FALSE_POSITIVES
 
 
 def test_schema_asset_matches_the_schema_the_engine_enforces() -> None:

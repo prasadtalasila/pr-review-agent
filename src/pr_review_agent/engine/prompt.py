@@ -44,6 +44,18 @@ Report what you find and stop.\
 #: find out. See ``skills/__init__.py`` on why the wheel has needed watching.
 REVIEW_INSTRUCTIONS = reference("finding-contract.md")
 
+#: The filter the sweep runs through before anything is written: what is
+#: real but out of scope, what a linter already catches, what is silenced on
+#: purpose, and what belongs in prose rather than in a report.
+#:
+#: Sent because the alternative was telling the two readers different things.
+#: ``finding-contract.md`` ends with four bullets naming the commonest cases;
+#: this is the same rule with the cases a reviewer actually hits, and until
+#: now only an interactive session was shown it. A finding the maintainer
+#: skips past costs more than the tokens it took to write -- it is the reason
+#: the entry after it does not get read.
+FALSE_POSITIVES = reference("false-positives.md")
+
 #: The shape a finding has to arrive in. Kept flat and small: the more a
 #: schema demands, the more runs end in a validation failure that spent
 #: tokens and produced nothing. ``title`` earns its place because the report
@@ -93,6 +105,8 @@ def build_prompt(request: ReviewRequest, standards: str) -> str:
         "The working directory holds the pull request head. Read it.",
         "",
         REVIEW_INSTRUCTIONS,
+        "",
+        FALSE_POSITIVES,
     ]
     if standards:
         parts += ["", "## Review standards", "", standards]

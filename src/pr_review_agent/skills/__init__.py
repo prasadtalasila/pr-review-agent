@@ -10,8 +10,9 @@ instructions from whoever opened the pull request, and three of the four
 injection defences in ``docs/DESIGN.md`` are exactly those flags.
 
 So the engine gets the same text by a route that widens nothing:
-``engine/prompt.py`` reads ``references/finding-contract.md`` from here and
-splices it into the prompt. One source, two deliveries. Before this module
+``engine/prompt.py`` reads ``references/finding-contract.md`` and
+``references/false-positives.md`` from here and splices them into the
+prompt. One source, two deliveries. Before this module
 the text existed twice -- once as ``REVIEW_INSTRUCTIONS`` and once as
 ``docs/reporting/review-prompt.md`` -- and the constant's own comment said
 paraphrasing it would let the two drift silently.

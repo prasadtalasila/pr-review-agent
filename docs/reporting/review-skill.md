@@ -16,7 +16,7 @@ Then start a Claude Code session and ask for a review. The skill supplies:
 | `SKILL.md` | The workflow: collect the header facts, read the contract, sweep, discard, write findings as JSON, render, check. |
 | `references/finding-contract.md` | What is in scope, what to sweep, how a title and a body are written, what each severity means. The same file `engine/prompt.py` reads. |
 | `references/report-contract.md` | The rendering rules — sections, ordering, numbering, the empty report, the trailer. See [Report template](review-report.md). |
-| `references/false-positives.md` | What not to report. |
+| `references/false-positives.md` | What not to report. The other file `engine/prompt.py` reads. |
 | `scripts/collect_context.py` | Head sha, merge base, commit count and changed paths, out of git. |
 | `scripts/render_report.py` | `findings.json` → a report, through `publisher.render` itself. |
 | `scripts/check_report.py` | A hand-written or hand-edited report, checked against the contract. |
@@ -36,8 +36,11 @@ from whoever opened the pull request. Three of the four injection defences in
 make a directory loadable.
 
 The engine is given the same text by a route that widens nothing:
-`engine/prompt.py` reads `finding-contract.md` out of the package and splices
-it into the prompt. If a future release runs the engine inside bubblewrap
+`engine/prompt.py` reads `finding-contract.md` and `false-positives.md` out
+of the package and splices them into the prompt. `report-contract.md` is not
+sent and does not need to be — the sections, the ordering, the numbering and
+the trailer are `publisher.render`'s, decided in code, so the daemon's report
+format does not depend on a model complying with a description of it. If a future release runs the engine inside bubblewrap
 ([roadmap A2](../FEATURE-ROADMAP.md)), that route still works unchanged — the
 text is already in the process, so there is no directory for the sandbox
 profile to bind and nothing new for it to allow.
