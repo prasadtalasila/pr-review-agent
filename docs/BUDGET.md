@@ -770,8 +770,8 @@ the difference is a reservation's worth of tokens.
 
 ## 🧪 What the tests pin
 
-In `tests/test_budget.py`, `tests/test_budget_concurrency.py` and the `admit`
-cases in `tests/test_queue.py`:
+In the `tests/test_budget_*.py` family -- the windows, the ladder, the fit and
+the concurrency load -- and the `admit` cases in `tests/test_queue_admit.py`:
 
 - a synthetic concurrent load cannot breach any configured window;
 - with `reviewer_share_pct` configured, agent usage never exceeds its share;
@@ -824,8 +824,8 @@ nowhere near spent, so only the pacer can be what refused:
 - a ledger row from before migration 11 reads as no history rather than as a
   recent review.
 
-In `tests/test_cli_engine.py` and `tests/test_worker.py`, for the detector and
-the join:
+In `tests/test_cli_engine_outcomes.py` and `tests/test_worker_usage.py`, for
+the detector and the join:
 
 - a usage limit on stderr and one in the envelope both raise `UsageLimited`,
   the envelope carrying its measured usage and the stderr case carrying none,
@@ -846,8 +846,8 @@ exclusions half of layer 2:
 - an excluded path appears in neither the size count nor the diff;
 - a binary file counts as one file and no lines.
 
-And in `tests/test_config.py`, `tests/test_store.py` and
-`tests/test_worker.py`, for layer 3:
+And in `tests/test_config_sections.py`, `tests/test_store_ledger.py` and
+`tests/test_worker_failures.py`, for layer 3:
 
 - a review wall clock at or above the queue lease fails startup, pinned
   against `DEFAULT_LEASE` itself rather than against `1800`, so changing the

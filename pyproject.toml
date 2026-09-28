@@ -1,6 +1,6 @@
 [project]
 name = "pr-review-agent"
-version = "1.4.0"
+version = "1.4.1"
 description = "Locally-hosted LLM-based PR review agent with enforced usage budgets"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -79,6 +79,11 @@ asyncio_mode = "auto"
 # A `live` test runs a real coding agent and spends real tokens, so it is
 # deselected by default and never runs in CI. `-m live` opts in.
 addopts = ["-m", "not live"]
+# A RuntimeWarning from asyncio is a test that left something un-awaited, and
+# an un-awaited coroutine is a teardown that did not run: the suite was
+# printing one for a release before anybody read the line. Raised, so the
+# next one fails the run that introduced it rather than scrolling past.
+filterwarnings = ["error::RuntimeWarning"]
 markers = ["live: runs a real engine binary and spends tokens; opt in with -m live"]
 
 [tool.coverage.run]

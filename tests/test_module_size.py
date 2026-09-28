@@ -18,8 +18,14 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parent.parent / "src"
-SOURCES = sorted(SRC.rglob("*.py"))
+ROOT = Path(__file__).resolve().parent.parent
+#: The three trees this project owns, which are also the three `ruff` is
+#: pointed at. The suite is included deliberately: a test file is code that
+#: has to be read before it can be trusted, and the module that grew to
+#: 1 800 lines was the one holding the agent's most expensive behaviour.
+SOURCES = sorted(
+    path for tree in ("src", "tests", "scripts") for path in (ROOT / tree).rglob("*.py")
+)
 
 MAX_FILE_LINES = 250
 MAX_FUNCTION_LINES = 25
@@ -71,23 +77,23 @@ def _measure(path: Path) -> tuple[int, dict[str, int]]:
     return _count(source, uncounted, 1, len(source.splitlines())), functions
 
 
-@pytest.mark.parametrize("path", SOURCES, ids=lambda p: str(p.relative_to(SRC)))
+@pytest.mark.parametrize("path", SOURCES, ids=lambda p: str(p.relative_to(ROOT)))
 def test_a_module_stays_under_the_file_limit(path):
     total, _ = _measure(path)
     assert total <= MAX_FILE_LINES, (
-        f"{path.relative_to(SRC)} holds {total} lines of code; "
+        f"{path.relative_to(ROOT)} holds {total} lines of code; "
         f"the limit is {MAX_FILE_LINES}. Split it."
     )
 
 
-@pytest.mark.parametrize("path", SOURCES, ids=lambda p: str(p.relative_to(SRC)))
+@pytest.mark.parametrize("path", SOURCES, ids=lambda p: str(p.relative_to(ROOT)))
 def test_every_function_stays_under_the_function_limit(path):
     _, functions = _measure(path)
     too_long = {
         name: size for name, size in functions.items() if size > MAX_FUNCTION_LINES
     }
     assert not too_long, (
-        f"{path.relative_to(SRC)}: {too_long}; the limit is {MAX_FUNCTION_LINES}."
+        f"{path.relative_to(ROOT)}: {too_long}; the limit is {MAX_FUNCTION_LINES}."
     )
 
 

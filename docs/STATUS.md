@@ -125,11 +125,15 @@ linked.
 - [ ] **Test coverage:** unit tests for mention parsing (fenced code, inline
       code, blockquotes), allowlist id-vs-login matching, dedupe key generation
       per trigger kind, rolling-window arithmetic, and the reserve-then-settle
-      governor under concurrency; integration tests against recorded GitHub API
-      fixtures; an engine conformance suite run against every adapter using a
-      fixture pull request with seeded defects (the suite exists in
+      governor under concurrency (**done**); integration tests against recorded
+      GitHub API fixtures (**done** — `tests/test_integration.py` replays a
+      recorded `/pulls` listing, comments page and `/pulls/{n}` through
+      `Daemon.run_once`, from fixtures `scripts/record_fixtures.py` re-records);
+      an engine conformance suite run against every adapter using a fixture
+      pull request with seeded defects (the suite exists in
       `tests/test_engine.py`; it runs against `FakeEngine` alone until there
-      is an adapter to add).
+      is an adapter to add, and `tests/test_cli_engine_live.py` covers the one
+      real adapter when it is run by hand).
 - [ ] **Documentation:** configuration reference, deployment and firewall
       prerequisites, billing-mode guidance, and an operator runbook covering the
       kill switch and the retention policy.
@@ -164,7 +168,7 @@ bugs:
   there is no code for it.
 - `claim()`'s `admit` hook is optional, so "nothing spends outside the
   governor" is held by a test rather than by the type system:
-  `tests/test_worker.py::test_a_claim_is_taken_only_through_the_governor`
+  `tests/test_worker_claim.py::test_a_claim_is_never_taken_without_an_admit_predicate`
   asserts the hook the worker passes. The worker is the only caller that
   claims.
 - `worker.count` needs a restart to take effect. `SIGHUP` swaps only the

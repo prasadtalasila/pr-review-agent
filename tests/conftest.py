@@ -35,6 +35,18 @@ from cryptography.x509.oid import NameOID
 
 from pr_review_agent.workspace import Workspace
 
+#: The families that were one module each until they outgrew the file limit.
+#: Registered as plugins rather than imported, so that a fixture defined in a
+#: harness -- `wired`, `store` -- is available to every module of its family
+#: without each of them importing a name it never calls itself.
+pytest_plugins = [
+    "budget_harness",
+    "cli_engine_harness",
+    "publisher_harness",
+    "queue_harness",
+    "worker_harness",
+]
+
 #: The pull request the fixture repository publishes.
 PR_NUMBER = 7
 

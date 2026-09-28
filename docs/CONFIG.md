@@ -222,7 +222,7 @@ The two diff-size caps are layer 2 of the budget, enforced by the
 [workspace](WORKSPACE.md) but configured here so that every spending cap
 lives in one section. Unlike the token counts they *do* have defaults: a
 plan's allowance is unpublished, whereas a diff-size cap is an ordinary
-engineering choice. `tests/test_config.py` pins both by value, so widening
+engineering choice. `tests/test_config_sections.py` pins both by value, so widening
 one is a visible diff.
 
 Be clear about what they bound: **the reviewer's input, not the disk.** A
@@ -317,7 +317,7 @@ in, and logged absolute at `INFO`, exactly as `store.path` is.
 The **third** optional section, and the only one whose value is a spending
 control. Every concurrent run reserves `budget.max_run_tokens` up front, so
 `count` multiplies the floor below which the governor refuses everything —
-which is why it is capped, and why `tests/test_config.py` pins both the
+which is why it is capped, and why `tests/test_config_sections.py` pins both the
 default and the cap by value.
 
 Raising it parallelises *across* pull requests only. One pull request is
@@ -502,7 +502,7 @@ brakes. Changing the level needs a restart.
 
 Every key below is required; everything else has a default. This is
 [`config.minimal.example.yaml`](https://github.com/prasadtalasila/pr-review-agent/blob/main/config.minimal.example.yaml) verbatim, and
-`tests/test_config.py` loads it, so it cannot drift. The shipped file carries
+`tests/test_config_loading.py` loads it, so it cannot drift. The shipped file carries
 no comments: it is meant to be copied and edited, and the reasoning belongs
 on this page rather than in a file that becomes somebody's `config.yaml`.
 

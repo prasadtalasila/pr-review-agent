@@ -195,7 +195,7 @@ Each template exists twice: at the repository root, which is what a clone
 and the documentation's links use, and under
 `src/pr_review_agent/templates/`, which is what the wheel ships and what
 `config generate` reads. `tests/test_cli.py` asserts the two copies are
-byte-identical, and `tests/test_config.py` parses the root ones against the
+byte-identical, and `tests/test_config_loading.py` parses the root ones against the
 loader, so neither copy can drift.
 
 `config.yaml` is gitignored: it names real accounts and will later sit beside
@@ -239,7 +239,50 @@ store tests write to `tmp_path`. There is therefore no excuse for skipping it
 before claiming a change is done.
 
 Async tests need no decorator — `asyncio_mode = "auto"` means an
-`async def test_*` is collected and run on a fresh event loop.
+`async def test_*` is collected and run on a fresh event loop. A
+`RuntimeWarning` is an error (`filterwarnings` in _pyproject.toml_): every one
+this suite has produced was a coroutine left un-awaited, which is a teardown
+that silently did not run.
+
+### Families and harnesses
+
+The same 250-line limit applies to a test file as to a module — it is
+measured by `tests/test_module_size.py` over `src`, `tests` and `scripts` —
+so a suite that outgrows it becomes a family: `test_worker_claim.py`,
+`test_worker_failures.py`, `test_worker_publish.py` and so on, over a single
+`worker_harness.py` holding the doubles, the constants and the `wired`
+fixture they share.
+
+A harness that defines a fixture is listed in `tests/conftest.py`'s
+`pytest_plugins`, which is what makes `wired` or `store` available to its
+family without every module importing a name it never calls itself. A
+harness that defines only helpers is imported normally.
+
+### Recorded fixtures
+
+`tests/test_integration.py` replays real GitHub pages — a `/pulls` listing, a
+comments page and one `/pulls/{n}` — through `MockTransport` and drives
+`Daemon.run_once` over them. It is the acceptance criterion `docs/STATUS.md`
+calls "integration tests against recorded GitHub API fixtures", and it needs
+no network: the pages are committed under _tests/fixtures_.
+
+Re-record them with `python scripts/record_fixtures.py`, which reads the
+public API unauthenticated and documents the two normalisations it applies.
+
+### The live engine test
+
+`tests/test_cli_engine_live.py` runs a real `claude` and spends real tokens,
+so `addopts = ["-m", "not live"]` deselects it. Opt in by hand:
+
+```bash
+poetry run pytest -m live tests/test_cli_engine_live.py
+```
+
+No workflow runs it: a scheduled job that spends tokens is a bill nobody
+asked for on the day it fires. It is run by hand, when the adapter or the
+CLI it drives has changed, and what it buys is the one thing the stubbed
+suite cannot see — that the envelope the real binary prints is still the one
+the parser reads.
 
 ## 🖥 The command line
 
@@ -353,7 +396,7 @@ in agreement for the common cases — a local `.claude/`, a built `site/`,
 `dist/` — so the habit of typing `.` does not bury you in errors from files the
 repository does not own.
 
-`src` currently scores 9.98/10 and `tests` 9.39/10 under pylint 4.0, both well
+`src` currently scores 9.98/10 and `tests` 9.46/10 under pylint 4.0, both well
 above the 9.0 gate. Every remaining deduction in `src` is `R0902`
 (too-many-instance-attributes) on the config, the daemon and the two trigger
 models, plus `R0913` on the publisher. None is worth the indirection that
@@ -412,7 +455,9 @@ reads the source tree, where both have always been present.
 ## 🤖 Continuous integration
 
 _.github/workflows/python-ci.yml_ runs the same commands listed above, and
-bootstraps Poetry into `.venv` exactly as the Setup section does.
+bootstraps Poetry into `.venv` exactly as the Setup section does. It is the
+gate; the other two workflows are _docs.yml_, which publishes the site, and
+_release.yml_, which reacts to a version tag.
 
 - `test` runs the suite on Python 3.10, 3.11, 3.12, 3.13 and 3.14 on Ubuntu,
   plus 3.12 on macOS and Windows. The full version range is covered on one OS

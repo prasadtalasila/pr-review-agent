@@ -125,7 +125,7 @@ Without that bound, a trigger that crashes its worker every time would be
 re-reviewed forever, and **each attempt spends allowance before it fails**.
 Three is enough to ride out a transient failure and few enough that a poison
 trigger cannot drain the weekly allowance one retry at a time.
-`tests/test_queue.py::test_retries_are_bounded` pins it.
+`tests/test_queue_claim.py::test_retries_are_bounded` pins it.
 
 ## 🧬 Statuses
 
