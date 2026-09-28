@@ -24,6 +24,9 @@ README.pypi.md
 docker/.env
 # The container's ~/.claude: a login, not source.
 docker/claude/
+docker/.claude/
 # A local compose overlay -- the worktree mount DOCKER.md describes, a port,
 # an extra volume. Machine-specific by definition; compose picks it up on its own.
 docker/docker-compose.override.yml
+# rc-daemon.sh's own log, written into its bind-mounted directory at runtime.
+scripts/claude-daemon/rc-daemon.log

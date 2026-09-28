@@ -24,4 +24,8 @@ else
     echo "entrypoint: set PRA_WORKSPACE in docker/.env to this repository's root." >&2
 fi
 
+if [ -x /home/prasad/claude-daemon/rc-daemon.sh ]; then
+    /home/prasad/claude-daemon/rc-daemon.sh start
+fi
+
 exec "$@"
