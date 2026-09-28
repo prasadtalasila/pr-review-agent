@@ -53,6 +53,7 @@ nav:
       - Review output:
           - Report template: reporting/review-report.md
           - Review prompt: reporting/review-prompt.md
+          - Review skill: reporting/review-skill.md
   - How it works:
       - Triggers: TRIGGERS.md
       - Poller: POLLER.md

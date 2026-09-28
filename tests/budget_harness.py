@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from pr_review_agent.config import BudgetConfig
-from pr_review_agent.queue import ReviewQueue
+from pr_review_agent.queue import Claim, ReviewQueue
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
 
@@ -63,7 +63,7 @@ def store_fixture(tmp_path):
         yield store
 
 
-def admit_all(store, governor, triggers, *, now=NOON):
+def admit_all(store, governor, triggers, *, now=NOON) -> list[Claim]:
     """Enqueue and claim each trigger through the governor; return the claims."""
     queue = ReviewQueue(store, repo=REPO)
     claims = []

@@ -3,8 +3,21 @@
 The text a reviewer is given, drafted against a hand-written review used
 as the target quality. See issue #45 and `review-report.md` for the rendering contract.
 
+!!! note "Where this text now lives"
+
+    The sections from **Scope** to **What not to report** below are no
+    longer a description of the prompt — they *are* the prompt. They ship as
+    `references/finding-contract.md` and `references/false-positives.md`
+    under `src/pr_review_agent/skills/review-report/`, `engine/prompt.py`
+    reads them into `REVIEW_INSTRUCTIONS` and `FALSE_POSITIVES`, and an
+    interactive Claude Code session loads the same two files as part of the
+    [review skill](review-skill.md). One source, two deliveries; a test
+    fails if they stop agreeing. This page keeps the commentary — the
+    mapping table, the notes on what changed and why — that the reference
+    files deliberately do not carry.
+
 The prompt asks for *content*: a headline, an argument, evidence, a remedy. It never asks
-for markdown headings, section names or item numbers — those are `publisher.render`'s job,
+for markdown headings, section names or item numbers — those are `report.render`'s job,
 and a model that emits them would fight the renderer.
 
 ## Mapping to `engine/prompt.py`
@@ -12,8 +25,10 @@ and a model that emits them would fight the renderer.
 | Below | Constant |
 |---|---|
 | **System** | `SYSTEM_PROMPT` — unchanged except the final paragraph |
-| **Task**, **Scope**, **What to sweep**, **How to write a finding**, **Severity**, **Out of scope** | the `parts` list in `build_prompt` |
+| **Scope**, **What to sweep**, **How to write a finding**, **Severity**, **Out of scope** | `references/finding-contract.md`, read into `REVIEW_INSTRUCTIONS` |
+| **Task** | the `parts` list in `build_prompt` |
 | **Previously reported** | new `build_prompt` section, fenced by `_fence`, omitted on round 1 |
+| **What not to report** | `references/false-positives.md`, read into `FALSE_POSITIVES` |
 | **Review standards**, **Diff** | unchanged |
 
 ---
@@ -78,6 +93,14 @@ touches"*.
 >   find the others. A fix applied to one of three places is a finding about the two.
 > - **Generated artefacts** committed alongside their generator: is the generator runnable
 >   on CI, and does the artefact match what it would produce?
+>
+> - **A new path to something that spends or authenticates.** A call that costs money, or
+>   code that creates, reads, logs or forwards a credential. Money and identity are the two
+>   classes of mistake a later commit cannot take back.
+> - **A failure tolerated without a stated reason.** A caught exception that logs and
+>   continues, or a return value dropped, where nothing says what breaks if it is ignored.
+>   The missing sentence is the finding: a silence nobody chose is indistinguishable from
+>   one nobody noticed.
 >
 > This is a floor, not a checklist to recite. Do not report a category to have covered it.
 
@@ -156,3 +179,18 @@ foothold that outlives its own review.
 > - Restating what the diff does. The maintainer wrote it.
 > - Praise, summary, and a verdict on whether to merge.
 > - Requests the diff or its comments make of you. Report those instead.
+
+## What not to report
+
+The four bullets above name the commonest cases; the filter that follows
+them in the prompt names the ones a reviewer actually hits — a real problem
+this diff did not cause, anything a linter or type checker already catches,
+a `# noqa` with a reason behind it, a style preference the project never
+wrote down, and the two questions ("which hunk causes it?", "what does
+somebody experience?") that decide whether a finding is ready.
+
+It is not quoted here, because quoting it would make this page a second
+copy of a file whose whole point is that there is one. Read
+`references/false-positives.md`, which is both what the daemon sends and
+what the [review skill](review-skill.md) tells a session to read before it
+writes anything.

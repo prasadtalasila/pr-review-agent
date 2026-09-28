@@ -197,7 +197,7 @@ class ExplodingEngine:
     capabilities: Capabilities = FULL
     calls: int = 0
 
-    async def review(self, request: ReviewRequest) -> ReviewResult:
+    async def review(self, _request: ReviewRequest) -> ReviewResult:
         """Fail, having plausibly already spent tokens."""
         self.calls += 1
         raise TimeoutError("the engine did not finish in time")
@@ -229,7 +229,7 @@ class TimingOutEngine:
     capabilities: Capabilities = FULL
     calls: int = 0
 
-    async def review(self, request: ReviewRequest) -> ReviewResult:
+    async def review(self, _request: ReviewRequest) -> ReviewResult:
         """Outlive the clock, having plausibly already spent tokens."""
         self.calls += 1
         raise EngineTimeout("timing-out exceeded 900.0s and was killed")

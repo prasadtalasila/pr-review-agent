@@ -12,7 +12,7 @@ import pytest
 from pr_review_agent.engine import Finding, Severity
 from pr_review_agent.publisher import MAX_BODY_CHARS, TRAILER, render
 from pr_review_agent.sanitise import leaks, sanitise
-from pr_review_agent.triggers.mention import has_mention
+from pr_review_agent.triggers.mention import has_mention, strip_non_prose
 
 HEAD = "deadbeef0123456789"
 
@@ -94,8 +94,6 @@ def test_no_word_start_at_survives_the_prose_of_a_rendered_review():
     body = rendered(
         finding(title="@alice and @bob/team disagree", body="ask @carol, cc @dave")
     )
-    from pr_review_agent.triggers.mention import strip_non_prose
-
     assert not AT_WORD.search(strip_non_prose(body))
     assert not has_mention(body, "alice")
 

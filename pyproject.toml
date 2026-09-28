@@ -1,6 +1,6 @@
 [project]
 name = "pr-review-agent"
-version = "1.4.1"
+version = "1.5.0"
 description = "Locally-hosted LLM-based PR review agent with enforced usage budgets"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -53,6 +53,15 @@ include = [
     { path = "src/pr_review_agent/templates/*.yaml", format = "wheel" },
     { path = "src/pr_review_agent/templates/*.service", format = "sdist" },
     { path = "src/pr_review_agent/templates/*.service", format = "wheel" },
+    # The review skill: markdown, JSON and scripts, none of which a build
+    # backend pulls in on its own. `engine/prompt.py` reads one of these
+    # files *at import*, so a wheel built without them does not start -- which
+    # is the failure this project would rather have than a reviewer that was
+    # silently never told the scope rule.
+    { path = "src/pr_review_agent/skills/**/*.md", format = "sdist" },
+    { path = "src/pr_review_agent/skills/**/*.md", format = "wheel" },
+    { path = "src/pr_review_agent/skills/**/*.json", format = "sdist" },
+    { path = "src/pr_review_agent/skills/**/*.json", format = "wheel" },
 ]
 
 [tool.poetry.group.dev.dependencies]

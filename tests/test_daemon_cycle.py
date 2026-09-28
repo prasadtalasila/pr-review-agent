@@ -357,6 +357,8 @@ async def test_a_failing_enqueue_leaves_the_watermark_unmoved(tmp_path):
     # Enqueue happens before the watermark advances, so a crash in between
     # costs one re-classification rather than a lost trigger.
     class BrokenQueue(ReviewQueue):
+        """A queue whose writes fail outright."""
+
         def enqueue(self, trigger, *, now):
             raise RuntimeError("disk full")
 

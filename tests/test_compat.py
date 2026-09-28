@@ -33,6 +33,8 @@ def test_usable_as_a_mapping_key():
 
 def test_subclassing_still_yields_a_str_enum():
     class Colour(StrEnum):
+        """A subclass, to prove the shim survives one."""
+
         RED = "red"
 
     assert str(Colour.RED) == "red"

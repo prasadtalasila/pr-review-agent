@@ -3,6 +3,10 @@
 import asyncio
 import sys
 
+# Imported rather than spelled `asyncio.subprocess.Process`, which pylint
+# resolves to the stdlib `subprocess` module and then reports as missing.
+from asyncio.subprocess import Process
+
 import pytest
 
 from pr_review_agent._subprocess import communicate, stop
@@ -18,7 +22,7 @@ _DEAF = (
 )
 
 
-async def _spawn(program: str) -> asyncio.subprocess.Process:
+async def _spawn(program: str) -> Process:
     return await asyncio.create_subprocess_exec(
         sys.executable,
         "-c",

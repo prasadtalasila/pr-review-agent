@@ -30,9 +30,11 @@ src/pr_review_agent/
 │   └── runtime.py     # store, workspace, worker, publish, logging
 ├── daemon.py          # the poll-classify-enqueue loop
 ├── logs.py            # one level and one format, resolved from three layers
+├── findings.py        # Finding and Severity: the type every layer handles
 ├── numbering.py       # finding numbers that survive a re-review
 ├── pacing.py          # how often one pull request may be reviewed
 ├── publisher.py       # the 👀, the head re-check, one comment per review
+├── report.py          # findings laid out as a report; nothing about posting
 ├── queue.py           # claim protocol and per-pull-request leases
 ├── comments.py        # the ids the agent posted, so it cannot answer itself
 ├── runs.py            # what a paid review produced, so publishing can retry
@@ -45,7 +47,8 @@ src/pr_review_agent/
 │   ├── cmd_config.py  # config generate | validate
 │   ├── cmd_daemon.py  # daemon start
 │   ├── cmd_host.py    # host check
-│   └── cmd_service.py # service install — place the systemd user unit
+│   ├── cmd_service.py # service install — place the systemd user unit
+│   └── cmd_skill.py   # skill install — place the review skill for a person
 ├── engine/
 │   ├── models.py      # ReviewEngine protocol, Capabilities, request/result
 │   ├── cli.py         # the subprocess boundary every CLI adapter shares
@@ -61,6 +64,12 @@ src/pr_review_agent/
 │   ├── payloads.py    # raw GitHub dicts → trigger models
 │   ├── pulls.py       # one pull request → PullRequestFacts
 │   └── poller.py      # one sweep across all three endpoints
+├── skills/
+│   ├── __init__.py    # the packaged review skill: one source, two deliveries
+│   └── review-report/ # SKILL.md, references, assets, and three scripts:
+│       ├── collect_context.py # header facts out of git
+│       ├── render_report.py   # findings.json → a report, via report.render
+│       └── check_report.py    # a hand-written report against the contract
 ├── templates/
 │   ├── *.example.yaml # the two config templates the wheel ships
 │   ├── pr-review-agent.service    # the single-repository user unit

@@ -63,7 +63,8 @@ async def test_no_configured_paths_means_no_standards(repo):
     assert await read_standards(repo, ()) == ""
 
 
-async def test_oversized_standards_are_skipped_rather_than_truncated(repo, caplog):
+@pytest.mark.usefixtures("caplog")
+async def test_oversized_standards_are_skipped_rather_than_truncated(repo):
     """An over-long standards file is a documentation problem, not a stop."""
     big = repo.path / "BIG.md"
     big.write_text("x" * (MAX_STANDARDS_BYTES + 1))

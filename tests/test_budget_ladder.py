@@ -6,6 +6,7 @@ candidate keeps its attempts and stays pending, and the next trigger is
 still offered.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 
 from budget_harness import NOON, REPO, admit_all, budget, burn_to, mention, opened
@@ -274,8 +275,6 @@ def test_a_settled_claim_has_no_admitted_rung(store):
 
 def test_a_lapsed_workers_claim_has_no_admitted_rung(store):
     """Owner-guarded, exactly as settle is: the row belongs to somebody else."""
-    from dataclasses import replace
-
     governor = Governor(store, budget())
     queue = ReviewQueue(store, repo=REPO)
     queue.enqueue(opened(), now=NOON)

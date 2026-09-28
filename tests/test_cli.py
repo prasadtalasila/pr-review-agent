@@ -73,7 +73,7 @@ def _canned(results):
 # -- the grammar ---------------------------------------------------------
 
 
-def test_the_command_tree_is_exactly_four_nouns_and_five_verbs():
+def test_the_command_tree_is_exactly_five_nouns_and_six_verbs():
     """A new verb is a deliberate act, not something a refactor adds.
 
     The spend rule is that nothing reaches a review engine outside the
@@ -90,6 +90,7 @@ def test_the_command_tree_is_exactly_four_nouns_and_five_verbs():
         "host": ["check"],
         "daemon": ["start"],
         "service": ["install"],
+        "skill": ["install"],
     }
 
 
@@ -101,7 +102,13 @@ def test_the_nouns_are_listed_in_workflow_order():
     so a text search would pass with the ordering removed.
     """
     ctx = cli.make_context("pr-review-agent", [], resilient_parsing=True)
-    assert cli.list_commands(ctx) == ["config", "host", "daemon", "service"]
+    assert cli.list_commands(ctx) == [
+        "config",
+        "host",
+        "daemon",
+        "service",
+        "skill",
+    ]
 
 
 def test_a_bare_invocation_fails_rather_than_printing_help(run):
@@ -167,7 +174,8 @@ def test_the_generated_config_loads(run, tmp_path):
     assert config.github.repo == PLACEHOLDER_REPO
 
 
-def test_the_generated_config_does_not_validate_until_the_repo_is_set(run, tmp_path):
+@pytest.mark.usefixtures("tmp_path")
+def test_the_generated_config_does_not_validate_until_the_repo_is_set(run):
     """Generated and unedited must not be runnable: it names nobody's repository."""
     assert run("config", "generate").exit_code == 0
     result = run("config", "validate")

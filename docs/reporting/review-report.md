@@ -1,6 +1,6 @@
 # Review report template
 
-The shape `publisher.render` produces. Derived from the hand-written
+The shape `report.render` produces (re-exported as `publisher.render`). Derived from the hand-written
 reference report. See issue #45.
 
 This is a *rendering* contract, not a prompt. The reviewer supplies `title`, `body`,

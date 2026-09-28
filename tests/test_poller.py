@@ -15,7 +15,7 @@ def make_poller(handler) -> Poller:
     return Poller(client=client, endpoints=REPO)
 
 
-def all_200_empty(request: httpx.Request) -> httpx.Response:
+def all_200_empty(_request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json=[], headers={"etag": '"e1"'})
 
 
@@ -31,7 +31,7 @@ async def test_cold_start_polls_all_three_endpoints():
 
 
 async def test_all_unchanged_reports_no_changed_items():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(304)
 
     cycle = await make_poller(handler).poll_once()
@@ -105,7 +105,7 @@ async def test_forget_etag_on_a_cold_cache_is_harmless():
 
 
 async def test_interval_snaps_to_floor_when_something_changes():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[{"id": 1}], headers={"etag": '"e"'})
 
     poller = make_poller(handler)
@@ -117,7 +117,7 @@ async def test_interval_snaps_to_floor_when_something_changes():
 
 
 async def test_interval_decays_when_nothing_changes():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(304)
 
     poller = make_poller(handler)
@@ -127,7 +127,7 @@ async def test_interval_decays_when_nothing_changes():
 
 
 async def test_low_remaining_budget_forces_interval_to_ceiling():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         headers = {
             "etag": '"e"',
             "x-ratelimit-remaining": "10",
@@ -143,7 +143,7 @@ async def test_low_remaining_budget_forces_interval_to_ceiling():
 
 
 async def test_healthy_remaining_budget_does_not_force_ceiling():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         headers = {
             "etag": '"e"',
             "x-ratelimit-remaining": "4999",
@@ -159,7 +159,7 @@ async def test_healthy_remaining_budget_does_not_force_ceiling():
 async def test_304_with_rate_limit_headers_still_forces_the_ceiling():
     # GitHub sends the rate-limit headers on a 304 too, and a 304 costs
     # nothing -- so the budget floor must be read from them as well.
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         headers = {"x-ratelimit-remaining": "3", "x-ratelimit-limit": "5000"}
         return httpx.Response(304, headers=headers)
 

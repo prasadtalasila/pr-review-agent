@@ -23,6 +23,7 @@ against it needs no change.
 | `host check` | Run the pre-flight checks; exit 1 if any fails. |
 | `daemon start` | Poll, classify, review and publish until stopped. |
 | `service install` | Write the systemd user unit and the directories it names. |
+| `skill install` | Copy the review skill into a Claude Code skills directory. |
 
 `--config` defaults to `config.yaml` in the directory the command was started
 in — which is also where a relative `store.path` puts `state.db`. See
@@ -130,6 +131,28 @@ does. Each instance gets its own `config.yaml`, its own `token.env` and its own
 checkout cache — see [TOKENS.md](TOKENS.md) for why the tokens must not be
 shared, and [SERVICE.md](SERVICE.md#-several-repositories-one-budget) for the
 three rules the configs have to agree on.
+
+## 🧠 `skill install`
+
+Copies the packaged **review skill** — the format contract, the false-positive
+list and three scripts — into a Claude Code skills directory, so that a person
+writing a review by hand gets the same report a daemon run would have posted.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--dir PATH` | `~/.claude/skills` | Where to install. Use `<repo>/.claude/skills` for one project. |
+| `--force` | off | Replace an existing install. Refuses if the directory is not one this wrote. |
+
+```bash
+pr-review-agent skill install
+```
+
+The daemon does not need this verb and is not affected by it. Its reviewer
+runs `claude` with `--setting-sources ""`, `--restricted` and
+`--disable-slash-commands`, so it discovers no skill, plugin or settings file
+at all — and it is handed the same text through the prompt instead. See
+[Report template](reporting/review-report.md) and
+[ENGINE.md](ENGINE.md).
 
 ## 🚪 Exit status
 

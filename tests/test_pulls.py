@@ -88,7 +88,7 @@ async def test_the_single_pull_request_path_is_read():
 async def test_head_sha_is_resolved_for_a_trigger_that_carried_none():
     """A mention's queue row has head_sha NULL; this is what fills it."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=PAYLOAD, headers={"etag": '"x"'})
 
     facts = await fetch_pull_request_facts(
@@ -99,7 +99,7 @@ async def test_head_sha_is_resolved_for_a_trigger_that_carried_none():
 
 async def test_a_collection_response_is_refused():
     # The watched endpoints return lists; this one must not.
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[PAYLOAD], headers={"etag": '"x"'})
 
     with pytest.raises(PayloadError, match="not an object"):

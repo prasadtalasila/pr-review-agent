@@ -48,7 +48,7 @@ async def test_a_client_error_does_not_stop_the_loop(tmp_path):
     stop = asyncio.Event()
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         if calls["n"] <= 3:
             return httpx.Response(500)
@@ -64,6 +64,8 @@ async def test_a_client_error_does_not_stop_the_loop(tmp_path):
 async def test_an_unexpected_error_is_not_swallowed(tmp_path):
     # Only GitHubClientError is survivable; a bug must crash loudly.
     class BrokenQueue(ReviewQueue):
+        """A queue whose writes fail outright."""
+
         def enqueue(self, trigger, *, now):
             raise RuntimeError("disk full")
 
@@ -97,6 +99,8 @@ async def test_store_contention_does_not_stop_the_loop(tmp_path):
     calls = {"n": 0}
 
     class BusyQueue(ReviewQueue):
+        """A queue that is contended twice, then yields."""
+
         def enqueue(self, trigger, *, now):
             calls["n"] += 1
             if calls["n"] <= 2:
@@ -117,6 +121,8 @@ async def test_store_contention_does_not_stop_the_loop(tmp_path):
 async def test_a_store_error_that_is_not_contention_still_crashes(tmp_path):
     # The widened catch must not turn a schema bug into a silent spin.
     class BrokenQueue(ReviewQueue):
+        """A queue whose writes fail outright."""
+
         def enqueue(self, trigger, *, now):
             raise sqlite3.OperationalError("no such table: queue")
 
@@ -232,7 +238,8 @@ class CrashingWorker:
         stop.set()
 
 
-async def test_a_crashed_worker_is_respawned(tmp_path, monkeypatch):
+@pytest.mark.usefixtures("tmp_path")
+async def test_a_crashed_worker_is_respawned(monkeypatch):
     monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 0.01)
     worker = CrashingWorker(crashes=2)
     stop = asyncio.Event()
@@ -242,7 +249,8 @@ async def test_a_crashed_worker_is_respawned(tmp_path, monkeypatch):
     assert worker.spawns == 3
 
 
-async def test_a_crash_does_not_propagate_to_the_daemon(tmp_path, monkeypatch):
+@pytest.mark.usefixtures("tmp_path")
+async def test_a_crash_does_not_propagate_to_the_daemon(monkeypatch):
     """Killing the process would take the poller down with the worker."""
     monkeypatch.setattr("pr_review_agent.daemon.RESPAWN_BACKOFF", 0.01)
     worker = CrashingWorker(crashes=1)

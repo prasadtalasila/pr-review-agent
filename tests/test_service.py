@@ -178,13 +178,15 @@ def test_the_installed_unit_leaves_no_placeholder_behind(home):
     assert "{" not in unit_at(home).read_text(encoding="utf-8")
 
 
-def test_install_honours_the_xdg_variables(tmp_path, home, monkeypatch):
+@pytest.mark.usefixtures("home")
+def test_install_honours_the_xdg_variables(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "elsewhere"))
     assert install().exit_code == 0
     assert (tmp_path / "elsewhere" / "pr-review-agent").is_dir()
 
 
-def test_a_second_install_is_refused(home):
+@pytest.mark.usefixtures("home")
+def test_a_second_install_is_refused():
     assert install().exit_code == 0
     result = install()
     assert result.exit_code == EXIT_STARTUP
@@ -304,7 +306,8 @@ def test_an_instances_token_file_is_not_readable_by_anyone_else(home):
     assert stat.S_IMODE(token_env.stat().st_mode) == 0o600
 
 
-def test_instances_share_a_store_but_never_a_checkout_cache(home):
+@pytest.mark.usefixtures("home")
+def test_instances_share_a_store_but_never_a_checkout_cache():
     """The two directories go opposite ways, and both matter.
 
     One store is one ledger and therefore one budget. A shared cache would
@@ -336,7 +339,8 @@ def test_a_second_instance_does_not_need_force(home):
     assert (home / ".config" / "pr-review-agent" / "api").is_dir()
 
 
-def test_a_plain_unit_still_needs_force_to_be_overwritten(home):
+@pytest.mark.usefixtures("home")
+def test_a_plain_unit_still_needs_force_to_be_overwritten():
     """The idempotent rewrite is for template units only."""
     assert install().exit_code == 0
 
@@ -346,7 +350,8 @@ def test_a_plain_unit_still_needs_force_to_be_overwritten(home):
     assert "--force" in result.output
 
 
-def test_an_instance_install_states_the_three_fleet_rules(home):
+@pytest.mark.usefixtures("home")
+def test_an_instance_install_states_the_three_fleet_rules():
     """Each is a silent failure, so it is said where it is acted on."""
     output = install("--instance", "web").output
 
@@ -355,7 +360,8 @@ def test_an_instance_install_states_the_three_fleet_rules(home):
     assert "budget.authority: true on EXACTLY ONE" in output
 
 
-def test_a_single_install_does_not_mention_instances(home):
+@pytest.mark.usefixtures("home")
+def test_a_single_install_does_not_mention_instances():
     """A lone deployment needs none of it, so it is not told any of it."""
     assert "EXACTLY ONE" not in install().output
 
