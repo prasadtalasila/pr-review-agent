@@ -23,7 +23,21 @@ Then start a Claude Code session and ask for a review. The skill supplies:
 | `assets/` | The findings schema, an example findings file, and the report it renders to. |
 
 Nothing in the skill posts anything. It writes files and prints them;
-publishing stays a separate, explicit act.
+publishing stays a separate, explicit act. `render_report.py` writes to
+`--out` or to stdout, `check_report.py` prints violations and exits 1, and
+`collect_context.py` prints JSON. None of them opens a socket, touches the
+daemon's database or knows a GitHub token exists — getting a report onto a
+pull request means pasting it, or `gh pr comment --body-file`.
+
+## What the scripts need
+
+`collect_context.py` is stdlib-only. `render_report.py` and
+`check_report.py` import `pr_review_agent`, because they call the renderer
+and the numbering the daemon calls rather than a copy of them.
+
+`skill install` copies files; it does not install the package into the
+interpreter that will run them, and in a pipx or poetry layout those are
+different interpreters. Both scripts detect it and print what to install.
 
 ## Why the daemon does not load it
 

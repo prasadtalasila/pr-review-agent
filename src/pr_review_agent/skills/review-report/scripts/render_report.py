@@ -23,9 +23,48 @@ import json
 import sys
 from pathlib import Path
 
-from pr_review_agent.engine.models import Finding, Severity
-from pr_review_agent.numbering import assign
-from pr_review_agent.publisher import render
+#: Printed instead of a traceback when the package is not importable.
+#: ``skill install`` copies files into a skills directory; it does not
+#: install anything into the interpreter that then runs them, and the two
+#: are routinely different -- a CLI living in a pipx or poetry environment
+#: is not on the ``python3`` a session reaches for. A bare
+#: ``ModuleNotFoundError`` on an import line does not say that, and the
+#: reader's next guess is that the skill installed wrongly.
+MISSING_PACKAGE = """\
+{script} needs the `pr_review_agent` package importable, and this
+interpreter does not have it:
+
+    {executable}
+
+Install it there:
+
+    pip install pr-review-agent
+
+{what}
+It is imported rather than reimplemented so that a report written by hand
+and one the agent posts cannot say the same findings differently.
+
+`collect_context.py` is stdlib-only and works without any of this.\
+"""
+
+
+def _missing(script: str, what: str) -> SystemExit:
+    """The message above, filled in, as the exception to raise."""
+    return SystemExit(
+        MISSING_PACKAGE.format(script=script, executable=sys.executable, what=what)
+    )
+
+
+try:
+    from pr_review_agent.engine.models import Finding, Severity
+    from pr_review_agent.numbering import assign
+    from pr_review_agent.publisher import render
+except ModuleNotFoundError as missing:  # pragma: no cover - see test_skill.py
+    raise _missing(
+        "render_report.py",
+        "This script calls `publisher.render` and `numbering.assign`; the\n"
+        "layout, the ordering and the numbering are decided there.\n",
+    ) from missing
 
 
 def findings_from(data: dict) -> tuple[Finding, ...]:

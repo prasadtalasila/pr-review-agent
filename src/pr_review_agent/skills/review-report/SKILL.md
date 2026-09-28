@@ -72,9 +72,17 @@ Read these on demand, not up front.
 
 ## Scripts
 
-All three are stdlib-only and need `pr_review_agent` importable — they call
-the same `publisher.render` and `numbering.assign` the daemon calls, so a
-report written by hand and a report posted by the agent cannot drift.
+`collect_context.py` is stdlib-only: it runs git and nothing else, anywhere
+Python and git are.
+
+The other two import `pr_review_agent`, because they call the same
+`publisher.render` and `numbering.assign` the daemon calls — that is what
+stops a report written by hand and a report posted by the agent saying the
+same findings differently. Installing the skill does **not** install the
+package: `skill install` copies files into a skills directory, and the
+interpreter that later runs them is often a different one. If it is missing,
+both scripts say so and name what to install rather than raising
+`ModuleNotFoundError` at you.
 
 | Script | Does |
 |---|---|

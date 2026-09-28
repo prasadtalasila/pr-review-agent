@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
@@ -163,6 +164,62 @@ def test_render_script_reproduces_the_example(tmp_path: Path) -> None:
     assert out.read_text(encoding="utf-8") == (ASSETS / "report.example.md").read_text(
         encoding="utf-8"
     )
+
+
+#: Run a script in a child interpreter that cannot import ``pr_review_agent``,
+#: whatever this one has on its path. ``skill install`` copies files into a
+#: skills directory without installing anything into the interpreter that
+#: then runs them, so this is the state a first-time user is most likely to
+#: hit, and it is not reachable by editing ``sys.path`` from inside the suite.
+WITHOUT_THE_PACKAGE = """
+import runpy, sys
+
+
+class Block:
+    def find_spec(self, name, path=None, target=None):
+        if name == "pr_review_agent" or name.startswith("pr_review_agent."):
+            raise ModuleNotFoundError("No module named " + repr(name), name=name)
+        return None
+
+
+for name in [n for n in sys.modules if n.startswith("pr_review_agent")]:
+    del sys.modules[name]
+sys.meta_path.insert(0, Block())
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+def run_without_the_package(script: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            WITHOUT_THE_PACKAGE,
+            str(ROOT / "scripts" / script),
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("script", ["render_report.py", "check_report.py"])
+def test_a_missing_package_is_explained_rather_than_raised(script: str) -> None:
+    """A traceback here reads as a broken install, which is the wrong diagnosis."""
+    completed = run_without_the_package(script)
+    assert completed.returncode != 0
+    assert "Traceback" not in completed.stderr
+    assert script in completed.stderr
+    assert "pip install pr-review-agent" in completed.stderr
+
+
+def test_collecting_context_needs_nothing_installed() -> None:
+    """The one script SKILL.md may call stdlib-only, pinned so the claim stays true."""
+    completed = run_without_the_package("collect_context.py", "--help")
+    assert completed.returncode == 0
+    assert "--base" in completed.stdout
 
 
 def test_install_copies_the_whole_skill(tmp_path: Path) -> None:

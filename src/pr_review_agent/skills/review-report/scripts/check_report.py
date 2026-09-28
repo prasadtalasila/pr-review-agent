@@ -24,12 +24,52 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from pr_review_agent.publisher import (
-    MAX_BODY_CHARS,
-    SECTIONS,
-    TRAILER,
-    TRUNCATION_NOTE,
-)
+#: Printed instead of a traceback when the package is not importable.
+#: ``skill install`` copies files into a skills directory; it does not
+#: install anything into the interpreter that then runs them, and the two
+#: are routinely different -- a CLI living in a pipx or poetry environment
+#: is not on the ``python3`` a session reaches for. A bare
+#: ``ModuleNotFoundError`` on an import line does not say that, and the
+#: reader's next guess is that the skill installed wrongly.
+MISSING_PACKAGE = """\
+{script} needs the `pr_review_agent` package importable, and this
+interpreter does not have it:
+
+    {executable}
+
+Install it there:
+
+    pip install pr-review-agent
+
+{what}
+It is imported rather than reimplemented so that a report written by hand
+and one the agent posts cannot say the same findings differently.
+
+`collect_context.py` is stdlib-only and works without any of this.\
+"""
+
+
+def _missing(script: str, what: str) -> SystemExit:
+    """The message above, filled in, as the exception to raise."""
+    return SystemExit(
+        MISSING_PACKAGE.format(script=script, executable=sys.executable, what=what)
+    )
+
+
+try:
+    from pr_review_agent.publisher import (
+        MAX_BODY_CHARS,
+        SECTIONS,
+        TRAILER,
+        TRUNCATION_NOTE,
+    )
+except ModuleNotFoundError as missing:  # pragma: no cover - see test_skill.py
+    raise _missing(
+        "check_report.py",
+        "This script reads `MAX_BODY_CHARS`, `SECTIONS`, `TRAILER` and\n"
+        "`TRUNCATION_NOTE` out of `publisher`; the rules it enforces are\n"
+        "the renderer's own.\n",
+    ) from missing
 
 HEADER = re.compile(
     r"\A## Review: PR #\d+ — round \d+ \(`[0-9a-f]{7}`, \d+ commits\)\Z"
