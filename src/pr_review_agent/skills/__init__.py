@@ -35,6 +35,50 @@ from pathlib import Path
 #: sits in and named by the ``name:`` in its front matter.
 SKILL_NAME = "review-report"
 
+#: The distribution package these modules live in, which is also the
+#: directory name the vendored copy has to take: the scripts import
+#: ``pr_review_agent.report`` whichever of the two answers.
+PACKAGE = __name__.rsplit(".", 1)[0]
+
+#: Where ``install`` puts the modules the scripts import, relative to the
+#: skill. On ``sys.path`` *after* the interpreter's own entries, so an
+#: installed ``pr_review_agent`` always wins: this copy is the fallback for
+#: a machine that has the skill and not the package, not a fork of it.
+VENDOR_DIR = ("scripts", "_vendor")
+
+#: The whole import closure of ``report.render``, ``numbering.assign`` and
+#: the four constants ``check_report.py`` reads -- every one of them poor
+#: enough to travel, none of them importing config, sqlite or httpx.
+#:
+#: This is the list that makes ``skill install`` produce something that
+#: works on its own. It is short because :mod:`pr_review_agent.report` and
+#: :mod:`pr_review_agent.findings` were split out to keep it short; adding
+#: a rich import to any of these files lengthens it without saying so, and
+#: ``test_skill.py`` renders the worked example with the real package
+#: blocked so that the lengthening fails rather than ships.
+VENDORED = (
+    "__init__.py",
+    "_compat.py",
+    "findings.py",
+    "numbering.py",
+    "report.py",
+    "sanitise.py",
+    "triggers/mention.py",
+)
+
+#: ``triggers/__init__.py`` is written rather than copied. The real one
+#: re-exports the allowlist, the classifier and the payload models, so
+#: importing it would pull in the config schema and the HTTP client to
+#: reach ``mention``, which needs nothing but ``re``. A package marker is
+#: not behaviour, so replacing it is not a second copy of anything.
+TRIGGERS_STUB = '''"""Package marker only -- see ``skills.TRIGGERS_STUB``.
+
+``pr_review_agent.triggers`` proper re-exports the trigger pipeline. The
+skill needs one module out of this package, ``mention``, and nothing that
+the real ``__init__`` imports on the way to it.
+"""
+'''
+
 
 def root():
     """The packaged skill directory, as a ``Traversable``.
@@ -79,7 +123,25 @@ def install(destination: Path, *, force: bool = False) -> Path:
             raise FileExistsError(target)
         shutil.rmtree(target)
     _copy(root(), target)
+    _vendor(target.joinpath(*VENDOR_DIR) / PACKAGE)
     return target
+
+
+def _vendor(target: Path) -> None:
+    """Copy ``VENDORED`` into ``target``, which is a ``pr_review_agent`` dir.
+
+    Named for the package rather than something neutral because the scripts
+    import ``pr_review_agent.report``, not a private alias: the same import
+    line has to resolve whether the package is installed or only copied, or
+    the two paths are two code paths and only one of them is tested.
+    """
+    package = files(PACKAGE)
+    for name in VENDORED:
+        source = package.joinpath(*name.split("/"))
+        destination = target.joinpath(*name.split("/"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+    (target / "triggers" / "__init__.py").write_text(TRIGGERS_STUB, encoding="utf-8")
 
 
 def _copy(source, target: Path) -> None:

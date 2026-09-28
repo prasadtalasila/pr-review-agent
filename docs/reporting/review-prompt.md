@@ -17,7 +17,7 @@ as the target quality. See issue #45 and `review-report.md` for the rendering co
     files deliberately do not carry.
 
 The prompt asks for *content*: a headline, an argument, evidence, a remedy. It never asks
-for markdown headings, section names or item numbers — those are `publisher.render`'s job,
+for markdown headings, section names or item numbers — those are `report.render`'s job,
 and a model that emits them would fight the renderer.
 
 ## Mapping to `engine/prompt.py`

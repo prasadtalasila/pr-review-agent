@@ -179,7 +179,7 @@ mint a new id and a new key, which is [issue #108](https://github.com/prasadtala
 The set is stricter than what it replaces: the old bound allowed one extra
 review, this allows none.
 
-**The text it wrote.** `publisher.render` runs every body it posts through
+**The text it wrote.** `report.render` runs every body it posts through
 `mention.neutralise`, which rewrites exactly the mentions `has_mention` would
 find — and only those, so a handle inside a code span is left as the reader
 wrote it — into `&#64;`. GitHub renders the entity as `@`, so a reader sees

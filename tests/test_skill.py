@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -166,43 +167,58 @@ def test_render_script_reproduces_the_example(tmp_path: Path) -> None:
     )
 
 
-#: Run a script in a child interpreter that cannot import ``pr_review_agent``,
-#: whatever this one has on its path. ``skill install`` copies files into a
-#: skills directory without installing anything into the interpreter that
-#: then runs them, so this is the state a first-time user is most likely to
-#: hit, and it is not reachable by editing ``sys.path`` from inside the suite.
+#: Run a script in a child interpreter where the only importable
+#: ``pr_review_agent`` is the one ``skill install`` copied beside it.
+#:
+#: That is the state a first-time user is most likely to be in -- ``skill
+#: install`` puts files in a skills directory and installs nothing into the
+#: interpreter that then runs them -- and it is not reachable by editing
+#: ``sys.path`` from inside the suite, because the suite has the package and
+#: CI installs it into site-packages. A meta-path finder that resolves the
+#: name normally and then rejects any origin outside the vendored directory
+#: is, so the same test means the same thing here and on CI.
 WITHOUT_THE_PACKAGE = """
-import runpy, sys
+import importlib.machinery, os, runpy, sys
+
+vendor = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "_vendor")
+)
 
 
-class Block:
+class OnlyVendored:
+    '''Refuse `pr_review_agent` unless it is the copy beside the script.'''
+
     def find_spec(self, name, path=None, target=None):
-        if name == "pr_review_agent" or name.startswith("pr_review_agent."):
-            raise ModuleNotFoundError("No module named " + repr(name), name=name)
-        return None
+        if name != "pr_review_agent" and not name.startswith("pr_review_agent."):
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(name, path)
+        origin = getattr(spec, "origin", None) or ""
+        if spec is not None and os.path.realpath(origin).startswith(vendor):
+            return spec
+        raise ModuleNotFoundError("No module named " + repr(name), name=name)
 
 
 for name in [n for n in sys.modules if n.startswith("pr_review_agent")]:
     del sys.modules[name]
-sys.meta_path.insert(0, Block())
+sys.meta_path.insert(0, OnlyVendored())
 sys.argv = sys.argv[1:]
 runpy.run_path(sys.argv[0], run_name="__main__")
 """
 
 
-def run_without_the_package(script: str, *args: str) -> subprocess.CompletedProcess:
+def run_blocked(script: Path, *args: str) -> subprocess.CompletedProcess:
+    """``script`` in a child interpreter that cannot import the real package."""
     return subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            WITHOUT_THE_PACKAGE,
-            str(ROOT / "scripts" / script),
-            *args,
-        ],
+        [sys.executable, "-c", WITHOUT_THE_PACKAGE, str(script), *args],
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def run_without_the_package(script: str, *args: str) -> subprocess.CompletedProcess:
+    """A script in the *source* skill, which has no vendored copy beside it."""
+    return run_blocked(ROOT / "scripts" / script, *args)
 
 
 @pytest.mark.parametrize("script", ["render_report.py", "check_report.py"])
@@ -220,6 +236,86 @@ def test_collecting_context_needs_nothing_installed() -> None:
     completed = run_without_the_package("collect_context.py", "--help")
     assert completed.returncode == 0
     assert "--base" in completed.stdout
+
+
+def test_an_installed_skill_renders_without_the_package(tmp_path: Path) -> None:
+    """The whole point of vendoring: a skill directory that works on its own.
+
+    Rendering the worked example rather than asserting a file list, because
+    a list only says the copy happened. Byte-equality with the example says
+    the copy is complete *and* produces what the daemon produces -- one
+    assertion covering both halves of "one source, two deliveries".
+    """
+    target = skills.install(tmp_path)
+    out = tmp_path / "report.md"
+    completed = run_blocked(
+        target / "scripts" / "render_report.py",
+        str(ASSETS / "findings.example.json"),
+        "--pr",
+        "1765",
+        "--head-sha",
+        "d61de1700000000000000000000000000000000a",
+        "--round",
+        "3",
+        "--commits",
+        "3",
+        "--high-water",
+        "9",
+        "-o",
+        str(out),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert out.read_text(encoding="utf-8") == (ASSETS / "report.example.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_an_installed_checker_works_without_the_package(tmp_path: Path) -> None:
+    """``check_report.py`` reads its rules out of ``report``, so it vendors too."""
+    target = skills.install(tmp_path)
+    completed = run_blocked(
+        target / "scripts" / "check_report.py", str(ASSETS / "report.example.md")
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_the_installed_package_wins_over_the_vendored_copy(tmp_path: Path) -> None:
+    """Appended, not inserted: upgrading the package upgrades an old install."""
+    target = skills.install(tmp_path)
+    vendored = target.joinpath(*skills.VENDOR_DIR) / skills.PACKAGE / "report.py"
+    vendored.write_text("raise AssertionError('the vendored copy was preferred')\n")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(target / "scripts" / "render_report.py"),
+            str(ASSETS / "findings.example.json"),
+            "--pr",
+            "1765",
+            "--head-sha",
+            "d61de1700000000000000000000000000000000a",
+            "--round",
+            "3",
+            "--commits",
+            "3",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src"),
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_the_vendored_closure_stays_poor(tmp_path: Path) -> None:
+    """Every vendored module is a byte copy, so there is no second renderer."""
+    target = skills.install(tmp_path)
+    package = Path(str(skills.root())).parent.parent
+    for name in skills.VENDORED:
+        copied = target.joinpath(*skills.VENDOR_DIR, skills.PACKAGE, *name.split("/"))
+        assert copied.read_bytes() == (package / name).read_bytes(), name
 
 
 def test_install_copies_the_whole_skill(tmp_path: Path) -> None:

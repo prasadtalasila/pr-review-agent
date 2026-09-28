@@ -2,7 +2,7 @@
 
 The point is that it is the *same* renderer. Which heading a severity falls
 under, where the numbering restarts (it does not), what order entries take
-and what the trailer says are decided in ``publisher.render``, where a test
+and what the trailer says are decided in ``report.render``, where a test
 reads them -- so a report written by hand here and a report posted by the
 agent cannot say the same findings differently.
 
@@ -31,12 +31,17 @@ from pathlib import Path
 #: ``ModuleNotFoundError`` on an import line does not say that, and the
 #: reader's next guess is that the skill installed wrongly.
 MISSING_PACKAGE = """\
-{script} needs the `pr_review_agent` package importable, and this
-interpreter does not have it:
+{script} cannot import `pr_review_agent`, and there is no copy of it
+beside this script either. This interpreter is:
 
     {executable}
 
-Install it there:
+Either re-run
+
+    pr-review-agent skill install --force
+
+which copies the renderer into the skill directory, or install the package
+into the interpreter above:
 
     pip install pr-review-agent
 
@@ -55,14 +60,22 @@ def _missing(script: str, what: str) -> SystemExit:
     )
 
 
+#: The copy ``skill install`` leaves beside this script, for a machine that
+#: has the skill and no ``pr_review_agent``. Appended rather than inserted:
+#: an installed package takes priority, so upgrading the package upgrades
+#: the renderer even when the skill directory is older than it is. Absent
+#: when the script is run out of a source checkout, where the path is a
+#: no-op and the package is importable anyway.
+sys.path.append(str(Path(__file__).resolve().parent / "_vendor"))
+
 try:
-    from pr_review_agent.engine.models import Finding, Severity
+    from pr_review_agent.findings import Finding, Severity
     from pr_review_agent.numbering import assign
-    from pr_review_agent.publisher import render
+    from pr_review_agent.report import render
 except ModuleNotFoundError as missing:  # pragma: no cover - see test_skill.py
     raise _missing(
         "render_report.py",
-        "This script calls `publisher.render` and `numbering.assign`; the\n"
+        "This script calls `report.render` and `numbering.assign`; the\n"
         "layout, the ordering and the numbering are decided there.\n",
     ) from missing
 

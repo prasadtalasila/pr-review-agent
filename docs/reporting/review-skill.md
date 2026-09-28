@@ -18,7 +18,7 @@ Then start a Claude Code session and ask for a review. The skill supplies:
 | `references/report-contract.md` | The rendering rules — sections, ordering, numbering, the empty report, the trailer. See [Report template](review-report.md). |
 | `references/false-positives.md` | What not to report. The other file `engine/prompt.py` reads. |
 | `scripts/collect_context.py` | Head sha, merge base, commit count and changed paths, out of git. |
-| `scripts/render_report.py` | `findings.json` → a report, through `publisher.render` itself. |
+| `scripts/render_report.py` | `findings.json` → a report, through `report.render` itself. |
 | `scripts/check_report.py` | A hand-written or hand-edited report, checked against the contract. |
 | `assets/` | The findings schema, an example findings file, and the report it renders to. |
 
@@ -35,9 +35,30 @@ pull request means pasting it, or `gh pr comment --body-file`.
 `check_report.py` import `pr_review_agent`, because they call the renderer
 and the numbering the daemon calls rather than a copy of them.
 
-`skill install` copies files; it does not install the package into the
-interpreter that will run them, and in a pipx or poetry layout those are
-different interpreters. Both scripts detect it and print what to install.
+They do not need it *installed*. `skill install` also copies the renderer's
+whole import closure into `<skill>/scripts/_vendor/pr_review_agent/`:
+
+| Module | Why it travels |
+| --- | --- |
+| `report.py` | `render` — the sections, ordering, truncation and trailer. |
+| `numbering.py` | `assign` — stable numbers, and the gaps that mean "fixed". |
+| `findings.py` | `Finding` and `Severity`. |
+| `sanitise.py`, `triggers/mention.py` | What `render` puts every title and body through before assembling them. |
+| `_compat.py` | The `StrEnum` shim for Python 3.10. |
+
+That list is short because `report.py` and `findings.py` were split out of
+`publisher.py` and `engine/models.py` to keep it short. None of the five
+imports the config schema, the HTTP client or sqlite, and none of them may
+start to: `test_skill.py` installs the skill and renders the worked example
+in an interpreter where the only importable `pr_review_agent` is the
+vendored one, so a rich import fails the suite rather than shipping a skill
+that breaks off the developer's machine.
+
+The copy is a fallback, not a fork. The scripts *append* `_vendor` to
+`sys.path` rather than inserting it, so an installed `pr_review_agent`
+always wins and upgrading the package upgrades the renderer for a skill
+directory installed months earlier. If neither is there, both scripts say
+so and name the two ways to fix it.
 
 ## Why the daemon does not load it
 
@@ -53,7 +74,7 @@ The engine is given the same text by a route that widens nothing:
 `engine/prompt.py` reads `finding-contract.md` and `false-positives.md` out
 of the package and splices them into the prompt. `report-contract.md` is not
 sent and does not need to be — the sections, the ordering, the numbering and
-the trailer are `publisher.render`'s, decided in code, so the daemon's report
+the trailer are `report.render`'s, decided in code, so the daemon's report
 format does not depend on a model complying with a description of it. If a future release runs the engine inside bubblewrap
 ([roadmap A2](../FEATURE-ROADMAP.md)), that route still works unchanged — the
 text is already in the process, so there is no directory for the sandbox

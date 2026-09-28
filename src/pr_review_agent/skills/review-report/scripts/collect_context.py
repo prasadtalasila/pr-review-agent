@@ -1,6 +1,6 @@
 """Header facts for a review report, read out of git rather than guessed.
 
-``publisher.render`` puts the head sha, the round and the commit count in
+``report.render`` puts the head sha, the round and the commit count in
 every report's first line, because the comment is edited in place and a
 reader has to be able to tell which revision the text describes. Writing a
 report by hand means supplying those four values by hand, and the sha is the

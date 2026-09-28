@@ -5,6 +5,11 @@ things, minutes apart, and the gap between them is most of the design. It is
 also where the agent is kept from summoning itself.
 
 Source: `src/pr_review_agent/publisher.py`, `src/pr_review_agent/runs.py`.
+The layout itself is `src/pr_review_agent/report.py`, split out so that it
+imports nothing that talks to GitHub and can be copied into an installed
+skill — see [the review skill](reporting/review-skill.md). `render`,
+`refusal`, `TRAILER` and the rest are re-exported from `publisher`, so
+every existing import still resolves.
 
 ## 👀 The acknowledgement is immediate
 

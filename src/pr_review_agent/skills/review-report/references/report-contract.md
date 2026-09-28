@@ -1,6 +1,6 @@
 # The report contract
 
-What `publisher.render` produces, stated as rules so that a hand-written
+What `report.render` produces, stated as rules so that a hand-written
 report can be checked against the same ones. Where a rule is named below
 in **bold**, that is the identifier `scripts/check_report.py` prints when the
 rule is broken. It checks all of them but one: **no-verdict** is a sentence

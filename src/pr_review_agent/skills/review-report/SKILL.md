@@ -6,7 +6,7 @@ description: Write a pull-request review in the pr-review-agent house format —
 # Writing a review
 
 This skill produces one artefact: a **review report** in the format
-`pr_review_agent.publisher.render` emits. The format is not decoration. Three
+`pr_review_agent.report.render` emits. The format is not decoration. Three
 of its properties are load-bearing, and a review that drops them is worse than
 no review:
 
@@ -76,13 +76,16 @@ Read these on demand, not up front.
 Python and git are.
 
 The other two import `pr_review_agent`, because they call the same
-`publisher.render` and `numbering.assign` the daemon calls — that is what
-stops a report written by hand and a report posted by the agent saying the
-same findings differently. Installing the skill does **not** install the
-package: `skill install` copies files into a skills directory, and the
-interpreter that later runs them is often a different one. If it is missing,
-both scripts say so and name what to install rather than raising
-`ModuleNotFoundError` at you.
+`report.render` and `numbering.assign` the daemon calls — that is what stops
+a report written by hand and a report posted by the agent saying the same
+findings differently.
+
+You do not have to install the package for that to work. `skill install`
+copies the renderer and its import closure into `scripts/_vendor/`, so the
+skill is self-contained wherever it lands. If `pr_review_agent` *is*
+importable it wins — the vendored copy is on `sys.path` after the
+interpreter's own entries, not before — so upgrading the package upgrades
+the renderer without reinstalling the skill.
 
 | Script | Does |
 |---|---|
@@ -109,6 +112,6 @@ If you edit either, you are editing what the daemon tells its reviewer —
 
 `references/report-contract.md` is the exception, and it is not an oversight:
 the daemon never needs to be told the report format, because it never writes
-one. It emits findings as JSON and `publisher.render` lays them out. That
+one. It emits findings as JSON and `report.render` lays them out. That
 file is for you, for the case where you are rendering or repairing a report
 by hand.

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from .engine import Finding
+from .findings import Finding
 
 
 def assign(findings: tuple[Finding, ...], high_water: int) -> tuple[Finding, ...]:

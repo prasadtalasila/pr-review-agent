@@ -7,7 +7,7 @@ and both are how a report acquires a renumbered list or a lost trailer.
 
 Every rule is named for the bold identifier in
 ``references/report-contract.md``, so a failure points at the paragraph that
-explains itself. The constants come from ``publisher`` rather than being
+explains itself. The constants come from ``report`` rather than being
 restated, because a checker that has its own idea of the trailer is a second
 source of truth for the thing it is policing.
 
@@ -32,12 +32,17 @@ from pathlib import Path
 #: ``ModuleNotFoundError`` on an import line does not say that, and the
 #: reader's next guess is that the skill installed wrongly.
 MISSING_PACKAGE = """\
-{script} needs the `pr_review_agent` package importable, and this
-interpreter does not have it:
+{script} cannot import `pr_review_agent`, and there is no copy of it
+beside this script either. This interpreter is:
 
     {executable}
 
-Install it there:
+Either re-run
+
+    pr-review-agent skill install --force
+
+which copies the renderer into the skill directory, or install the package
+into the interpreter above:
 
     pip install pr-review-agent
 
@@ -56,8 +61,16 @@ def _missing(script: str, what: str) -> SystemExit:
     )
 
 
+#: The copy ``skill install`` leaves beside this script, for a machine that
+#: has the skill and no ``pr_review_agent``. Appended rather than inserted:
+#: an installed package takes priority, so upgrading the package upgrades
+#: the renderer even when the skill directory is older than it is. Absent
+#: when the script is run out of a source checkout, where the path is a
+#: no-op and the package is importable anyway.
+sys.path.append(str(Path(__file__).resolve().parent / "_vendor"))
+
 try:
-    from pr_review_agent.publisher import (
+    from pr_review_agent.report import (
         MAX_BODY_CHARS,
         SECTIONS,
         TRAILER,
@@ -67,7 +80,7 @@ except ModuleNotFoundError as missing:  # pragma: no cover - see test_skill.py
     raise _missing(
         "check_report.py",
         "This script reads `MAX_BODY_CHARS`, `SECTIONS`, `TRAILER` and\n"
-        "`TRUNCATION_NOTE` out of `publisher`; the rules it enforces are\n"
+        "`TRUNCATION_NOTE` out of `report`; the rules it enforces are\n"
         "the renderer's own.\n",
     ) from missing
 
