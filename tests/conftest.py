@@ -42,6 +42,7 @@ from pr_review_agent.workspace import Workspace
 pytest_plugins = [
     "budget_harness",
     "cli_engine_harness",
+    "logs_harness",
     "publisher_harness",
     "queue_harness",
     "worker_harness",
@@ -150,9 +151,16 @@ def _make_handler(
     """A CGI shim over ``git http-backend`` that records what it was sent."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        """The request handler, closing over the root it serves."""
+
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, format: str, *args: object) -> None:
+        # `format` shadows the builtin and `do_GET` is not snake_case because
+        # `BaseHTTPRequestHandler` picks both names; renaming either stops the
+        # override taking effect.
+        def log_message(  # pylint: disable=redefined-builtin
+            self, format: str, *args: object
+        ) -> None:
             """Silence the server; pytest output is not a web log."""
 
         def _cgi(self, body: bytes = b"") -> None:
@@ -184,10 +192,10 @@ def _make_handler(
             self.end_headers()
             self.wfile.write(payload)
 
-        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's API
+        def do_GET(self) -> None:  # noqa: N802  # pylint: disable=invalid-name
             self._cgi()
 
-        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's API
+        def do_POST(self) -> None:  # noqa: N802  # pylint: disable=invalid-name
             self._cgi(self.rfile.read(int(self.headers["Content-Length"])))
 
     return Handler

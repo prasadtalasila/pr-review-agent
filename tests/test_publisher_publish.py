@@ -78,7 +78,7 @@ async def test_the_head_is_read_live_rather_than_trusted(runs, posted):
 
 
 async def test_an_unreadable_pull_request_payload_raises(runs, posted):
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"no": "head"})
 
     with pytest.raises(Exception, match="head"):

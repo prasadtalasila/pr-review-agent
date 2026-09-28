@@ -175,7 +175,7 @@ def _stub_git_checks(monkeypatch, results: list[CheckResult]) -> None:
     which is precisely the kind of test that lies.
     """
 
-    async def canned(repo: str, base_url: str = "") -> list[CheckResult]:
+    async def canned(_repo: str, _base_url: str = "") -> list[CheckResult]:
         return results
 
     monkeypatch.setattr(bootstrap, "check_git", canned)

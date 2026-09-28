@@ -47,7 +47,7 @@ async def test_the_acknowledgement_is_the_eyes_reaction(runs, posted):
 async def test_a_failed_acknowledgement_does_not_raise(runs, posted):
     """It is a courtesy; losing it must not cost a reserved review."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")
 
     await make_publisher(runs, posted, handler).acknowledge(opened())
@@ -105,7 +105,7 @@ async def test_a_dry_run_posts_no_refusal_notice(runs, posted):
 async def test_a_failed_refusal_notice_does_not_raise(runs, posted):
     """The row it explains is already closed; letting this escape reopens it."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")
 
     await make_publisher(runs, posted, handler).notify(opened(), NOTICE)

@@ -6,6 +6,11 @@ from datetime import datetime, timezone
 from pr_review_agent.poller.payloads import comments, pull_requests
 from pr_review_agent.triggers.models import CommentSource
 
+#: ``pull_requests`` and ``comments`` are generators, and every call below
+#: is drained by ``list`` before it is unpacked. Not ceremony: a
+#: one-element unpack of a generator only asserts "exactly one" once the
+#: generator is exhausted, so materialising first makes the count part of
+#: the assertion rather than a side effect of it.
 REPO = "o/r"
 ALICE = {"id": 7, "login": "alice", "type": "User"}
 
@@ -46,7 +51,7 @@ def review_comment(**overrides) -> dict:
 
 
 def test_pull_request_is_mapped():
-    (pr,) = pull_requests(REPO, [pr_item()])
+    (pr,) = list(pull_requests(REPO, [pr_item()]))
     assert (pr.repo, pr.number, pr.head_sha) == ("o/r", 12, "deadbeef")
     assert pr.author.login == "alice"
     assert pr.created_at == datetime(2026, 9, 17, 7, 11, tzinfo=timezone.utc)
@@ -55,12 +60,12 @@ def test_pull_request_is_mapped():
 
 def test_pull_request_created_at_is_aware():
     # A naive timestamp would TypeError against the classifier's watermark.
-    (pr,) = pull_requests(REPO, [pr_item()])
+    (pr,) = list(pull_requests(REPO, [pr_item()]))
     assert pr.created_at.tzinfo is not None
 
 
 def test_draft_flag_is_carried_through():
-    (pr,) = pull_requests(REPO, [pr_item(draft=True)])
+    (pr,) = list(pull_requests(REPO, [pr_item(draft=True)]))
     assert pr.is_draft
 
 
@@ -74,7 +79,7 @@ def test_one_unmappable_pull_request_does_not_lose_the_others():
 
 
 def test_issue_comment_on_a_pull_request_is_mapped():
-    (comment,) = comments(REPO, [issue_comment()])
+    (comment,) = list(comments(REPO, [issue_comment()]))
     assert (comment.pr_number, comment.comment_id) == (12, 555)
     assert comment.body == "@claude please look"
 
@@ -87,7 +92,7 @@ def test_plain_issue_comment_is_dropped():
 
 
 def test_review_comment_is_mapped_from_its_pull_request_url():
-    (comment,) = comments(REPO, [review_comment()])
+    (comment,) = list(comments(REPO, [review_comment()]))
     assert (comment.pr_number, comment.comment_id) == (12, 777)
 
 
@@ -100,7 +105,7 @@ def test_comment_head_sha_is_left_for_claim_time():
 
 def test_comment_updated_at_is_mapped():
     # It is what the comments watermark advances on.
-    (comment,) = comments(REPO, [issue_comment()])
+    (comment,) = list(comments(REPO, [issue_comment()]))
     assert comment.updated_at == datetime(2026, 9, 17, 8, 0, tzinfo=timezone.utc)
 
 
@@ -114,7 +119,7 @@ def test_comment_with_a_ghost_author_is_skipped():
 
 
 def test_comment_with_a_null_body_becomes_empty_prose():
-    (comment,) = comments(REPO, [issue_comment(body=None)])
+    (comment,) = list(comments(REPO, [issue_comment(body=None)]))
     assert comment.body == ""
 
 
@@ -126,16 +131,16 @@ def test_comment_with_a_null_body_becomes_empty_prose():
 
 
 def test_an_issue_comment_names_its_source():
-    (comment,) = comments(REPO, [issue_comment()])
+    (comment,) = list(comments(REPO, [issue_comment()]))
     assert comment.source is CommentSource.ISSUE
 
 
 def test_a_review_comment_names_its_source():
-    (comment,) = comments(REPO, [review_comment()])
+    (comment,) = list(comments(REPO, [review_comment()]))
     assert comment.source is CommentSource.REVIEW
 
 
 def test_the_source_follows_the_url_field_not_the_id():
     """`pull_request_url` is the only thing that distinguishes the two."""
-    (comment,) = comments(REPO, [review_comment(id=555)])
+    (comment,) = list(comments(REPO, [review_comment(id=555)]))
     assert comment.source is CommentSource.REVIEW

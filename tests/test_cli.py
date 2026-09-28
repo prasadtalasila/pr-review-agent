@@ -174,7 +174,8 @@ def test_the_generated_config_loads(run, tmp_path):
     assert config.github.repo == PLACEHOLDER_REPO
 
 
-def test_the_generated_config_does_not_validate_until_the_repo_is_set(run, tmp_path):
+@pytest.mark.usefixtures("tmp_path")
+def test_the_generated_config_does_not_validate_until_the_repo_is_set(run):
     """Generated and unedited must not be runnable: it names nobody's repository."""
     assert run("config", "generate").exit_code == 0
     result = run("config", "validate")

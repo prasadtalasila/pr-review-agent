@@ -11,7 +11,7 @@ each choice; the table below is what landed where.
 | The two call-site demotions | **built** |
 | `logging.format` — `auto`, `text`, `json` | **built** (`logs.py`), see [Configuration](#-configuration) |
 | The JSON record, with the six events' contextual values as fields | **built**, see [the record](#-the-json-record) |
-| The `<N>` journald prefix and `_on_journal` | **built**, pinned by `tests/test_logs.py` |
+| The `<N>` journald prefix and `_on_journal` | **built**, pinned by `tests/test_logs_format.py` |
 
 Tracked by [#51](https://github.com/prasadtalasila/pr-review-agent/issues/51)
 (the umbrella), [#52](https://github.com/prasadtalasila/pr-review-agent/issues/52)

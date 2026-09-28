@@ -152,8 +152,6 @@ def test_load_invalid_yaml_is_a_config_error(tmp_path):
 
 def test_shipped_example_config_is_valid():
     # The example must stay loadable; it is what an operator copies.
-    from pathlib import Path
-
     example = Path(__file__).parent.parent / "config.example.yaml"
     config = Config.load(example)
     assert config.github.repo == PLACEHOLDER_REPO

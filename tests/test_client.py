@@ -50,7 +50,7 @@ async def test_conditional_get_sends_prior_etag():
 
 
 async def test_200_reports_changed_with_data_and_new_etag():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[{"number": 1}], headers={"etag": '"v2"'})
 
     result = await make_client(handler).get("/repos/o/r/pulls", etag='"v1"')
@@ -60,7 +60,7 @@ async def test_200_reports_changed_with_data_and_new_etag():
 
 
 async def test_304_reports_unchanged_and_keeps_the_etag():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(304)
 
     result = await make_client(handler).get("/repos/o/r/pulls", etag='"v1"')
@@ -70,7 +70,7 @@ async def test_304_reports_unchanged_and_keeps_the_etag():
 
 
 async def test_error_status_raises():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text="rate limited")
 
     with pytest.raises(GitHubClientError, match="403"):
@@ -78,7 +78,7 @@ async def test_error_status_raises():
 
 
 async def test_rate_limit_headers_are_parsed():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         headers = {"x-ratelimit-remaining": "4999", "x-ratelimit-limit": "5000"}
         return httpx.Response(200, json=[], headers=headers)
 
@@ -87,7 +87,7 @@ async def test_rate_limit_headers_are_parsed():
 
 
 async def test_missing_rate_limit_headers_is_none():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[])
 
     result = await make_client(handler).get("/repos/o/r/pulls")
@@ -106,7 +106,7 @@ async def test_authorization_header_is_sent():
 
 
 async def test_malformed_rate_limit_header_is_treated_as_unknown():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         headers = {"x-ratelimit-remaining": "not-a-number", "x-ratelimit-limit": "5000"}
         return httpx.Response(200, json=[], headers=headers)
 
@@ -127,7 +127,7 @@ async def test_plain_permission_403_is_not_retried():
     # it must fail on the first attempt, not be mistaken for one.
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         return httpx.Response(403, text="bad credentials")
 
@@ -140,7 +140,7 @@ async def test_secondary_rate_limit_retries_then_succeeds():
     calls = {"n": 0}
     sleeps = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         if calls["n"] < 3:
             return httpx.Response(
@@ -161,7 +161,7 @@ async def test_secondary_rate_limit_retries_then_succeeds():
 
 
 async def test_exhausting_retries_on_rate_limit_raises():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, headers={"retry-after": "1"}, text="still limited")
 
     client = GitHubClient(
@@ -179,7 +179,7 @@ async def test_retry_after_longer_than_the_cap_is_not_slept_through():
     # poller's call, not the client's, so the response is raised on instead.
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         return httpx.Response(429, headers={"retry-after": "3600"}, text="slow down")
 
@@ -207,7 +207,7 @@ def test_retry_after_in_the_past_is_zero_not_negative():
 
 
 async def test_non_json_200_body_is_wrapped():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="<html>not json</html>")
 
     with pytest.raises(GitHubClientError, match="non-JSON"):
@@ -215,7 +215,7 @@ async def test_non_json_200_body_is_wrapped():
 
 
 async def test_aclose_releases_the_connection_pool():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[])
 
     client = make_client(handler)
@@ -247,7 +247,7 @@ async def test_post_returns_the_created_body():
 async def test_a_200_from_post_is_accepted():
     """A duplicate reaction returns 200 rather than 201, and is not a failure."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"id": 9})
 
     assert await make_client(handler).post("/x", {}) == {"id": 9}
@@ -255,7 +255,7 @@ async def test_a_200_from_post_is_accepted():
 
 @pytest.mark.parametrize("status", [404, 422, 500])
 async def test_a_failed_write_raises(status):
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, text="nope")
 
     with pytest.raises(GitHubClientError, match=str(status)):
@@ -267,7 +267,7 @@ async def test_a_write_retries_a_rate_limit_it_can_wait_out():
     sleeps: list = []
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(429, headers={"retry-after": "1"}, text="slow down")
@@ -289,7 +289,7 @@ async def test_a_transport_failure_on_a_write_raises():
 
 
 async def test_a_non_json_write_response_raises():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(201, text="<html>")
 
     with pytest.raises(GitHubClientError, match="non-JSON"):
