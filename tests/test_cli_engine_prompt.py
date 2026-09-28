@@ -32,6 +32,13 @@ def test_the_prompt_names_what_to_sweep(tmp_path):
         assert topic in prompt
 
 
+def test_the_prompt_sweeps_for_spending_and_swallowed_failures(tmp_path):
+    """The two classes a later commit cannot take back, and the silent one."""
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "spends or authenticates" in prompt
+    assert "tolerated without a stated reason" in prompt
+
+
 def test_the_prompt_requires_a_remedy_as_the_last_paragraph(tmp_path):
     prompt = build_prompt(request(tmp_path), standards="")
     assert "last paragraph of `body`" in prompt

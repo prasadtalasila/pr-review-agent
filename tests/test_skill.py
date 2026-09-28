@@ -323,6 +323,60 @@ def test_the_vendored_closure_stays_poor(tmp_path: Path) -> None:
         assert copied.read_bytes() == (package / name).read_bytes(), name
 
 
+def git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def test_standards_are_found_at_the_merge_base_not_the_head(tmp_path: Path) -> None:
+    """The rule the daemon gets from ``engine/standards.py``, made executable here.
+
+    The head deletes ``AGENTS.md``, which is the cheap version of what the
+    protection is actually for: a pull request editing the file that tells
+    the reviewer what to do. An interactive reviewer works in a tree checked
+    out at the head, so nothing applies the rule for them unless the script
+    does.
+    """
+    collect = load_script("collect_context.py")
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "config", "user.email", "t@example.com")
+    git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "AGENTS.md").write_text("a module over 250 lines is a finding\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "base")
+    merge_base = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    (tmp_path / "AGENTS.md").unlink()
+    git(tmp_path, "commit", "-qam", "drop the standards on the head")
+
+    assert collect.standards(tmp_path, merge_base, collect.DEFAULT_STANDARDS) == [
+        "AGENTS.md"
+    ]
+
+
+def test_a_standards_file_no_revision_carries_is_skipped(tmp_path: Path) -> None:
+    """An absent candidate is not a failure; a repository need not carry them all."""
+    collect = load_script("collect_context.py")
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "config", "user.email", "t@example.com")
+    git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "README.md").write_text("nothing here\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "base")
+    head = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert collect.standards(tmp_path, head, collect.DEFAULT_STANDARDS) == []
+
+
 def test_install_copies_the_whole_skill(tmp_path: Path) -> None:
     target = skills.install(tmp_path)
     assert (target / "SKILL.md").is_file()

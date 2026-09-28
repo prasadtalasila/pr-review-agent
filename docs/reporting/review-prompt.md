@@ -94,6 +94,14 @@ touches"*.
 > - **Generated artefacts** committed alongside their generator: is the generator runnable
 >   on CI, and does the artefact match what it would produce?
 >
+> - **A new path to something that spends or authenticates.** A call that costs money, or
+>   code that creates, reads, logs or forwards a credential. Money and identity are the two
+>   classes of mistake a later commit cannot take back.
+> - **A failure tolerated without a stated reason.** A caught exception that logs and
+>   continues, or a return value dropped, where nothing says what breaks if it is ignored.
+>   The missing sentence is the finding: a silence nobody chose is indistinguishable from
+>   one nobody noticed.
+>
 > This is a floor, not a checklist to recite. Do not report a category to have covered it.
 
 ## How to write a finding

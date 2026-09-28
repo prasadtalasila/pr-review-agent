@@ -17,7 +17,7 @@ Then start a Claude Code session and ask for a review. The skill supplies:
 | `references/finding-contract.md` | What is in scope, what to sweep, how a title and a body are written, what each severity means. The same file `engine/prompt.py` reads. |
 | `references/report-contract.md` | The rendering rules — sections, ordering, numbering, the empty report, the trailer. See [Report template](review-report.md). |
 | `references/false-positives.md` | What not to report. The other file `engine/prompt.py` reads. |
-| `scripts/collect_context.py` | Head sha, merge base, commit count and changed paths, out of git. |
+| `scripts/collect_context.py` | Head sha, merge base, commit count and changed paths, out of git — and which standards files exist at the merge base. |
 | `scripts/render_report.py` | `findings.json` → a report, through `report.render` itself. |
 | `scripts/check_report.py` | A hand-written or hand-edited report, checked against the contract. |
 | `assets/` | The findings schema, an example findings file, and the report it renders to. |
@@ -59,6 +59,25 @@ The copy is a fallback, not a fork. The scripts *append* `_vendor` to
 always wins and upgrading the package upgrades the renderer for a skill
 directory installed months earlier. If neither is there, both scripts say
 so and name the two ways to fix it.
+
+## The standards the reviewed repository sets
+
+`engine.standards_paths` is how the daemon learns what a repository expects
+of a change, and `engine/standards.py` reads those paths **at the merge
+base** — never at the head, because a pull request that can rewrite the
+reviewer's instructions has talked its way past the review. See
+[CONFIG.md](../CONFIG.md) for the full argument.
+
+A person running the skill had no equivalent, and needs the rule more than
+the daemon does: an interactive reviewer works in a tree checked out at the
+*head*, where reading `AGENTS.md` means reading whatever the pull request
+made of it. So `collect_context.py` reports which standards files exist at
+the merge base — `AGENTS.md`, `CLAUDE.md` and `CONTRIBUTING.md` by default,
+or `--standards <path>` for the paths a `config.yaml` names — and step 2 of
+the workflow says to read them with `git show <merge_base>:<path>`.
+
+It reports the paths rather than the contents: what they say is for the
+reviewer to read, and the value the script adds is the *revision*.
 
 ## Why the daemon does not load it
 
