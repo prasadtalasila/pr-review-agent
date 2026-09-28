@@ -167,40 +167,45 @@ def test_render_script_reproduces_the_example(tmp_path: Path) -> None:
     )
 
 
-#: Run a script in a child interpreter where the only importable
-#: ``pr_review_agent`` is the one ``skill install`` copied beside it.
+#: Run a script in a child interpreter where the real ``pr_review_agent``
+#: is unreachable, so the only one it can import is whatever ``skill
+#: install`` copied beside it.
 #:
-#: That is the state a first-time user is most likely to be in -- ``skill
+#: That is the state a first-time user is most likely to be in: ``skill
 #: install`` puts files in a skills directory and installs nothing into the
-#: interpreter that then runs them -- and it is not reachable by editing
-#: ``sys.path`` from inside the suite, because the suite has the package and
-#: CI installs it into site-packages. A meta-path finder that resolves the
-#: name normally and then rejects any origin outside the vendored directory
-#: is, so the same test means the same thing here and on CI.
+#: interpreter that then runs them. It is not reachable by editing
+#: ``sys.path`` from inside the suite, because the suite has the package
+#: imported already -- and on CI ``poetry install`` installs the project, so
+#: the child inherits a path that can serve it.
+#:
+#: Pruning the path rather than vetoing the import is deliberate. A veto
+#: would make the *harness* the thing that supplies the answer, and the
+#: script's own ``sys.path.append`` -- the line that makes an installed
+#: skill work -- would never be exercised. With the real package pruned
+#: away, that append is the only route left, so one assertion covers both
+#: the wiring and the completeness of the copy. The probe in the middle is
+#: there because a pruned path is an assumption: if some other mechanism
+#: still serves the package, this says so instead of passing on the
+#: strength of the copy it was meant to be testing.
 WITHOUT_THE_PACKAGE = """
-import importlib.machinery, os, runpy, sys
+import os, runpy, sys
 
-vendor = os.path.realpath(
-    os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "_vendor")
-)
-
-
-class OnlyVendored:
-    '''Refuse `pr_review_agent` unless it is the copy beside the script.'''
-
-    def find_spec(self, name, path=None, target=None):
-        if name != "pr_review_agent" and not name.startswith("pr_review_agent."):
-            return None
-        spec = importlib.machinery.PathFinder.find_spec(name, path)
-        origin = getattr(spec, "origin", None) or ""
-        if spec is not None and os.path.realpath(origin).startswith(vendor):
-            return spec
-        raise ModuleNotFoundError("No module named " + repr(name), name=name)
-
-
+sys.path = [
+    entry
+    for entry in sys.path
+    if not os.path.isdir(os.path.join(entry or os.curdir, "pr_review_agent"))
+]
+sys.path_importer_cache.clear()
 for name in [n for n in sys.modules if n.startswith("pr_review_agent")]:
     del sys.modules[name]
-sys.meta_path.insert(0, OnlyVendored())
+
+try:
+    import pr_review_agent as real
+except ModuleNotFoundError:
+    pass
+else:
+    sys.exit("harness: the real package is still reachable at %r" % (real.__file__,))
+
 sys.argv = sys.argv[1:]
 runpy.run_path(sys.argv[0], run_name="__main__")
 """
