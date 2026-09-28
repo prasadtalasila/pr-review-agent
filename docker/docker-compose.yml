@@ -43,6 +43,10 @@ services:
       # re-authentication. The engine adapter runs `claude` as a subprocess
       # with HOME inherited, so this is where it looks.
       - ${PRA_CLAUDE_HOME:-./claude}:/home/${PRA_USER}/.claude
+      # rc-daemon.sh, which keeps `claude remote-control` alive. Mounted at
+      # the path its own defaults (RC_DIR, RC_LOG) already expect, so the
+      # entrypoint can run it unmodified.
+      - ../scripts/claude-daemon:/home/prasad/claude-daemon
 
     environment:
       # Read from the environment and never from config.yaml, which is the
