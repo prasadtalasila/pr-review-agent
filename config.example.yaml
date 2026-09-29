@@ -121,18 +121,23 @@ budget:
   # publishes no quota, so any default would be a spending ceiling nobody
   # chose.
   #
+  # Write them however reads best: 1500000, 1_500_000, 1500k and 1.5m are
+  # the same number. The suffixes are k (thousand) and m (million), either
+  # case; a suffixed value must come out whole, so 1.2345k is refused
+  # rather than rounded.
+  #
   # Set them CONSERVATIVELY LOW. The circuit breaker catches an over-estimate
   # and decays the effective limits toward the real one, but it only learns
   # by hitting the wall -- every trip is a lockout you could have avoided by
   # guessing lower to begin with.
-  session_tokens: 88000      # rolling 5-hour window
-  weekly_tokens: 1500000     # rolling 7-day window
+  session_tokens: 88k        # rolling 5-hour window
+  weekly_tokens: 1.5m        # rolling 7-day window
 
   # Reserved up front for every run and released down to actual usage when
   # the run settles. Must fit inside the daily allowance -- a seventh of the
   # weekly limit -- or the loader refuses the file, because a run that
   # cannot fit in the tightest window could never be admitted at all.
-  max_run_tokens: 60000
+  max_run_tokens: 60k
 
   # Optional (default 40). The share of each plan window the agent may use,
   # never the whole allowance. This is what stops a runaway agent locking
@@ -397,6 +402,16 @@ engine:
   binary: claude
 
   # REQUIRED, no default. A default model would be a cost nobody chose.
+  # Passed to `claude --model` as written. Full model ids:
+  #
+  #   claude-fable-5-1            most capable, most expensive
+  #   claude-opus-5-5
+  #   claude-sonnet-5             a good balance for reviews
+  #   claude-haiku-4-5-20251001   fastest, cheapest
+  #
+  # The CLI also takes the aliases fable, opus, sonnet and haiku, but an
+  # alias follows whatever the latest model is, so the cost can change under
+  # you on a CLI upgrade. A full id is the choice that stays made.
   model: claude-sonnet-5
 
   # REQUIRED, no default. What this adapter was written against. A mismatch
