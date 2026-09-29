@@ -216,6 +216,18 @@ async def test_a_nonzero_exit_names_the_envelopes_complaint(tmp_path, run):
         await engine().review(request(tmp_path))
 
     assert raised.value.status == 404
+    assert raised.value.usage is not None
+    assert raised.value.usage.tokens == sum(USAGE.values())
+    assert raised.value.usage.confidence is UsageConfidence.EXACT
+
+
+async def test_a_nonzero_exit_without_an_envelope_measured_nothing(tmp_path, run):
+    """No envelope, no count: the worker falls back to the reservation."""
+    run(Recorder("", stderr="segmentation fault", returncode=139))
+    with pytest.raises(EngineProtocolError) as raised:
+        await engine().review(request(tmp_path))
+
+    assert raised.value.usage is None
 
 
 async def test_a_usage_limit_in_an_exited_envelope_is_usage_limited(tmp_path, run):

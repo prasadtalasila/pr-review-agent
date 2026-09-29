@@ -604,7 +604,9 @@ for an engine killed mid-run, so the rule splits on whether the engine had
 started: a failure before it settles at zero, a failure in or after it
 settles at the full reservation, and the one failure *at* it that provably
 ran nothing — `EngineUnavailable`, a subprocess that never started — settles
-at zero too. See
+at zero too. A failure whose envelope could still be read is the exception
+on the other side: the CLI measured that run, so it settles at the
+envelope's figure rather than the reservation. See
 [WORKER.md](WORKER.md#-what-a-failed-run-settles-at).
 
 ## 📉 The degradation ladder

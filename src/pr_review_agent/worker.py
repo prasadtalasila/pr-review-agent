@@ -254,15 +254,22 @@ class EngineError(RuntimeError):
 
     ``status`` is the API status the adapter read, when it read one. It is
     the only part of the adapter's failure that reaches the pull request:
-    see :func:`failure_notice`.
+    see :func:`failure_notice`. ``usage`` is what the adapter measured,
+    when it measured anything, and is what the run settles at.
     """
 
     def __init__(
-        self, message: str, reason: StopReason, *, status: int | None = None
+        self,
+        message: str,
+        reason: StopReason,
+        *,
+        status: int | None = None,
+        usage: Usage | None = None,
     ) -> None:
         super().__init__(message)
         self.reason = reason
         self.status = status
+        self.usage = usage
 
 
 #: Every failure the taxonomy has an answer for. Anything else is a bug in
@@ -316,8 +323,10 @@ def classify_failure(exc: Exception, reserved: Usage) -> RunEnd:
         )
     if isinstance(exc, EngineError):
         # The only arm that narrows the reason: the adapter already told us
-        # whether its own wall clock stopped it.
-        return RunEnd(reserved, exc.reason, Finish.RELEASE)
+        # whether its own wall clock stopped it. And the only one that may
+        # narrow the cost: an adapter that could still read what the tool
+        # measured knows the spend, and the ceiling would overstate it.
+        return RunEnd(exc.usage or reserved, exc.reason, Finish.RELEASE)
     return RunEnd(reserved, StopReason.INFRASTRUCTURE, Finish.RELEASE)
 
 
@@ -644,23 +653,27 @@ class ReviewWorker:
         """
         key = claim.trigger.dedupe_key
         end = classify_failure(exc, reserved)
+        attempt = f"attempt {claim.attempts} of {self.queue.max_attempts}"
+        # Every failure here is one the taxonomy expects, so the ERROR line
+        # says what happened and the traceback -- which says only where the
+        # adapter raised -- is kept for whoever turns DEBUG on.
+        logger.debug("%s failed on %s", key, attempt, exc_info=exc)
         if isinstance(exc, UsageLimited):
             # The wall is the account's, not this run's, so retrying reaches
             # it again having spent to get there. The breaker refuses every
             # claim instead, and the row waits behind it.
-            logger.error("%s hit the account's usage limit", key)
+            logger.error("%s hit the account's usage limit: %s", key, exc)
             self.governor.trip(_now())
         elif end.finish is Finish.ABANDON:
-            logger.error("giving up on %s permanently", key, exc_info=True)
-        elif isinstance(exc, EngineUnavailable):
-            logger.error(
-                "%s could not start %s and will be retried",
-                key,
-                self.engine.name,
-                exc_info=True,
-            )
+            logger.error("giving up on %s permanently: %s", key, exc)
         else:
-            logger.error("%s failed and will be retried", key, exc_info=True)
+            what = "failed"
+            if isinstance(exc, EngineUnavailable):
+                what = f"could not start {self.engine.name}"
+            then = "will be retried"
+            if claim.attempts >= self.queue.max_attempts:
+                then = "giving up"
+            logger.error("%s %s on %s (%s): %s", key, what, attempt, then, exc)
         return end
 
     async def _review(self, request: ReviewRequest) -> ReviewResult:
@@ -686,6 +699,7 @@ class ReviewWorker:
                 f"{self.engine.name} failed: {exc}",
                 StopReason.ENGINE_ERROR,
                 status=exc.status if isinstance(exc, EngineProtocolError) else None,
+                usage=exc.usage if isinstance(exc, EngineProtocolError) else None,
             ) from exc
 
     async def _publish_recorded(self, claim: Claim) -> None:

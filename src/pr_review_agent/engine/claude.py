@@ -242,9 +242,12 @@ class ClaudeCliEngine(CliEngine):
             part for part in (stderr, self._envelope_complaint(envelope)) if part
         )
         failure = super().failure(returncode, stdout, complaint)
-        status = envelope.get("api_error_status")
-        if isinstance(failure, EngineProtocolError) and isinstance(status, int):
-            failure.status = status
+        if isinstance(failure, EngineProtocolError):
+            # The envelope measured the run even though the run failed, so
+            # the spend is known and the reservation would overstate it.
+            failure.usage = self._usage(envelope)
+            status = envelope.get("api_error_status")
+            failure.status = status if isinstance(status, int) else None
         return failure
 
     @staticmethod

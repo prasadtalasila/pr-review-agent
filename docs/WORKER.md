@@ -201,6 +201,7 @@ engine had started.
 | merged or closed, before the checkout | `0`, `exact` | Refused before anything was cloned, so the zero is measured rather than inferred. |
 | `EngineUnavailable` | `0`, `unavailable` | The subprocess never started, so no process existed to spend. Provable, like the row above it. |
 | in or after `engine.review` | the full reservation | Anything may have been spent, and the governor cannot find out. |
+| in `engine.review`, output still readable | the envelope's figure, `exact` | The tool failed but still printed what it measured, so the spend is known; the reservation would overstate it. |
 | `UsageLimited` | `0` or the envelope's figure, `exact` | The one failure where the spend **is** knowable. |
 | nowhere — it succeeded | `result.usage` | What the engine reported. |
 

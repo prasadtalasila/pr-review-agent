@@ -96,11 +96,22 @@ class EngineProtocolError(EngineError):
     ``status`` is the HTTP status of the API error behind it, when the tool
     reported one. It is an integer the tool chose rather than text, which
     is what lets it be quoted on a pull request when the message cannot.
+
+    ``usage`` is what the tool measured, when its output could still be read
+    that far. ``None`` means nothing measured the spend, and the caller
+    settles at the reservation.
     """
 
-    def __init__(self, message: str, *, status: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        usage: Usage | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.usage = usage
 
 
 def cli_environment(prefixes: tuple[str, ...] = ()) -> dict[str, str]:

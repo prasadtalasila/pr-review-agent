@@ -173,7 +173,7 @@ Everything else, with one rule added:
 | **ERROR** | **every caught exception**: the engine failing to start, a review failing, a publish or acknowledgement failing, a permanently abandoned trigger, the account's usage limit, a worktree that would not tear down, a broken `SIGHUP` reload, a failed poll cycle, a crashed worker |
 | **WARNING** | states the daemon reasoned its way into rather than caught: a lapsed lease, a reservation with nothing to settle, every budget refusal, a `SIGHUP` naming a section that needs a restart — plus the startup banner, which is loud because it is the line where the agent starts costing money |
 | **INFO** | startup (state database, workspace cache, worker count); cold-start watermark; `SIGHUP` reload; resumed and superseded runs; publisher's stale-head discard; the one-line `publish.dry_run` summary |
-| **DEBUG** | `engine/cli.py` argv and prompt digest *(demoted)*; `publisher.py` dry-run review body *(demoted, keeping the one-line INFO summary)* |
+| **DEBUG** | `engine/cli.py` argv and prompt digest *(demoted)*; `publisher.py` dry-run review body *(demoted, keeping the one-line INFO summary)*; the traceback of a failed run the worker expected *(the ERROR line carries the message, the attempt and whether it will be retried; the traceback only says where the adapter raised)* |
 
 The ERROR row is a rule rather than a list, and
 `tests/test_logs.py::test_a_caught_exception_is_never_logged_below_error`
@@ -407,7 +407,7 @@ fields the queries below select on.
 
 JSON also settles a multi-line problem. journald applies the prefix per
 line, so a traceback logged with `exc_info=True` — which the worker does in
-three places and the daemon in one — would otherwise split into several
+one place and the daemon in one — would otherwise split into several
 journal entries, only the first carrying the right priority. Inside the
 `"exc"` string it is one line with one priority.
 
