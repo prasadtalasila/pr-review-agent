@@ -200,3 +200,40 @@ async def test_an_unrelated_failure_is_still_a_protocol_error(tmp_path, run):
     run(Recorder("", stderr="segmentation fault", returncode=139))
     with pytest.raises(EngineProtocolError):
         await engine().review(request(tmp_path))
+
+
+# -- a nonzero exit, which is how the CLI reports an errored envelope --
+
+#: What `claude -p --output-format json` really prints when a run fails: the
+#: envelope goes to stdout, the exit is 1, and stderr says nothing useful.
+API_ERROR = {"subtype": "success", "is_error": True, "api_error_status": 404}
+
+
+async def test_a_nonzero_exit_names_the_envelopes_complaint(tmp_path, run):
+    """stderr is empty on a real failure; the reason is on stdout."""
+    run(Recorder(envelope(**API_ERROR, result="model not found"), returncode=1))
+    with pytest.raises(EngineProtocolError, match="model not found"):
+        await engine().review(request(tmp_path))
+
+
+async def test_a_usage_limit_in_an_exited_envelope_is_usage_limited(tmp_path, run):
+    """Not a retry: the exit code must not hide the envelope from the detector."""
+    run(
+        Recorder(
+            envelope(**API_ERROR, result="Claude usage limit reached"), returncode=1
+        )
+    )
+    with pytest.raises(UsageLimited) as raised:
+        await engine().review(request(tmp_path))
+
+    assert raised.value.usage is not None
+    assert raised.value.usage.tokens == sum(USAGE.values())
+
+
+async def test_an_exited_clean_envelopes_result_is_not_quoted(tmp_path, run):
+    """Only an envelope that says it errored has an error field to read."""
+    run(Recorder(envelope(result="usage limit reached"), returncode=1))
+    with pytest.raises(EngineProtocolError) as raised:
+        await engine().review(request(tmp_path))
+
+    assert "usage limit" not in str(raised.value)

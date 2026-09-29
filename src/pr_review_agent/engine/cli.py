@@ -188,16 +188,27 @@ class CliEngine(ABC):
                 f"{self.name} exceeded {self.timeout_seconds}s and was killed"
             ) from exc
         if process.returncode:
-            complaint = stderr.decode(errors="replace").strip()
-            if self.usage_limited(complaint):
-                # Refused before doing any work, so the spend is known to be
-                # nothing -- which is not the same as unknown, and the
-                # difference is a reservation's worth of allowance.
-                raise UsageLimited(f"{self.name} reports a usage limit: {complaint}")
-            raise EngineProtocolError(
-                f"{self.name} exited {process.returncode}: {complaint}"
+            raise self.failure(
+                process.returncode,
+                stdout.decode(errors="replace"),
+                stderr.decode(errors="replace").strip(),
             )
         return stdout.decode(errors="replace")
+
+    def failure(self, returncode: int, stdout: str, stderr: str) -> EngineError:
+        """What a nonzero exit means, as the error to raise.
+
+        Here only stderr is read, because a tool this class knows nothing
+        about has no stdout it could be trusted to describe. An adapter
+        whose tool reports failures on stdout overrides it.
+        """
+        del stdout
+        if self.usage_limited(stderr):
+            # Refused before doing any work, so the spend is known to be
+            # nothing -- which is not the same as unknown, and the
+            # difference is a reservation's worth of allowance.
+            return UsageLimited(f"{self.name} reports a usage limit: {stderr}")
+        return EngineProtocolError(f"{self.name} exited {returncode}: {stderr}")
 
     def usage_limited(self, text: str) -> bool:
         """Whether ``text`` is this tool saying the account is out of quota.

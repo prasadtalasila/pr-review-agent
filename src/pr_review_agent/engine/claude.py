@@ -22,7 +22,13 @@ import json
 import logging
 
 from ..budget import Usage, UsageConfidence
-from .cli import CliEngine, EngineProtocolError, EngineUnavailable, UsageLimited
+from .cli import (
+    CliEngine,
+    EngineError,
+    EngineProtocolError,
+    EngineUnavailable,
+    UsageLimited,
+)
 from .models import (
     Capabilities,
     Finding,
@@ -96,6 +102,14 @@ CAPABILITIES = Capabilities(
     subagents=False,
     prompt_caching=True,
 )
+
+
+def _errored(envelope: dict) -> bool:
+    """Whether the CLI itself says this run failed."""
+    subtype = envelope.get("subtype")
+    return envelope.get("is_error") is True or (
+        isinstance(subtype, str) and subtype.startswith("error_")
+    )
 
 
 class ClaudeCliEngine(CliEngine):
@@ -207,6 +221,48 @@ class ClaudeCliEngine(CliEngine):
         lowered = text.lower()
         return any(marker in lowered for marker in _USAGE_LIMIT_MARKERS)
 
+    def failure(self, returncode: int, stdout: str, stderr: str) -> EngineError:
+        """Read the envelope a failed run prints on stdout, if it printed one.
+
+        ``--output-format json`` reports a failed run as an ``is_error``
+        envelope on stdout and an exit of 1, with nothing on stderr. Reading
+        only stderr logged ``claude exited 1:`` and nothing else, and --
+        worse -- hid a usage limit hit mid-run from the detector, so it was
+        retried into the same wall instead of tripping the breaker.
+        """
+        try:
+            envelope = self._envelope(stdout)
+        except EngineProtocolError:
+            return super().failure(returncode, stdout, stderr)
+        if self._envelope_usage_limited(envelope):
+            return UsageLimited(
+                f"{self.name} reports a usage limit", self._usage(envelope)
+            )
+        complaint = " ".join(
+            part for part in (stderr, self._envelope_complaint(envelope)) if part
+        )
+        return super().failure(returncode, stdout, complaint)
+
+    @staticmethod
+    def _envelope_complaint(envelope: dict) -> str:
+        """The CLI's own account of an errored envelope, or nothing.
+
+        Asked of the same fields, under the same rule, as the usage-limit
+        detector: an envelope that does not say it errored has no error to
+        quote, and its ``result`` may be model prose.
+        """
+        if not _errored(envelope):
+            return ""
+        fields = (
+            envelope.get("api_error_status"),
+            envelope.get("error"),
+            envelope.get("result"),
+        )
+        return (
+            f"{envelope.get('subtype')}: "
+            + " ".join(str(f) for f in fields if f is not None)[:200]
+        )
+
     def _envelope_usage_limited(self, envelope: dict) -> bool:
         """Whether *the CLI itself* said the account is out of quota.
 
@@ -216,15 +272,15 @@ class ClaudeCliEngine(CliEngine):
         matching a marker there lets one line in a diff trip the breaker for
         the whole fleet.
         """
-        subtype = envelope.get("subtype")
-        errored = envelope.get("is_error") is True or (
-            isinstance(subtype, str) and subtype.startswith("error_")
-        )
-        if not errored:
+        if not _errored(envelope):
             return False
         return any(
             self.usage_limited(field if isinstance(field, str) else json.dumps(field))
-            for field in (envelope.get("error"), envelope.get("result"), subtype)
+            for field in (
+                envelope.get("error"),
+                envelope.get("result"),
+                envelope.get("subtype"),
+            )
             if field is not None
         )
 
