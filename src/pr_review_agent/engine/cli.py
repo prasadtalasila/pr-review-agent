@@ -92,7 +92,26 @@ class EngineProtocolError(EngineError):
     Raised rather than reported as an empty review. Parsing what a CLI
     prints is the cost of the subprocess boundary, and a format change that
     silently became "no findings" would look exactly like a clean review.
+
+    ``status`` is the HTTP status of the API error behind it, when the tool
+    reported one. It is an integer the tool chose rather than text, which
+    is what lets it be quoted on a pull request when the message cannot.
+
+    ``usage`` is what the tool measured, when its output could still be read
+    that far. ``None`` means nothing measured the spend, and the caller
+    settles at the reservation.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        usage: Usage | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.usage = usage
 
 
 def cli_environment(prefixes: tuple[str, ...] = ()) -> dict[str, str]:
@@ -188,16 +207,27 @@ class CliEngine(ABC):
                 f"{self.name} exceeded {self.timeout_seconds}s and was killed"
             ) from exc
         if process.returncode:
-            complaint = stderr.decode(errors="replace").strip()
-            if self.usage_limited(complaint):
-                # Refused before doing any work, so the spend is known to be
-                # nothing -- which is not the same as unknown, and the
-                # difference is a reservation's worth of allowance.
-                raise UsageLimited(f"{self.name} reports a usage limit: {complaint}")
-            raise EngineProtocolError(
-                f"{self.name} exited {process.returncode}: {complaint}"
+            raise self.failure(
+                process.returncode,
+                stdout.decode(errors="replace"),
+                stderr.decode(errors="replace").strip(),
             )
         return stdout.decode(errors="replace")
+
+    def failure(self, returncode: int, stdout: str, stderr: str) -> EngineError:
+        """What a nonzero exit means, as the error to raise.
+
+        Here only stderr is read, because a tool this class knows nothing
+        about has no stdout it could be trusted to describe. An adapter
+        whose tool reports failures on stdout overrides it.
+        """
+        del stdout
+        if self.usage_limited(stderr):
+            # Refused before doing any work, so the spend is known to be
+            # nothing -- which is not the same as unknown, and the
+            # difference is a reservation's worth of allowance.
+            return UsageLimited(f"{self.name} reports a usage limit: {stderr}")
+        return EngineProtocolError(f"{self.name} exited {returncode}: {stderr}")
 
     def usage_limited(self, text: str) -> bool:
         """Whether ``text`` is this tool saying the account is out of quota.

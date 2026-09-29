@@ -66,6 +66,13 @@ REFUSAL_TRAILER = (
     "the configuration has changed, a new @{handle} comment asks again.</sub>"
 )
 
+#: Under a failure notice. Unlike a refusal, the review did run -- and may
+#: have been charged -- so it says only what is true of every such failure.
+FAILURE_TRAILER = (
+    "<sub>The operator's log has the details. Once they are fixed, a new "
+    "@{handle} comment asks again.</sub>"
+)
+
 #: How long a rendered body may be. GitHub rejects a comment over 65 536
 #: characters with a 422 -- *after* the review was paid for -- and the
 #: worker would then re-offer the same body on every claim forever. The
@@ -154,6 +161,19 @@ def refusal(notice: str, *, handle: str) -> str:
     """
     return neutralise(
         f"**Not reviewed.** {notice}\n\n{REFUSAL_TRAILER.format(handle=handle)}",
+        handle,
+    )
+
+
+def failure(notice: str, *, handle: str, attempts: int) -> str:
+    """Assemble the notice for a review whose every attempt failed.
+
+    Fixed text over integers, like :func:`refusal`, and neutralised for the
+    same reason: the trailer's ``@handle`` must not summon a review.
+    """
+    return neutralise(
+        f"**Not reviewed.** {notice} That was the last of {attempts} attempts, "
+        "so the agent has stopped trying.\n\n" + FAILURE_TRAILER.format(handle=handle),
         handle,
     )
 

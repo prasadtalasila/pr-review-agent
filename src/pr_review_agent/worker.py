@@ -65,6 +65,7 @@ from ._time import now as _now
 from ._time import wait_until
 from .budget import Governor, Mode, StopReason, Usage, UsageConfidence
 from .engine import (
+    EngineProtocolError,
     EngineTimeout,
     EngineUnavailable,
     Outcome,
@@ -250,11 +251,25 @@ class EngineError(RuntimeError):
     job, and a run whose tool fell over is not. The retry decision does not
     branch on it -- both are retried -- but an operator counting rows needs
     to know which of the two they are looking at.
+
+    ``status`` is the API status the adapter read, when it read one. It is
+    the only part of the adapter's failure that reaches the pull request:
+    see :func:`failure_notice`. ``usage`` is what the adapter measured,
+    when it measured anything, and is what the run settles at.
     """
 
-    def __init__(self, message: str, reason: StopReason) -> None:
+    def __init__(
+        self,
+        message: str,
+        reason: StopReason,
+        *,
+        status: int | None = None,
+        usage: Usage | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason = reason
+        self.status = status
+        self.usage = usage
 
 
 #: Every failure the taxonomy has an answer for. Anything else is a bug in
@@ -308,9 +323,33 @@ def classify_failure(exc: Exception, reserved: Usage) -> RunEnd:
         )
     if isinstance(exc, EngineError):
         # The only arm that narrows the reason: the adapter already told us
-        # whether its own wall clock stopped it.
-        return RunEnd(reserved, exc.reason, Finish.RELEASE)
+        # whether its own wall clock stopped it. And the only one that may
+        # narrow the cost: an adapter that could still read what the tool
+        # measured knows the spend, and the ceiling would overstate it.
+        return RunEnd(exc.usage or reserved, exc.reason, Finish.RELEASE)
     return RunEnd(reserved, StopReason.INFRASTRUCTURE, Finish.RELEASE)
+
+
+def failure_notice(exc: Exception) -> str | None:
+    """What a pull request is told when its last attempt failed this way.
+
+    ``None`` for everything that is not the engine's: a GitHub or git
+    failure says nothing a contributor can act on, and the post announcing
+    it would likely fail the same way.
+
+    Fixed text over an integer, never the failure's message. The message is
+    whatever the tool printed -- host paths, account and quota state -- and
+    this goes under the agent's account on what may be a public repository.
+    The operator's journal has the whole of it.
+    """
+    if isinstance(exc, EngineUnavailable):
+        return "The review engine could not be started on the agent's host."
+    if not isinstance(exc, EngineError):
+        return None
+    if exc.reason is StopReason.TIMEOUT:
+        return "The review engine ran out of time."
+    api = "" if exc.status is None else f" (API error {exc.status})"
+    return f"The review engine failed{api}."
 
 
 def _finish_for(outcome: Outcome) -> Finish:
@@ -404,6 +443,10 @@ class ReviewWorker:
         :meth:`_attempt`. Both are refusals a reader can act on, and both
         would otherwise leave a 👀 as the last thing the agent ever said
         (issue #78). See :meth:`Publisher.notify`.
+
+        So does an engine failure, but only on the last attempt it is
+        allowed: an earlier one may yet be fixed by the retry, and then there
+        is nothing to announce. See :func:`failure_notice`.
         """
         # Before the reservation lookup, not after: a publication item is
         # admitted without reserving, so it has no ledger row for
@@ -431,22 +474,39 @@ class ReviewWorker:
         # free, so the run would settle at nothing until `_attempt` reaches
         # the engine and raises the floor to the ceiling it reserved.
         spend = _Spend(Usage(0, UsageConfidence.UNAVAILABLE, engine=self.engine.name))
-        refused: PullRequestTooLarge | None = None
+        failure: Exception | None = None
         try:
             end = await self._attempt(claim, mode, spend)
         except _FAILURES as exc:
             end = self._failed(claim, exc, spend.usage)
-            # The one failure a contributor can act on: every other arm of
-            # the taxonomy is either retried, or an agent-side bug that
-            # says nothing useful on a pull request.
-            refused = exc if isinstance(exc, PullRequestTooLarge) else None
+            failure = exc
         if end is None:
             return
         await self._settle_publish_and_finish(claim, end)
-        if refused is not None:
-            await self.publisher.notify(claim.trigger, refused.notice)
+        if failure is not None:
+            await self._announce(claim, failure, end)
         if end.reviewed is not None:
             self._fold(claim, started, end.reviewed.head_sha)
+
+    async def _announce(self, claim: Claim, exc: Exception, end: RunEnd) -> None:
+        """Say on the pull request why this run ended, if a reader should know.
+
+        After the row is closed, never before: the notice is a courtesy and
+        the bookkeeping is the record.
+        """
+        if isinstance(exc, PullRequestTooLarge):
+            # The one refusal a contributor can act on. Every other arm of
+            # the taxonomy is retried or an agent-side bug, and of those only
+            # an engine failure with no attempts left is announced, below.
+            await self.publisher.notify(claim.trigger, exc.notice)
+            return
+        if end.finish is not Finish.RELEASE or claim.attempts < self.queue.max_attempts:
+            return
+        notice = failure_notice(exc)
+        if notice is not None:
+            await self.publisher.report_failure(
+                claim.trigger, notice, attempts=claim.attempts
+            )
 
     def _fold(self, claim: Claim, started: datetime, head_sha: str) -> None:
         """Close the triggers this review answered, and say how many.
@@ -593,23 +653,27 @@ class ReviewWorker:
         """
         key = claim.trigger.dedupe_key
         end = classify_failure(exc, reserved)
+        attempt = f"attempt {claim.attempts} of {self.queue.max_attempts}"
+        # Every failure here is one the taxonomy expects, so the ERROR line
+        # says what happened and the traceback -- which says only where the
+        # adapter raised -- is kept for whoever turns DEBUG on.
+        logger.debug("%s failed on %s", key, attempt, exc_info=exc)
         if isinstance(exc, UsageLimited):
             # The wall is the account's, not this run's, so retrying reaches
             # it again having spent to get there. The breaker refuses every
             # claim instead, and the row waits behind it.
-            logger.error("%s hit the account's usage limit", key)
+            logger.error("%s hit the account's usage limit: %s", key, exc)
             self.governor.trip(_now())
         elif end.finish is Finish.ABANDON:
-            logger.error("giving up on %s permanently", key, exc_info=True)
-        elif isinstance(exc, EngineUnavailable):
-            logger.error(
-                "%s could not start %s and will be retried",
-                key,
-                self.engine.name,
-                exc_info=True,
-            )
+            logger.error("giving up on %s permanently: %s", key, exc)
         else:
-            logger.error("%s failed and will be retried", key, exc_info=True)
+            what = "failed"
+            if isinstance(exc, EngineUnavailable):
+                what = f"could not start {self.engine.name}"
+            then = "will be retried"
+            if claim.attempts >= self.queue.max_attempts:
+                then = "giving up"
+            logger.error("%s %s on %s (%s): %s", key, what, attempt, then, exc)
         return end
 
     async def _review(self, request: ReviewRequest) -> ReviewResult:
@@ -632,7 +696,10 @@ class ReviewWorker:
             ) from exc
         except Exception as exc:  # the adapter is a foreign tool; see EngineError
             raise EngineError(
-                f"{self.engine.name} failed: {exc}", StopReason.ENGINE_ERROR
+                f"{self.engine.name} failed: {exc}",
+                StopReason.ENGINE_ERROR,
+                status=exc.status if isinstance(exc, EngineProtocolError) else None,
+                usage=exc.usage if isinstance(exc, EngineProtocolError) else None,
             ) from exc
 
     async def _publish_recorded(self, claim: Claim) -> None:

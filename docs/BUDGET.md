@@ -604,7 +604,9 @@ for an engine killed mid-run, so the rule splits on whether the engine had
 started: a failure before it settles at zero, a failure in or after it
 settles at the full reservation, and the one failure *at* it that provably
 ran nothing — `EngineUnavailable`, a subprocess that never started — settles
-at zero too. See
+at zero too. A failure whose envelope could still be read is the exception
+on the other side: the CLI measured that run, so it settles at the
+envelope's figure rather than the reservation. See
 [WORKER.md](WORKER.md#-what-a-failed-run-settles-at).
 
 ## 📉 The degradation ladder
@@ -741,7 +743,9 @@ live subscription into the wall this design exists to avoid.
 
 So the guess is confined to one constant, `_USAGE_LIMIT_MARKERS` in
 `src/pr_review_agent/engine/claude.py`, matched against both plausible
-carriers — a nonzero exit's stderr and the result envelope. When the real
+carriers — a nonzero exit's stderr and the result envelope. The envelope is
+read on a nonzero exit too, because that is how the CLI reports an errored
+run: exit 1, the envelope on stdout, stderr empty. When the real
 error is seen, editing that tuple is the whole fix: no signature changes and
 no migration. A miss costs a retry; a false positive takes the reviewer
 offline for five hours, which is why the markers are narrow.
@@ -830,6 +834,9 @@ the detector and the join:
 - a usage limit on stderr and one in the envelope both raise `UsageLimited`,
   the envelope carrying its measured usage and the stderr case carrying none,
   while an unrelated failure is still a protocol error;
+- an errored envelope that arrives with exit 1 is still asked, and a failure
+  that is not a usage limit quotes the envelope's own error rather than the
+  empty stderr;
 - the envelope is only asked when it says it errored, and only its own
   error-carrying fields are read -- a finding that quotes `rate_limit_error`
   parses as a completed review, because the review's prose is written about a

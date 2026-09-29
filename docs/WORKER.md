@@ -141,8 +141,10 @@ the handle on a 6 000-line pull request had no way to learn that raising a
 cap is the fix (issue #78). The same is done for the size gate, which
 refuses earlier still, through `PullRequestTooLarge.notice`.
 
-No other ending is announced. A transient failure is retried and the review
-it eventually produces speaks for itself; a closed pull request is told
+No other deterministic ending is announced. A transient failure is retried
+and the review it eventually produces speaks for itself — except an engine
+failure on the last attempt `max_attempts` allows, which posts
+[the failure notice](PUBLISHER.md#-the-failure-notice); a closed pull request is told
 nothing, because nobody is reading it; and a `PayloadError` is a bug in the
 agent rather than something a contributor can act on.
 
@@ -199,6 +201,7 @@ engine had started.
 | merged or closed, before the checkout | `0`, `exact` | Refused before anything was cloned, so the zero is measured rather than inferred. |
 | `EngineUnavailable` | `0`, `unavailable` | The subprocess never started, so no process existed to spend. Provable, like the row above it. |
 | in or after `engine.review` | the full reservation | Anything may have been spent, and the governor cannot find out. |
+| in `engine.review`, output still readable | the envelope's figure, `exact` | The tool failed but still printed what it measured, so the spend is known; the reservation would overstate it. |
 | `UsageLimited` | `0` or the envelope's figure, `exact` | The one failure where the spend **is** knowable. |
 | nowhere — it succeeded | `result.usage` | What the engine reported. |
 
