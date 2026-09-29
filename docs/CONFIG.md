@@ -128,7 +128,8 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 | `per_contributor_pct` | integer 1–100 | no (default: **no cap**) | The share of the agent's weekly allowance any one contributor may spend, over the same rolling week. |
 | `max_changed_files` | integer | no (default `100`) | A pull request touching more *reviewable* files is refused before a worktree exists. |
 | `max_changed_lines` | integer | no (default `5000`) | The same, for additions plus deletions. |
-| `excluded_paths` | list of glob patterns | no (defaults below) | Paths counted against neither cap and not shown to the reviewer. |
+| `default_exclusions` | boolean | no (default `true`) | Apply the built-in exclusions: lockfiles, vendored trees, generated code, minified bundles. `false` is for a repository that genuinely reviews them. |
+| `excluded_paths` | list of glob patterns | no (default `[]`) | The operator's own exclusions, **added** to the built-ins. Counted against neither cap and not shown to the reviewer. |
 | `min_review_interval_seconds` | integer ≥ 0 | no (default `900`) | How long one pull request waits between reviews. A trigger arriving sooner is **deferred**, not dropped. `0` disables it. |
 | `mention_min_review_interval_seconds` | integer ≥ 0 | no (default `300`) | The same, for a `@claude`: a person is waiting, so it is shorter. May not exceed `min_review_interval_seconds`. |
 | `max_reviews_per_pull_request` | integer ≥ 1 | no (default: **no cap**) | The most reviews one pull request may have in a trailing 24 hours. |
@@ -235,17 +236,29 @@ fetch pulls every object reachable from the head, so a commit that adds a
 large blob and a later one that removes it still downloads it while
 reporting no changed lines.
 
-**`excluded_paths` is subtracted from both caps *and* from the diff the
-reviewer is shown** — one list, one mechanism, so the two cannot disagree.
-Without it a vendored-dependency bump is refused on a size cap for thousands
-of lines nobody would have read. The default covers lockfiles, `vendor/`,
-`node_modules/`, `third_party/`, generated code (`*.pb.go`, `*_pb2.py`,
-`*.generated.*`) and minified output (`*.min.js`, `*.min.css`, `*.map`); the
-full list is in `config.example.yaml`.
+**Exclusions are subtracted from both caps *and* from the diff the reviewer
+is shown** — one list, one mechanism, so the two cannot disagree. Without
+them a vendored-dependency bump is refused on a size cap for thousands of
+lines nobody would have read.
 
-Setting the key **replaces** that list rather than extending it, and `[]`
-excludes nothing. Patterns are globs matched at any depth via `**/`, and one
-may not begin with `:` — the pathspec magic is the agent's to supply.
+The built-in list ships in the package (`config/excluded_paths.py`) rather
+than in the config file, so a file names only what is special about its
+repository. It covers lockfiles, `vendor/`, `node_modules/`, `third_party/`,
+generated code and minified output (`*.min.js`, `*.min.css`, `*.map`). The
+generated-code globs are per generator — Protocol Buffers, OpenAPI/Swagger
+stubs, GraphQL codegen, gRPC stubs, Go generators — copied from pr-agent's
+`generated_code_ignore.toml` at commit `10bbd9a` (MIT), plus a local
+`*.generated.*`. The full list is pinned by value in
+`tests/test_config_budget.py`.
+
+`excluded_paths` **adds** to that list; `default_exclusions: false` drops it,
+leaving only `excluded_paths` in force. Patterns are globs matched at any
+depth via `**/`, and one may not begin with `:` — the pathspec magic is the
+agent's to supply.
+
+*Changed in 1.8.0:* before it, `excluded_paths` replaced the built-ins and
+`excluded_paths: []` excluded nothing. A file that set `[]` to review
+everything now needs `default_exclusions: false` as well.
 
 Because the caps are measured after exclusion, they are checked once the diff
 exists rather than before the fetch: three aggregate integers from the API

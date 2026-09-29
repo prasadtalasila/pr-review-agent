@@ -27,6 +27,7 @@ src/pr_review_agent/
 │   ├── github_triggers.py  # which repository, and whose requests
 │   ├── budget.py      # every key that decides what may be spent
 │   ├── engine.py      # which tool reviews, and under what clock
+│   ├── excluded_paths.py  # the built-in exclusions, generator globs from pr-agent
 │   └── runtime.py     # store, workspace, worker, publish, logging
 ├── daemon.py          # the poll-classify-enqueue loop
 ├── logs.py            # one level and one format, resolved from three layers

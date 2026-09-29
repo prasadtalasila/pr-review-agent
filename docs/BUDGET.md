@@ -104,15 +104,19 @@ reporting no changed lines at all.
 
 ```yaml
 budget:
-  excluded_paths:
-    - '**/package-lock.json'
-    - '**/vendor/**'
-    - '**/*.min.js'
+  default_exclusions: true      # the built-in list, on unless you say otherwise
+  excluded_paths:               # your own, added to it
+    - '**/*.snap'
 ```
 
 Lockfiles, vendored trees, generated code and minified bundles. Reviewing
 them is close to worthless and they dominate diff size, which makes this the
-largest saving available for zero tokens.
+largest saving available for zero tokens. The built-in list lives in the
+package, `config/excluded_paths.py`, so a config file does not repeat it; its
+generated-code globs — Protocol Buffers, OpenAPI/Swagger stubs, GraphQL
+codegen, gRPC stubs, Go generators — are copied from pr-agent's
+`settings/generated_code_ignore.toml` at commit `10bbd9a`, under the MIT
+licence, with attribution in the module.
 
 **Exclusions apply to the size caps and to the diff the engine is shown, and
 they are the same list applied by the same mechanism.** Each pattern becomes
@@ -130,9 +134,11 @@ Both halves are needed. Applying exclusions to the engine alone would leave a
 vendored-dependency bump refused on a size cap for lines the engine was never
 going to see — a pull request rejected for content that does not exist.
 
-Setting the key **replaces** the default list rather than adding to it, and
-an empty list excludes nothing: a repository that genuinely reviews its
-lockfiles is a real repository. A pattern may not begin with `:`, because the
+`excluded_paths` **adds** to the built-in list rather than replacing it, so
+a config file names only what is special about its repository.
+`default_exclusions: false` drops the built-ins and leaves `excluded_paths`
+alone in force: a repository that genuinely reviews its lockfiles is a real
+repository. A pattern may not begin with `:`, because the
 pathspec magic is the agent's to supply and a pattern that rewrites its own
 meaning is not something an operator can predict from reading their own
 configuration file.

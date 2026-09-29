@@ -544,7 +544,7 @@ class ReviewWorker:
             facts,
             max_changed_files=config.max_changed_files,
             max_changed_lines=config.max_changed_lines,
-            excluded_paths=config.excluded_paths,
+            excluded_paths=config.effective_excluded_paths,
         ) as checkout:
             # Captured here because the checkout is torn down by the time the
             # run settles, and it is the worker's own number rather than the

@@ -38,19 +38,39 @@ def test_size_caps_can_be_tightened():
     assert budget.max_changed_lines == 200
 
 
-def test_excluded_paths_defaults_to_the_four_categories():
+def test_the_built_in_exclusions_are_in_force_when_neither_key_is_set():
     """Lockfiles, vendored, generated, minified -- BUDGET.md layer 2's list."""
     budget = Config.from_mapping(VALID).budget
-    assert budget.excluded_paths == DEFAULT_EXCLUDED_PATHS
-    assert "**/vendor/**" in budget.excluded_paths
+    assert budget.default_exclusions is True
+    assert budget.excluded_paths == ()
+    assert budget.effective_excluded_paths == DEFAULT_EXCLUDED_PATHS
 
 
-def test_excluded_paths_can_be_replaced_outright():
-    """Including with nothing: a repository may want its lockfiles read."""
-    data = {**VALID, "budget": {**BUDGET, "excluded_paths": ["*.generated.ts"]}}
-    assert Config.from_mapping(data).budget.excluded_paths == ("*.generated.ts",)
-    empty = {**VALID, "budget": {**BUDGET, "excluded_paths": []}}
-    assert Config.from_mapping(empty).budget.excluded_paths == ()
+def test_excluded_paths_adds_to_the_built_ins():
+    """A config file names what is special about its repository, not the
+    sixty patterns every repository shares."""
+    data = {**VALID, "budget": {**BUDGET, "excluded_paths": ["*.snap"]}}
+    budget = Config.from_mapping(data).budget
+    assert budget.excluded_paths == ("*.snap",)
+    assert budget.effective_excluded_paths == (*DEFAULT_EXCLUDED_PATHS, "*.snap")
+
+
+def test_default_exclusions_off_leaves_only_the_operators_own():
+    """A repository that genuinely reviews its lockfiles is a real repository."""
+    own = {
+        **VALID,
+        "budget": {**BUDGET, "default_exclusions": False, "excluded_paths": ["*.snap"]},
+    }
+    assert Config.from_mapping(own).budget.effective_excluded_paths == ("*.snap",)
+    nothing = {**VALID, "budget": {**BUDGET, "default_exclusions": False}}
+    assert Config.from_mapping(nothing).budget.effective_excluded_paths == ()
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_default_exclusions_must_be_a_boolean(value):
+    data = {**VALID, "budget": {**BUDGET, "default_exclusions": value}}
+    with pytest.raises(ConfigError, match="default_exclusions"):
+        Config.from_mapping(data)
 
 
 @pytest.mark.parametrize("value", ["", "   ", 5, None, True])

@@ -11,7 +11,7 @@ import pytest
 import yaml
 from config_harness import BUDGET, VALID
 
-from pr_review_agent.config import Config, ConfigError
+from pr_review_agent.config import DEFAULT_EXCLUDED_PATHS, Config, ConfigError
 
 # -- budget: every key here is a spending bound (CLAUDE.md §5) -----------
 
@@ -238,6 +238,7 @@ def test_adopting_a_policy_takes_the_pool_and_leaves_the_rest():
                 **BUDGET,
                 "enabled": False,
                 "max_changed_files": 7,
+                "default_exclusions": False,
                 "excluded_paths": ["**/local.lock"],
             },
         }
@@ -251,4 +252,49 @@ def test_adopting_a_policy_takes_the_pool_and_leaves_the_rest():
     assert adopted.weekly_tokens == 9_000_000
     assert adopted.enabled is False
     assert adopted.max_changed_files == 7
-    assert adopted.excluded_paths == ("**/local.lock",)
+    assert adopted.default_exclusions is False
+    assert adopted.effective_excluded_paths == ("**/local.lock",)
+
+
+def test_the_built_in_exclusions_are_pinned_by_value():
+    """Issue #122's acceptance: a change to the built-ins is a diff to this
+    test, not a changed default nobody reviewed. The generator groups are
+    pr-agent's ``generated_code_ignore.toml`` at ``10bbd9a`` (MIT)."""
+    assert DEFAULT_EXCLUDED_PATHS == (
+        "**/package-lock.json",
+        "**/yarn.lock",
+        "**/pnpm-lock.yaml",
+        "**/poetry.lock",
+        "**/Cargo.lock",
+        "**/Gemfile.lock",
+        "**/composer.lock",
+        "**/go.sum",
+        "**/vendor/**",
+        "**/node_modules/**",
+        "**/third_party/**",
+        "**/*.generated.*",
+        "**/*.pb.go",
+        "**/*.pb.cc",
+        "**/*_pb2.py",
+        "**/*.pb.swift",
+        "**/*.pb.rb",
+        "**/*.pb.php",
+        "**/*.pb.h",
+        "**/__generated__/**",
+        "**/openapi_client/**",
+        "**/openapi_server/**",
+        "**/swagger.json",
+        "**/swagger.yaml",
+        "**/*.graphql.ts",
+        "**/*.graphql.js",
+        "**/*_grpc.py",
+        "**/*Grpc.java",
+        "**/*Grpc.cs",
+        "**/*_grpc.ts",
+        "**/*_grpc.js",
+        "**/*_gen.go",
+        "**/*generated.go",
+        "**/*.min.js",
+        "**/*.min.css",
+        "**/*.map",
+    )

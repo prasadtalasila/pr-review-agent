@@ -12,6 +12,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from ._sections import ConfigError
+from .excluded_paths import DEFAULT_EXCLUDED_PATHS
 
 #: The rolling windows every limit in this section is measured over, and the
 #: one duration the per-pull-request cap is counted over. They live in the
@@ -56,36 +57,6 @@ DEFAULT_MAX_CHANGED_LINES = 5000
 DEFAULT_MIN_REVIEW_INTERVAL_SECONDS = 900
 DEFAULT_MENTION_MIN_REVIEW_INTERVAL_SECONDS = 300
 
-#: Paths excluded from both the size gate and the diff the engine is shown.
-#: The four categories BUDGET.md layer 2 names -- lockfiles, vendored trees,
-#: generated code, minified bundles -- where reviewing a line is close to
-#: worthless while the line still counts against a cap.
-#:
-#: A default rather than a fixed list, because a repository that genuinely
-#: reviews its lockfiles exists; and reloadable on ``SIGHUP``, like every
-#: other key in this section, so an operator who finds the agent blind to
-#: something can fix it without a restart.
-DEFAULT_EXCLUDED_PATHS: tuple[str, ...] = (
-    "**/package-lock.json",
-    "**/yarn.lock",
-    "**/pnpm-lock.yaml",
-    "**/poetry.lock",
-    "**/Cargo.lock",
-    "**/Gemfile.lock",
-    "**/composer.lock",
-    "**/go.sum",
-    "**/vendor/**",
-    "**/node_modules/**",
-    "**/third_party/**",
-    "**/*.pb.go",
-    "**/*_pb2.py",
-    "**/*.generated.*",
-    "**/*.min.js",
-    "**/*.min.css",
-    "**/*.map",
-)
-
-
 #: A token count written with a thousand or million suffix: ``88k``,
 #: ``1.5m``. Only those two, because a count this file holds is between
 #: tens of thousands and a few million, and a suffix nobody expects is a
@@ -120,7 +91,7 @@ def _tokens(data: dict, key: str) -> int:
 
 
 def _excluded_paths(data: dict) -> tuple[str, ...]:
-    """Read the optional list of excluded path patterns.
+    """Read the operator's own excluded path patterns, added to the built-ins.
 
     A pattern may not begin with ``:``. ``exclusions.py`` builds a
     ``:(exclude,glob)`` prefix in front of each one, and a pattern free to
@@ -131,7 +102,7 @@ def _excluded_paths(data: dict) -> tuple[str, ...]:
     """
     value = data.get("excluded_paths")
     if value is None:
-        return DEFAULT_EXCLUDED_PATHS
+        return ()
     if not isinstance(value, list):
         raise ConfigError("budget.excluded_paths must be a list of path patterns")
     for pattern in value:
@@ -146,6 +117,14 @@ def _excluded_paths(data: dict) -> tuple[str, ...]:
                 "the pathspec magic is supplied by the agent"
             )
     return tuple(value)
+
+
+def _flag(data: dict, key: str) -> bool:
+    """Read an optional switch that defaults to on."""
+    value = data.get(key, True)
+    if not isinstance(value, bool):
+        raise ConfigError(f"budget.{key} must be true or false")
+    return value
 
 
 def _cap(data: dict, key: str, default: int) -> int:
@@ -187,7 +166,7 @@ def _reviews_cap(data: dict) -> int | None:
 #: Everything else in ``budget`` stays local, for two different reasons.
 #: ``enabled`` is the emergency brake, and a brake that could only be pulled
 #: fleet-wide could not stop one misbehaving repository. The diff-size caps and
-#: ``excluded_paths`` describe a *repository* -- what is worth reading in it --
+#: the exclusion keys describe a *repository* -- what is worth reading in it --
 #: rather than the pool, and a vendored tree in one repository says nothing
 #: about another.
 SHARED_FIELDS = (
@@ -243,7 +222,15 @@ class BudgetConfig:
     reviewer_share_pct: int = DEFAULT_REVIEWER_SHARE_PCT
     max_changed_files: int = DEFAULT_MAX_CHANGED_FILES
     max_changed_lines: int = DEFAULT_MAX_CHANGED_LINES
-    excluded_paths: tuple[str, ...] = DEFAULT_EXCLUDED_PATHS
+    #: The built-in list in :mod:`.excluded_paths` -- lockfiles, vendored
+    #: trees, generated code, minified bundles -- is in force unless this is
+    #: false. Off is for the repository that genuinely reviews its lockfiles.
+    default_exclusions: bool = True
+    #: The operator's own patterns, *added* to the built-ins rather than
+    #: replacing them, so a config file names only what is special about its
+    #: repository. :attr:`effective_excluded_paths` is what the workspace is
+    #: handed.
+    excluded_paths: tuple[str, ...] = ()
     #: Optional, and off by default: on a one-person allowlist any cap below
     #: 100 % would block the only account that can trigger anything.
     per_contributor_pct: int | None = None
@@ -261,6 +248,18 @@ class BudgetConfig:
     #: gains nothing from it. Counted over a trailing 24 hours, the same
     #: duration as the daily window.
     max_reviews_per_pull_request: int | None = None
+
+    @property
+    def effective_excluded_paths(self) -> tuple[str, ...]:
+        """The one list the size gate and the engine's diff are both cut by.
+
+        Composed here rather than at the call site so that a reload, an
+        adopted policy and a dry-run summary cannot each combine the two
+        keys differently.
+        """
+        if self.default_exclusions:
+            return DEFAULT_EXCLUDED_PATHS + self.excluded_paths
+        return self.excluded_paths
 
     @property
     def session_limit(self) -> int:
@@ -329,15 +328,6 @@ class BudgetConfig:
     @classmethod
     def parse(cls, data: dict) -> BudgetConfig:
         """Validate the ``budget`` section."""
-        enabled = data.get("enabled", True)
-        if not isinstance(enabled, bool):
-            raise ConfigError("budget.enabled must be true or false")
-        authority = data.get("authority", True)
-        if not isinstance(authority, bool):
-            raise ConfigError("budget.authority must be true or false")
-        comply = data.get("comply", True)
-        if not isinstance(comply, bool):
-            raise ConfigError("budget.comply must be true or false")
         share = data.get("reviewer_share_pct", DEFAULT_REVIEWER_SHARE_PCT)
         if isinstance(share, bool) or not isinstance(share, int):
             raise ConfigError("budget.reviewer_share_pct must be a whole percentage")
@@ -359,9 +349,9 @@ class BudgetConfig:
             session_tokens=_tokens(data, "session_tokens"),
             weekly_tokens=_tokens(data, "weekly_tokens"),
             max_run_tokens=_tokens(data, "max_run_tokens"),
-            enabled=enabled,
-            authority=authority,
-            comply=comply,
+            enabled=_flag(data, "enabled"),
+            authority=_flag(data, "authority"),
+            comply=_flag(data, "comply"),
             reviewer_share_pct=share,
             max_changed_files=_cap(
                 data, "max_changed_files", DEFAULT_MAX_CHANGED_FILES
@@ -370,6 +360,7 @@ class BudgetConfig:
                 data, "max_changed_lines", DEFAULT_MAX_CHANGED_LINES
             ),
             per_contributor_pct=per_contributor,
+            default_exclusions=_flag(data, "default_exclusions"),
             excluded_paths=_excluded_paths(data),
             min_review_interval_seconds=_interval(
                 data, "min_review_interval_seconds", DEFAULT_MIN_REVIEW_INTERVAL_SECONDS
