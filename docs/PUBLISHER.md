@@ -69,7 +69,8 @@ refused — `PullRequestTooLarge.notice` for the size gate,
 are, and a second copy of the rule here would drift.
 
 **Only deterministic refusals are announced.** A transient failure is
-retried and the review it eventually produces speaks for itself; a closed
+retried and the review it eventually produces speaks for itself — until it
+runs out of attempts, which has [a notice of its own](#-the-failure-notice); a closed
 pull request is told nothing, because nobody is reading it; and a
 `PayloadError` is a bug in the agent rather than something a contributor can
 act on. What is left is the set somebody can actually do something about,
@@ -93,6 +94,35 @@ reserves allowance to reach the same answer.
 other body — otherwise the comment telling a reader to type `@claude` again
 would summon the review it is explaining the absence of. See
 [below](#-nothing-it-posts-can-summon-another-review).
+
+## 🧯 The failure notice
+
+An engine that fails on every attempt used to end the same way a refusal
+did: a 👀, then silence. `Publisher.report_failure` closes that gap with
+one comment, posted when the **last** attempt `queue.max_attempts` allows
+fails — never on an earlier one, because the retry may still succeed and
+then there is nothing to announce. With no attempts left the row is never
+claimed again, so this notice cannot accumulate either.
+
+It names the **category** and nothing the tool printed:
+
+| Failure | The notice says |
+| --- | --- |
+| the engine failed, with an API status | `The review engine failed (API error 404).` |
+| the engine failed, without one | `The review engine failed.` |
+| `engine.timeout_seconds` killed it | `The review engine ran out of time.` |
+| the subprocess never started | `The review engine could not be started on the agent's host.` |
+
+The tool's own message stays in the operator's journal. It can carry host
+paths, account and quota state or whatever the CLI chose to echo, and this
+comment goes under the agent's account on what may be a public repository.
+The API status is quoted because it is an integer, not text.
+
+Only engine failures are announced. A GitHub or git failure says nothing a
+contributor can act on, and the post announcing it would likely fail the same
+way. A usage limit spends no attempt, so it is never the last one; the
+[breaker](BUDGET.md) owns it. Like the refusal notice, it is suppressed by a
+dry run, never raises, and goes through `neutralise`.
 
 ## 🔁 The head is re-read immediately before posting
 

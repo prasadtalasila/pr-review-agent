@@ -141,8 +141,10 @@ the handle on a 6 000-line pull request had no way to learn that raising a
 cap is the fix (issue #78). The same is done for the size gate, which
 refuses earlier still, through `PullRequestTooLarge.notice`.
 
-No other ending is announced. A transient failure is retried and the review
-it eventually produces speaks for itself; a closed pull request is told
+No other deterministic ending is announced. A transient failure is retried
+and the review it eventually produces speaks for itself — except an engine
+failure on the last attempt `max_attempts` allows, which posts
+[the failure notice](PUBLISHER.md#-the-failure-notice); a closed pull request is told
 nothing, because nobody is reading it; and a `PayloadError` is a bug in the
 agent rather than something a contributor can act on.
 

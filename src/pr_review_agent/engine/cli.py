@@ -92,7 +92,15 @@ class EngineProtocolError(EngineError):
     Raised rather than reported as an empty review. Parsing what a CLI
     prints is the cost of the subprocess boundary, and a format change that
     silently became "no findings" would look exactly like a clean review.
+
+    ``status`` is the HTTP status of the API error behind it, when the tool
+    reported one. It is an integer the tool chose rather than text, which
+    is what lets it be quoted on a pull request when the message cannot.
     """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def cli_environment(prefixes: tuple[str, ...] = ()) -> dict[str, str]:

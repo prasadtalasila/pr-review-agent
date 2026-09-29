@@ -361,6 +361,11 @@ class ReviewQueue:
         """
         return self._finish(claim, QueueStatus.ABANDONED)
 
+    @property
+    def max_attempts(self) -> int:
+        """How many counted attempts a row gets before it is abandoned."""
+        return self._max_attempts
+
     def status(self, dedupe_key: str) -> QueueStatus | None:
         """The status of ``dedupe_key``, or ``None`` if it was never queued."""
         with self._store.transaction() as conn:

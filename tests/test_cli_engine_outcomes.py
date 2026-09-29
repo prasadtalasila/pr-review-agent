@@ -212,8 +212,10 @@ API_ERROR = {"subtype": "success", "is_error": True, "api_error_status": 404}
 async def test_a_nonzero_exit_names_the_envelopes_complaint(tmp_path, run):
     """stderr is empty on a real failure; the reason is on stdout."""
     run(Recorder(envelope(**API_ERROR, result="model not found"), returncode=1))
-    with pytest.raises(EngineProtocolError, match="model not found"):
+    with pytest.raises(EngineProtocolError, match="model not found") as raised:
         await engine().review(request(tmp_path))
+
+    assert raised.value.status == 404
 
 
 async def test_a_usage_limit_in_an_exited_envelope_is_usage_limited(tmp_path, run):

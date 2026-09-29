@@ -80,7 +80,7 @@ from .report import MAX_BODY_CHARS as MAX_BODY_CHARS
 from .report import SECTIONS as SECTIONS
 from .report import TRAILER as TRAILER
 from .report import TRUNCATION_NOTE as TRUNCATION_NOTE
-from .report import refusal, render
+from .report import failure, refusal, render
 from .runs import RecordedRun, RunStore
 from .sanitise import leaks
 from .triggers.models import PayloadError, Trigger
@@ -207,22 +207,45 @@ class Publisher:
         letting a failed courtesy propagate would turn a free refusal into
         a retried failure that reserves allowance to reach the same answer.
         """
+        await self._post_notice(
+            trigger, notice, refusal(notice, handle=self.handle), kind="refusal"
+        )
+
+    async def report_failure(
+        self, trigger: Trigger, notice: str, *, attempts: int
+    ) -> None:
+        """Say that every attempt this trigger was allowed has failed.
+
+        The one announced ending that is not deterministic, which is why it
+        waits for the last attempt: before that, the retry answers for
+        itself. It cannot accumulate either -- the row has no attempts left,
+        so nothing claims it again. Never raises, and suppressed by
+        ``dry_run``, for the reasons :meth:`notify` gives.
+        """
+        body = failure(notice, handle=self.handle, attempts=attempts)
+        await self._post_notice(trigger, notice, body, kind="failure")
+
+    async def _post_notice(
+        self, trigger: Trigger, notice: str, body: str, *, kind: str
+    ) -> None:
+        """Post one notice on the pull request, and never raise."""
         if self.config.dry_run:
             logger.info(
-                "publish.dry_run: not posting a refusal notice on %s#%d: %s",
+                "publish.dry_run: not posting a %s notice on %s#%d: %s",
+                kind,
                 trigger.repo,
                 trigger.pr_number,
                 notice,
             )
             return
-        body = refusal(notice, handle=self.handle)
         try:
             response = await self.client.post(
                 self.endpoints.issue_comments(trigger.pr_number), {"body": body}
             )
         except GitHubClientError:
             logger.error(
-                "could not post the refusal notice for %s",
+                "could not post the %s notice for %s",
+                kind,
                 trigger.dedupe_key,
                 exc_info=True,
             )
@@ -230,7 +253,8 @@ class Publisher:
         comment_id = int(response["id"])
         self.posted.record(trigger.repo, comment_id, now=datetime.now(timezone.utc))
         logger.info(
-            "refused %s on %s#%d as comment %d",
+            "posted a %s notice for %s on %s#%d as comment %d",
+            kind,
             trigger.dedupe_key,
             trigger.repo,
             trigger.pr_number,

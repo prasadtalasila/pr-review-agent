@@ -241,7 +241,11 @@ class ClaudeCliEngine(CliEngine):
         complaint = " ".join(
             part for part in (stderr, self._envelope_complaint(envelope)) if part
         )
-        return super().failure(returncode, stdout, complaint)
+        failure = super().failure(returncode, stdout, complaint)
+        status = envelope.get("api_error_status")
+        if isinstance(failure, EngineProtocolError) and isinstance(status, int):
+            failure.status = status
+        return failure
 
     @staticmethod
     def _envelope_complaint(envelope: dict) -> str:
