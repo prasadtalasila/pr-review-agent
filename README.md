@@ -74,7 +74,7 @@ with every target made absolute and pinned to the tag being released.
 | [docs/ENGINE.md](docs/ENGINE.md) | How does a different coding agent plug in? The one swappable step, what an engine is given and must return, the capability record, and why every adapter is a CLI subprocess rather than an SDK |
 | [docs/STATUS.md](docs/STATUS.md) | What is built, what is next, the acceptance checklist, and the known gaps |
 | [docs/LOGGING.md](docs/LOGGING.md) | What the daemon logs, where it goes, and what a record looks like? The single stderr stream, the global level and why it never moves `httpx`, the JSON record and the queries it allows, and the journald priority prefix |
-| [docs/FEATURE-ROADMAP.md](docs/FEATURE-ROADMAP.md) | What could be built next, drawn from five neighbouring projects and a hardening review, each candidate with its cost |
+| [docs/FEATURE-ROADMAP.md](docs/FEATURE-ROADMAP.md) | What could be built next, drawn from five neighbouring projects, a hardening review and the 2026-09-29 audit, each candidate with its cost |
 | [DEVELOPER.md](DEVELOPER.md) | How do I set up, test, lint and build this? |
 | [DOCKER.md](DOCKER.md) | How do I get all of that without installing any of it? The development container, what it carries, and the two things about it that are not obvious |
 | [CLAUDE.md](CLAUDE.md) | The behavioural guidelines applied to every change |

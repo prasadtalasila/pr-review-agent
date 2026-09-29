@@ -15,6 +15,14 @@ the FreeBSD jail as a model of confinement. It agrees with the survey about
 where the gap is and disagrees about how to close it, so §A below has been
 rewritten around its findings, and §F is new and comes entirely from it.
 
+A third input, the audit of 29 September,
+[superpowers/specs/2026-09-29-audit-and-pr-agent-comparison.md](superpowers/specs/2026-09-29-audit-and-pr-agent-comparison.md),
+re-read 1.7.0 against pr-agent 0.46.0, found two defects by running the
+code, listed which items below are still open once the issues closed as
+*not planned* are removed, and costed the transferable pr-agent features
+twice — rebuilt, and copied with attribution. §G summarises the costing;
+the audit itself is [issue #120](https://github.com/prasadtalasila/pr-review-agent/issues/120).
+
 Every candidate is judged against the two constraints in
 [CLAUDE.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/CLAUDE.md) §5 that a later fix cannot undo: **the agent spends a
 shared metered budget**, and **it posts under a real account**. A feature
@@ -439,6 +447,49 @@ the argument does not stop at the prompt.
 
 **Cost:** F1 and F3 are close to free. F2 introduces a refusal an operator
 has to be able to read in the logs, or a full disk becomes a silent stall.
+
+---
+
+## 🔁 G. Reusing pr-agent: dependency, copy, or rebuild
+
+pr-agent is MIT, so three routes exist for each of its transferable
+features. The audit of 29 September costed all three; the detail, with a
+per-feature table for each route, is in
+[superpowers/specs/2026-09-29-audit-and-pr-agent-comparison.md](superpowers/specs/2026-09-29-audit-and-pr-agent-comparison.md#4-cost-rebuild-versus-copy-with-attribution).
+
+**G1. Not as a runtime dependency.** pr-agent 0.46.0 requires Python 3.12
+where this project supports 3.10 to 3.14, and it brings around 45 pinned
+packages — `litellm`, `openai`, `anthropic`, `fastapi`, `boto3`, the
+Google Cloud and OpenTelemetry stacks — onto a runtime tree that is
+`httpx`, `PyYAML` and `click`. Its helpers read a dynaconf settings
+singleton at call time, so importing them means initialising its
+configuration system inside this daemon. Model SDKs arriving transitively
+also turn "nothing in this process can reach a model outside the governor"
+from something the import graph proves into a claim to re-check on every
+upgrade. If a runtime import is ever wanted, it is an optional extra, never
+a default dependency.
+
+**G2. Copy with attribution where the code is pure.** Three places pay:
+the patch-extension helpers in `algo/git_patch_processing.py` (about 200
+lines with three settings references to parameterise, and 400 lines of
+tests that port intact), the self-reflection scoring rubric, and the
+generated-code exclusion globs. Vendored under
+`src/pr_review_agent/_vendor/pr_agent/` with `LICENSE`, a `NOTICE` naming
+the upstream commit, and a provenance test — the shape `skill install`
+already uses for its own vendored copy.
+
+**G3. Rebuild everything else.** The remaining logic is written against a
+global settings object, a global logger, PyGithub and LiteLLM, so the
+portable part of any module is the small algorithm in the middle.
+Rebuilding the fourteen transferable features against this project's own
+types is about 34 working days; copying where possible is about 32.75 once
+the vendoring setup is paid for — a saving of roughly 4 %. The saving is
+small because the coupling is structural, not because the upstream code is
+poor.
+
+Whatever the route, two guarantees hold: nothing reachable from the
+reviewed tree or a comment may configure the reviewer (pr-agent's #2445 is
+the counter-example), and no feature widens what the publisher can write.
 
 ---
 
