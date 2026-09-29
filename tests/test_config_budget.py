@@ -8,6 +8,7 @@ set.
 from datetime import timedelta
 
 import pytest
+import yaml
 from config_harness import BUDGET, VALID
 
 from pr_review_agent.config import Config, ConfigError
@@ -32,10 +33,33 @@ def test_a_missing_token_limit_is_rejected(key):
         Config.from_mapping(data)
 
 
-@pytest.mark.parametrize("value", [0, -1, "88000", None, 1.5, True])
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("1_500_000", 1_500_000),
+        ("1500k", 1_500_000),
+        ("1.5m", 1_500_000),
+        ("1.5M", 1_500_000),
+        ("'1.5m'", 1_500_000),
+    ],
+)
+def test_a_token_limit_may_be_written_readably(text, expected):
+    # Through the YAML loader, because underscores are its doing, not ours.
+    config = Config.from_mapping(
+        {**VALID, "budget": {**BUDGET, **yaml.safe_load(f"weekly_tokens: {text}")}}
+    )
+    assert config.budget.weekly_tokens == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, -1, "88000", None, 1.5, True, "0k", "1.2345k", "88g", "k", "-5k", "1e6"],
+)
 def test_an_unusable_token_limit_is_rejected(value):
     # True is in this list on purpose: bool subclasses int, so without an
     # explicit check "weekly_tokens: true" would parse as a one-token ceiling.
+    # "1.2345k" is 1234.5 tokens: refused, because rounding a ceiling is
+    # choosing one.
     data = {**VALID, "budget": {**BUDGET, "weekly_tokens": value}}
     with pytest.raises(ConfigError, match="weekly_tokens"):
         Config.from_mapping(data)

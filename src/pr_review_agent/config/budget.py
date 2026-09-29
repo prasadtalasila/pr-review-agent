@@ -6,8 +6,10 @@ what an operator declared here and turns it into windows and a ladder.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from datetime import timedelta
+from decimal import Decimal
 
 from ._sections import ConfigError
 
@@ -84,16 +86,36 @@ DEFAULT_EXCLUDED_PATHS: tuple[str, ...] = (
 )
 
 
+#: A token count written with a thousand or million suffix: ``88k``,
+#: ``1.5m``. Only those two, because a count this file holds is between
+#: tens of thousands and a few million, and a suffix nobody expects is a
+#: misread ceiling.
+_SUFFIXED = re.compile(r"(\d+(?:\.\d+)?)([km])", re.IGNORECASE)
+_MULTIPLIER = {"k": 1_000, "m": 1_000_000}
+
+
 def _tokens(data: dict, key: str) -> int:
     """Read a required positive token count from the ``budget`` section.
+
+    An integer (``88000``, or ``88_000``, which YAML already reads as one),
+    or a string with a ``k``/``m`` suffix (``88k``, ``1.5m``). A suffixed
+    value must come out whole: ``1.2345k`` is refused rather than rounded,
+    because rounding a spending ceiling is choosing one.
 
     ``bool`` is excluded explicitly because it is a subclass of ``int``, so
     ``budget.weekly_tokens: true`` would otherwise validate as ``1`` -- a
     spending ceiling of one token, arrived at silently.
     """
     value = data.get(key)
+    if isinstance(value, str) and (match := _SUFFIXED.fullmatch(value.strip())):
+        number, suffix = match.groups()
+        scaled = Decimal(number) * _MULTIPLIER[suffix.lower()]
+        value = int(scaled) if scaled == scaled.to_integral_value() else None
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ConfigError(f"budget.{key} must be a positive number of tokens")
+        raise ConfigError(
+            f"budget.{key} must be a positive number of tokens, "
+            "such as 88000, 88_000 or 88k"
+        )
     return value
 
 

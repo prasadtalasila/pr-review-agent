@@ -118,9 +118,9 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 
 | Key | Type | Required | Meaning |
 | :-- | :-- | :-- | :-- |
-| `session_tokens` | integer | yes | Your estimate of the plan's rolling 5-hour allowance. |
-| `weekly_tokens` | integer | yes | Your estimate of the plan's rolling 7-day allowance. |
-| `max_run_tokens` | integer | yes | Reserved up front for one review, released down to actual usage when it settles. |
+| `session_tokens` | token count | yes | Your estimate of the plan's rolling 5-hour allowance. |
+| `weekly_tokens` | token count | yes | Your estimate of the plan's rolling 7-day allowance. |
+| `max_run_tokens` | token count | yes | Reserved up front for one review, released down to actual usage when it settles. |
 | `enabled` | boolean | no (default `true`) | `false` **stops reviewing**. It does not turn the budget checks off. |
 | `authority` | boolean | no (default `true`) | This file publishes the pool arithmetic every daemon sharing the store governs by. Exactly one config per store may have it. Settled at startup: a change needs a restart, not a `SIGHUP`. |
 | `comply` | boolean | no (default `true`) | Adopt what the authority published rather than this file's own limits. Consulted only when `authority` is `false`. Settled at startup, like `authority`. |
@@ -132,6 +132,11 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 | `min_review_interval_seconds` | integer ≥ 0 | no (default `900`) | How long one pull request waits between reviews. A trigger arriving sooner is **deferred**, not dropped. `0` disables it. |
 | `mention_min_review_interval_seconds` | integer ≥ 0 | no (default `300`) | The same, for a `@claude`: a person is waiting, so it is shorter. May not exceed `min_review_interval_seconds`. |
 | `max_reviews_per_pull_request` | integer ≥ 1 | no (default: **no cap**) | The most reviews one pull request may have in a trailing 24 hours. |
+
+**A token count** is a positive integer, written however reads best:
+`1500000`, `1_500_000`, `1500k` and `1.5m` are the same number. The suffixes
+are `k` and `m`, either case. A suffixed value must come out whole, so
+`1.2345k` is refused rather than rounded.
 
 **The two intervals ship enabled**, unlike the caps above them, because what
 they bound is not a guess: a pull request reviewed twice in a minute was
@@ -523,9 +528,9 @@ triggers:
   allowlist: []
 
 budget:
-  session_tokens: 88000
-  weekly_tokens: 1500000
-  max_run_tokens: 60000
+  session_tokens: 88k
+  weekly_tokens: 1.5m
+  max_run_tokens: 60k
 ```
 
 An earlier version of this page showed a minimal file with no `budget`

@@ -10,9 +10,9 @@
 # Override defaults with env vars, e.g. RC_DIR=/other/dir rc-daemon.sh start
 set -u
 
-RC_DIR="${RC_DIR:-/home/prasad/claude-daemon}"
-RC_NAME="${RC_NAME:-cg-dev}"
-RC_PREFIX="${RC_PREFIX:-cg-dev}"
+RC_DIR="${RC_DIR:-/workspace}"
+RC_NAME="${RC_NAME:-prr-rdev}"
+RC_PREFIX="${RC_PREFIX:-prr-dev}"
 RC_PERMISSION_MODE="${RC_PERMISSION_MODE:-bypassPermissions}"
 TMUX_SESSION="${TMUX_SESSION:-rc-daemon}"
 LOG="${RC_LOG:-$HOME/claude-daemon/rc-daemon.log}"
@@ -42,11 +42,39 @@ supervise() {
 
 running() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
 
+# claude remote-control needs two one-time interactive answers, both stored in
+# ~/.claude.json: workspace trust for RC_DIR (else it exits 1 immediately, and the
+# loop would retry forever) and the "Enable Remote Control?" consent (else it waits
+# at a y/n prompt inside the detached pane). Refuse to start until both are given.
+preflight() {
+  command -v python3 >/dev/null || return 0   # can't check; let claude report it
+  python3 - "$RC_DIR" <<'EOF'
+import json, os, sys
+try:
+    cfg = json.load(open(os.path.expanduser("~/.claude.json")))
+except (OSError, ValueError):
+    cfg = {}
+missing = []
+if not cfg.get("projects", {}).get(sys.argv[1], {}).get("hasTrustDialogAccepted"):
+    missing.append("workspace trust for " + sys.argv[1])
+if not cfg.get("remoteDialogSeen"):
+    missing.append("Remote Control consent")
+if missing:
+    print("not started; missing one-time setup: " + ", ".join(missing))
+    print("fix: cd %s && claude remote-control   (answer the prompts, Ctrl-C, then start again)" % sys.argv[1])
+    sys.exit(1)
+EOF
+}
+
 case "${1:-}" in
   start)
     if running; then echo "already running (tmux session '$TMUX_SESSION')"; exit 0; fi
+    preflight || exit 1
     tmux new-session -d -s "$TMUX_SESSION" \
       "RC_DIR='$RC_DIR' RC_NAME='$RC_NAME' RC_PREFIX='$RC_PREFIX' RC_PERMISSION_MODE='$RC_PERMISSION_MODE' RC_LOG='$LOG' '$SELF' _supervise"
+    # claude's own output (errors, prompts) only reaches the pane; mirror it to a
+    # side log so failures like "Workspace not trusted" are visible without attaching.
+    tmux pipe-pane -t "$TMUX_SESSION" -o "cat >> '${LOG%.log}.pane.log'"
     echo "started in tmux session '$TMUX_SESSION'; log: $LOG"
     ;;
   stop)

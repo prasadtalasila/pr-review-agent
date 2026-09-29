@@ -5,9 +5,9 @@ triggers:
   allowlist: []
 
 budget:
-  session_tokens: 88000
-  weekly_tokens: 1500000
-  max_run_tokens: 60000
+  session_tokens: 88k
+  weekly_tokens: 1.5m
+  max_run_tokens: 60k
 
 engine:
   model: claude-sonnet-5

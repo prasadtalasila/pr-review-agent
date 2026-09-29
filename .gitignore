@@ -30,3 +30,4 @@ docker/.claude/
 docker/docker-compose.override.yml
 # rc-daemon.sh's own log, written into its bind-mounted directory at runtime.
 scripts/claude-daemon/rc-daemon.log
+scripts/claude-daemon/rc-daemon.pane.log
