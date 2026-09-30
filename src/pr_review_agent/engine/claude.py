@@ -22,7 +22,9 @@ import json
 import logging
 
 from ..budget import Usage, UsageConfidence
+from ..description import Description
 from ..findings import Recommendation, Risk
+from ..triggers.models import Command
 from .cli import (
     CliEngine,
     EngineError,
@@ -30,6 +32,7 @@ from .cli import (
     EngineUnavailable,
     UsageLimited,
 )
+from .describe import DESCRIBE_SYSTEM_PROMPT, DESCRIPTION_SCHEMA, build_describe_prompt
 from .models import (
     Assessment,
     Capabilities,
@@ -142,19 +145,25 @@ class ClaudeCliEngine(CliEngine):
         return CAPABILITIES
 
     def argv(self, request: ReviewRequest) -> tuple[str, ...]:
-        """The command line for one review. Pinned element by element."""
-        del request  # The mode-aware argv belongs with the per-run ceilings.
+        """The command line for one review. Pinned element by element.
+
+        A description differs in exactly two elements, the schema and the
+        system prompt. The sandbox -- the tool set, ``--restricted``, the
+        settings isolation, the permission flags -- is the same argv.
+        """
+        describe = request.trigger.command is Command.DESCRIBE
+        schema = DESCRIPTION_SCHEMA if describe else FINDINGS_SCHEMA
         return (
             self.binary,
             "-p",
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(FINDINGS_SCHEMA, sort_keys=True),
+            json.dumps(schema, sort_keys=True),
             "--model",
             self.model,
             "--system-prompt",
-            SYSTEM_PROMPT,
+            DESCRIBE_SYSTEM_PROMPT if describe else SYSTEM_PROMPT,
             "--tools",
             TOOLS,
             "--restricted",
@@ -170,7 +179,13 @@ class ClaudeCliEngine(CliEngine):
         )
 
     async def prompt(self, request: ReviewRequest) -> str:
-        """The review prompt, with the standards read at the merge base."""
+        """The review prompt, with the standards read at the merge base.
+
+        A description reads no standards: they say how to review a change,
+        not what it does, and reading them costs a ``git show`` apiece.
+        """
+        if request.trigger.command is Command.DESCRIBE:
+            return build_describe_prompt(request)
         standards = await read_standards(request.checkout, self.standards_paths)
         return build_prompt(request, standards)
 
@@ -293,7 +308,7 @@ class ClaudeCliEngine(CliEngine):
             if field is not None
         )
 
-    def parse(self, stdout: str) -> ReviewResult:
+    def parse(self, stdout: str, command: Command = Command.REVIEW) -> ReviewResult:
         """Read the result envelope, strictly."""
         envelope = self._envelope(stdout)
         usage = self._usage(envelope)
@@ -311,6 +326,13 @@ class ClaudeCliEngine(CliEngine):
             )
             return ReviewResult(findings=(), usage=usage, outcome=outcome)
         structured = envelope["structured_output"]
+        if command is Command.DESCRIBE:
+            return ReviewResult(
+                findings=(),
+                usage=usage,
+                outcome=outcome,
+                description=self._description(structured),
+            )
         return ReviewResult(
             findings=self._findings(structured),
             usage=usage,
@@ -372,6 +394,16 @@ class ClaudeCliEngine(CliEngine):
         if isinstance(reported, dict) and reported:
             return next(iter(reported))
         return self.model
+
+    def _description(self, structured: dict) -> Description:
+        """Turn validated output into a description, refusing anything malformed."""
+        try:
+            return Description.from_json(structured)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EngineProtocolError(
+                f"{self.name} returned a description that does not fit the "
+                f"schema: {exc}"
+            ) from exc
 
     def _findings(self, structured: dict) -> tuple[Finding, ...]:
         """Turn validated output into findings, refusing anything malformed.

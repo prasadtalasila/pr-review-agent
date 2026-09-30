@@ -16,6 +16,7 @@ from typing import Protocol, runtime_checkable
 
 from .._compat import StrEnum
 from ..budget import Mode, Usage, UsageConfidence
+from ..description import Description
 
 # Re-exported, not defined here: ``Finding`` and ``Severity`` outlive any
 # one engine and now live in :mod:`pr_review_agent.findings`, which is
@@ -116,6 +117,10 @@ class ReviewResult:
     usage: Usage
     outcome: Outcome = Outcome.COMPLETED
     assessment: Assessment | None = None
+    #: What ``@claude describe`` produced, and ``None`` on every review. A
+    #: description carries no findings and no assessment, and like findings
+    #: it is only ever carried by a completed run.
+    description: Description | None = None
 
     def __post_init__(self) -> None:
         # An unknown cost and a number are mutually exclusive answers. A
@@ -136,6 +141,14 @@ class ReviewResult:
             raise ValueError(f"a {self.outcome} run cannot carry publishable findings")
         if self.assessment is not None and self.outcome is not Outcome.COMPLETED:
             raise ValueError(f"a {self.outcome} run cannot carry an assessment")
+        if self.description is not None and (
+            self.findings
+            or self.assessment is not None
+            or self.outcome is not Outcome.COMPLETED
+        ):
+            raise ValueError(
+                "a description is a completed run with no findings or assessment"
+            )
 
 
 @runtime_checkable

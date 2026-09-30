@@ -3,8 +3,8 @@
 Why this exists, the four constraints that ruled out every off-the-shelf
 option, and what was considered and turned down. The mechanics live
 elsewhere: [ARCHITECTURE.md](ARCHITECTURE.md) for the components,
-[TRIGGERS.md](TRIGGERS.md) and [POLLER.md](POLLER.md) for the two that are
-built, [BUDGET.md](BUDGET.md) for the spending rails.
+[TRIGGERS.md](TRIGGERS.md) and [POLLER.md](POLLER.md) for how work arrives,
+[BUDGET.md](BUDGET.md) for the spending rails.
 
 ## 🎯 The problem
 
@@ -60,7 +60,7 @@ spend.
 | **RabbitMQ as the queue** | Reasonable if already operational, but the budget reservation must be atomic with the dequeue — trivial in one database, awkward across a broker plus a separate store. |
 | **Celery** | The same rejection as RabbitMQ, plus a framework on top: Celery dequeues in a broker while the ledger lives in SQLite, so no transaction spans both. See [Why not Celery](#-why-not-celery). |
 | **Engine code inside the reviewed repository at `review-agents/`** | The reviewer's CI would run on every change to that repository unless paths were filtered, its Python dependency tree would join that repository's supply chain, and reuse for a second repository would need vendoring or a monorepo-subdirectory dependency. |
-| **API-key billing instead of the subscription** | Not rejected — see [Billing mode](#-billing-mode-unresolved) below. A live option that requires no redesign. |
+| **API-key billing instead of the subscription** | Not rejected — see [Billing mode](#-billing-mode) below. A live option that requires no redesign. |
 | **Human review only (status quo)** | No new infrastructure or cost, but leaves the bottleneck unaddressed. |
 
 ## 🌿 Why not Celery
@@ -199,8 +199,8 @@ Max subscription. Anthropic's guidance is explicit that running the CLI from
 cron or CI for one's own work is fine, and equally explicit that 24/7 bots and
 business use belong on API keys. This sits between the two.
 
-The design therefore keeps the escape hatch as configuration:
-`billing.mode: subscription | api_key`. `api_key` mode uses the identical
+The design therefore keeps the escape hatch open as a planned configuration
+key, `billing.mode: subscription | api_key`, which does not exist yet. `api_key` mode uses the identical
 governor with USD-denominated windows, removes the ambiguity entirely, gives
 authoritative per-run cost, and eliminates the plan-lockout failure mode, at a
 usage-based cost that is modest for this volume. Subscription mode is retained
@@ -275,7 +275,7 @@ deletion guarantee.
 1. **Outbound HTTPS from the deployment host** to `api.github.com`,
    `github.com`, `codeload.github.com` and `api.anthropic.com`. Run
    `pr-review-agent host check` on the host
-   ([DEVELOPER.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/DEVELOPER.md#-bootstrap-checks)); it now probes the
+   ([DEVELOPER.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/DEVELOPER.md#-host-checks)); it now probes the
    git fetch route as well as the API, because `github.com` and
    `api.github.com` are different hosts and, on an allowlist-based firewall,
    different rules. This should be confirmed before implementation

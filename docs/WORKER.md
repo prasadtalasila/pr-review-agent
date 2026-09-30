@@ -27,7 +27,7 @@ claim(admit=governor.admit)        the lease and the reservation, one commit
   → publisher.acknowledge(...)     the 👀, before anything slow is attempted
   → GET /pulls/{n}                 head_sha for a mention, and the size counts
   → facts.is_open?                 merged or closed: abandon before the checkout
-  → runs.history(repo, pr)         what the last round found, and its numbers
+  → runs.history(repo, pr)         what the last round found (a describe: none)
   → workspace.checkout(...)        the tree, the merge-base diff, exclusions
   → governor.preflight(...)        the last free refusal -- releases its own hold
   → publisher.notify(...)          on a refusal only: says so on the pull request
@@ -56,7 +56,8 @@ post GitHub will never accept was repeated on every claim forever.
 ### The fold
 
 A review that recorded findings closes every other trigger for that pull
-request that was already waiting when it started and named no other commit:
+request that was already waiting when it started, named no other commit and
+asked for the same thing — `review` or `describe`:
 three mentions on one pull request asked one question, and the agent posts
 one comment. Only a run that recorded something folds anything — a run that
 recorded nothing has no answer to give them. The rule, and why a trigger
@@ -88,7 +89,7 @@ row there: settle at zero with `stop_reason = closed`, `abandon`, return.
 
 The gap it closes is a timing one. A trigger is enqueued while the pull
 request is open; it waits its turn behind other work, or behind the
-[pacer](BUDGET.md#-the-per-pull-request-pacer); and by the time a worker
+[pacer](BUDGET.md#-the-pacer-one-pull-requests-rate); and by the time a worker
 claims it the pull request has been merged. Nothing between the enqueue and
 the claim asks GitHub anything, so without this check the agent clones the
 tree, runs the engine and posts a review on a pull request nobody will read —
@@ -156,7 +157,8 @@ measures and what the engine is shown.
 The same number reaches `settle` as `reviewed_lines`, which is what the rate
 is fitted against — so the threshold the next run is measured by comes from
 what the runs before it actually cost. Only a **completed** review reports
-it; see [BUDGET.md](BUDGET.md#-the-pre-flight-token-estimate) for why the
+it — a description never does, and an incremental round is set aside by
+`reviewed_since`; see [BUDGET.md](BUDGET.md#-the-pre-flight-token-estimate) for why the
 others say nothing.
 
 `settle` runs **before** the queue verb, and both are guarded on the owner.

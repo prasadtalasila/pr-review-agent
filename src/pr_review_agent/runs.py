@@ -38,6 +38,13 @@ that looked and found nothing -- the same distinction ``Outcome`` keeps
 between ``TRUNCATED`` and a clean empty result, and ``UsageConfidence``
 keeps between ``unavailable`` and zero. A purged run is never offered for
 publication: there is nothing left to post.
+
+**A description is a run, and not a round.** ``@claude describe`` is paid
+for like a review and can fail to post like one, so it is recorded here and
+retried the same way. It is not a review round: it carries no findings, so
+the cross-round reads -- what the last round found, which round this is,
+where an incremental diff starts -- skip every row whose ``description`` is
+set.
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from ._time import parse, stamp
+from .description import Description
 from .engine import Finding, Outcome, ReviewResult, Severity
 from .findings import Assessment, Recommendation, Risk
 from .store import SqliteStore
@@ -58,12 +66,13 @@ logger = logging.getLogger(__name__)
 _RECORD = """
 INSERT INTO runs
     (dedupe_key, repo, pr_number, head_sha, outcome, findings, omitted,
-     assessment, recorded_at)
+     assessment, recorded_at, description)
 VALUES (:key, :repo, :pr, :sha, :outcome, :findings, :omitted, :assessment,
-        :now)
+        :now, :description)
 ON CONFLICT(dedupe_key) DO UPDATE SET
     head_sha = :sha, outcome = :outcome, findings = :findings,
-    omitted = :omitted, assessment = :assessment, recorded_at = :now
+    omitted = :omitted, assessment = :assessment, recorded_at = :now,
+    description = :description
 """
 
 # One named run, if it is still waiting to be posted. `content_purged_at IS
@@ -71,7 +80,7 @@ ON CONFLICT(dedupe_key) DO UPDATE SET
 # post an empty review over a real one.
 _UNPUBLISHED = """
 SELECT dedupe_key, repo, pr_number, head_sha, outcome, findings, comment_id,
-       omitted, assessment
+       omitted, assessment, description
 FROM runs
 WHERE dedupe_key = :key
   AND published_at IS NULL AND content_purged_at IS NULL
@@ -103,10 +112,12 @@ SELECT publish_failed_at FROM runs WHERE dedupe_key = :key
 # `findings` is emptied rather than set NULL: the column is NOT NULL, and an
 # empty list is what a reader of a purged row should see. `omitted` and
 # `assessment` go with it: their paths are the contributor's tree as much as
-# the findings are.
+# the findings are. A description is emptied to '{}', not NULL, which would
+# turn it into a review.
 _PURGE = """
 UPDATE runs SET findings = '[]', omitted = '[]', assessment = NULL,
-                content_purged_at = :now
+                content_purged_at = :now,
+    description = CASE WHEN description IS NULL THEN NULL ELSE '{}' END
 WHERE repo = :repo AND pr_number = :pr AND content_purged_at IS NULL
 """
 
@@ -120,6 +131,7 @@ _HISTORY = """
 SELECT findings, head_sha, recorded_at FROM runs
 WHERE repo = :repo AND pr_number = :pr
   AND outcome = 'completed' AND content_purged_at IS NULL
+  AND description IS NULL
 ORDER BY recorded_at DESC, rowid DESC
 """
 
@@ -128,6 +140,7 @@ _ROUNDS = """
 SELECT dedupe_key FROM runs
 WHERE repo = :repo AND pr_number = :pr
   AND outcome = 'completed' AND content_purged_at IS NULL
+  AND description IS NULL
 ORDER BY recorded_at, rowid
 """
 
@@ -137,7 +150,9 @@ class RecordedRun:
     """One completed review, as it was stored.
 
     ``omitted`` is ``Checkout.omitted`` for the diff the review was shown.
-    ``assessment`` is ``None`` only on a row written before it existed.
+    ``assessment`` is ``None`` only on a row written before it existed, and
+    on a description. ``description`` is set on a ``@claude describe`` run,
+    and only there.
     """
 
     # One field per stored column the publisher reads back; a nested record
@@ -152,6 +167,7 @@ class RecordedRun:
     comment_id: int | None
     omitted: tuple[tuple[str, int], ...] = ()
     assessment: Assessment | None = None
+    description: Description | None = None
 
 
 #: Prefixed so a publication item can never collide with the review whose
@@ -257,6 +273,7 @@ class RunStore:
                     "omitted": json.dumps(omitted),
                     "assessment": _dump_assessment(result.assessment),
                     "now": stamp(now, "run timestamp"),
+                    "description": _dump_description(result.description),
                 },
             )
         return RecordedRun(
@@ -269,6 +286,7 @@ class RunStore:
             comment_id=None,
             omitted=omitted,
             assessment=result.assessment,
+            description=result.description,
         )
 
     def unpublished(self, dedupe_key: str) -> RecordedRun | None:
@@ -430,6 +448,9 @@ def _run(row: tuple) -> RecordedRun:
         comment_id=row[6],
         omitted=tuple((path, files) for path, files in json.loads(row[7])),
         assessment=_load_assessment(row[8]),
+        description=(
+            None if row[9] is None else Description.from_json(json.loads(row[9]))
+        ),
     )
 
 
@@ -458,3 +479,8 @@ def _load_assessment(raw: str | None) -> Assessment | None:
         recommendation=Recommendation(item["recommendation"]),
         priority_files=tuple(item["priority_files"]),
     )
+
+
+def _dump_description(description: Description | None) -> str | None:
+    """A description as stored JSON; ``None`` is what marks a review."""
+    return None if description is None else json.dumps(description.to_json())

@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..budget import Usage, UsageConfidence
+from ..description import Description
+from ..triggers.models import Command
 from .models import (
     Assessment,
     Capabilities,
@@ -52,6 +54,8 @@ class FakeEngine:
     name: str = "fake"
     outcome: Outcome = Outcome.COMPLETED
     assessment: Assessment | None = None
+    #: Returned instead of ``findings`` when a request asks for a description.
+    description: Description | None = None
     #: Every request handed to this engine, in order, so a test can assert
     #: what the worker passed rather than that it passed something.
     requests: list[ReviewRequest] = field(default_factory=list)
@@ -59,6 +63,13 @@ class FakeEngine:
     async def review(self, request: ReviewRequest) -> ReviewResult:
         """Record the request and return the canned result."""
         self.requests.append(request)
+        if request.trigger.command is Command.DESCRIBE:
+            return ReviewResult(
+                findings=(),
+                usage=self.usage,
+                outcome=self.outcome,
+                description=self.description,
+            )
         return ReviewResult(
             findings=self.findings,
             usage=self.usage,

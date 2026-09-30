@@ -87,7 +87,7 @@ from .runs import (
     publication_of,
     published_run_key,
 )
-from .triggers.models import PayloadError, TriggerKind
+from .triggers.models import Command, PayloadError, TriggerKind
 from .workspace import (
     PullRequestFacts,
     PullRequestTooLarge,
@@ -541,8 +541,11 @@ class ReviewWorker:
         config = self.governor.config
         # Read before the engine runs, so the reviewer can be shown what the
         # last round found. Costs one query on a table the worker already
-        # writes; spends nothing and reaches no engine.
-        history = self.runs.history(claim.trigger.repo, claim.trigger.pr_number)
+        # writes; spends nothing and reaches no engine. A description is of
+        # the whole change, so it is shown no history and never narrowed.
+        history = PullRequestHistory(prior=(), high_water=0)
+        if claim.trigger.command is Command.REVIEW:
+            history = self.runs.history(claim.trigger.repo, claim.trigger.pr_number)
         async with self.workspace.checkout(
             facts,
             max_changed_files=config.max_changed_files,
@@ -637,6 +640,11 @@ class ReviewWorker:
             reason=_REASON_FOR[result.outcome],
             finish=_finish_for(result.outcome),
         )
+        # A description is paid for and posted like a review, and is not a
+        # sample of what reviewing this many lines costs: its output is a
+        # fraction of a review's, and fitting it would pull the estimate
+        # below a review's price -- the direction that under-refuses.
+        sample = claim.trigger.command is Command.REVIEW
         if result.outcome is Outcome.COMPLETED:
             self.completed += 1
             # Numbered here rather than at render time so the numbers are
@@ -663,7 +671,7 @@ class ReviewWorker:
                 # a whole one over the same lines, and a usage-limited run
                 # settles at *exact* zero -- all three fit a rate lower than
                 # the truth, which is the direction that under-refuses.
-                reviewed_lines=lines,
+                reviewed_lines=lines if sample else None,
                 reviewed_since=since,
             )
         _log_reviewed(claim, result, end.usage)

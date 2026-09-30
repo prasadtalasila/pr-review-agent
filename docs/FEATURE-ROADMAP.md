@@ -1,9 +1,11 @@
 # Candidate features, from five neighbouring projects and a hardening review
 
 A survey of what five other pull-request and code-security projects do, and
-which of it is worth having here. Nothing in this document is implemented.
-It exists so that the ideas are recorded with their costs attached, rather
-than rediscovered one at a time.
+which of it is worth having here. It exists so that the ideas are recorded
+with their costs attached, rather than rediscovered one at a time. Some have
+since landed and some have been decided against; [the table
+below](#-where-each-item-stands) says which, and each item's own entry
+carries the same marker.
 
 Sections A and F are now written from a second input: the hardening review of
 19 September,
@@ -48,6 +50,56 @@ demonstration web app. Both still contribute one idea each, recorded below.
 
 ---
 
+## 📊 Where each item stands
+
+As of 1.12.0. **Implemented** items say the release they landed in, **not
+planned** items the issue or decision that closed them, and the order is the
+position in [Suggested order](#-suggested-order), which lists only what is
+still planned. The last rows are features from the
+[29 September audit](https://github.com/prasadtalasila/pr-review-agent/issues/120)
+that have no letter in the sections below.
+
+| Item | Section | What it is | State | Order | Note |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| A1 | Confinement | Run the engine child under a dedicated unprivileged uid | not planned | — | #63 |
+| A2 | Confinement | Wrap the child in an OS sandbox (`bwrap`) | not planned | — | #63 |
+| A3 | Confinement | Refuse at preflight when a containment flag is gone | implemented | — | 1.1.4 |
+| A4 | Confinement | Default-deny egress for the engine child | not planned | — | #63 |
+| A5 | Confinement | Resolve `git` and `claude` to absolute, pinned paths | implemented | — | 1.1.4 |
+| A6 | Confinement | Neutralise the outbound comment, and canary it | implemented | — | 1.1.3 |
+| A7 | Confinement | Give `Capabilities.read_only_sandbox` a consumer | not planned | — | #84; needs A1/A2 |
+| A8 | Confinement | Treat a sandbox denial as a finding | not planned | — | Consumes A1/A2 (#63) |
+| A9 | Confinement | Extend `host check` to the sandbox | not planned | — | Consumes A1/A2 (#63) |
+| A10 | Confinement | One `confinement.py` holding the reviewer's whole profile | planned | 4 | Today it spans `BASE_ENVIRONMENT`, `env_prefixes`, `TOOLS` and the argv tuple |
+| B1 | Deterministic gate | Opt-in scanners on the worktree before the engine | planned | 1 | Zero tokens; an absent or crashed scanner must not fail the review |
+| B2 | Deterministic gate | Scanner-only rung below `EXHAUSTED` | planned | 1 | Needs B1; distinct from the 60 % rung (#21) |
+| B3 | Deterministic gate | Record where a finding came from | planned | 5 | |
+| B4 | Deterministic gate | Baseline scanner findings at the merge base | planned | 5 | `Checkout.merge_base` exists |
+| B5 | Deterministic gate | Detect a finding silenced rather than fixed | planned | 5 | `ReviewRequest.prior` and stable numbering carry the identity |
+| B6 | Deterministic gate | SARIF output and CWE mapping | planned | 7 | Open question: needs `security-events: write` |
+| C1 | Vocabulary | Verbs after the mention: `@claude describe` and `@claude review` | implemented | — | 1.12.0 (#128); see [DESCRIBE.md](DESCRIBE.md) |
+| C1 | Vocabulary | `@claude ask …`, with its own cheaper ceiling | planned | 3 | The verb parser exists; a fixed vocabulary, never `key=value` |
+| C2 | Vocabulary | Incremental review since the last reviewed head | implemented | — | 1.9.0 (#124) |
+| C3 | Vocabulary | Committable suggestion blocks | not planned | — | Dropped with `improve` from #128: a model-written patch one click from a maintainer |
+| C4 | Vocabulary | Inline line-anchored comments | planned | 6 | Costs the "cannot approve" absent-capability guarantee |
+| C5 | Vocabulary | Per-repository review configuration | not planned | — | #125: nothing is read from the reviewed repository beyond `standards_paths` |
+| D1 | Dimensions | Optional per-dimension passes, whole set reserved up front | planned | 6 | Must not triple default spend |
+| D2 | Dimensions | Truncate an oversized pull request and say so | planned | 6 | Belongs in `exclusions.pathspec` |
+| E1 | Transparency | AI-disclosure line: engine, model, run id | planned | 2 | Formatting over data already recorded |
+| E2 | Transparency | Append-only JSONL audit log per run | planned | 2 | Independent of the retention sweep (#28, not planned) |
+| F1 | Ceilings | cgroup ceilings over git and engine children | planned | 2 | Configuration, not code |
+| F2 | Ceilings | Free-space floor in `Workspace.sweep` | planned | 4 | |
+| F3 | Ceilings | `runs/` mode, daemon umask, mirror garbage collection | planned | 2 | The mode half is covered by `cache_dir`'s mode today |
+| F4 | Ceilings | Log hygiene for attacker-influenced stderr and stdout | planned | 4 | |
+| G1 | Reuse | pr-agent as a runtime dependency | not planned | — | Decided in §G: an optional extra at most |
+| G2 | Reuse | Copy pr-agent's patch-extension helpers with attribution | planned | — | Unordered; serves D2 and the diff section of the prompt |
+| Q2 | Audit | Self-reflection pass that scores findings and drops weak ones | not planned | — | #127 |
+| Q4 | Audit | Coverage footer: say what the exclusions withheld | implemented | — | 1.10.0 (#123) |
+| Q5 | Audit | pr-agent's generated-code globs as built-in exclusions | implemented | — | 1.8.0 (#122); the label, branch and title ignore rules are not built |
+| Q9 | Audit | Effort, risk and merge-recommendation assessment | implemented | — | 1.11.0 (#126), mandatory on every review |
+
+---
+
 ## 🔒 A. Confining the engine for real
 
 Start from what the code already does, because it is more than the docs
@@ -87,7 +139,9 @@ none`, every one of them enforced *inside* an upgradeable vendor binary.
 That the argv is asserted by a test is not the same as the argv still
 meaning what it meant, which is the gap the items below close.
 
-**A1. Run the engine child under a dedicated unprivileged uid.**
+**A1. Run the engine child under a dedicated unprivileged uid.** *(not
+planned — [#63](https://github.com/prasadtalasila/pr-review-agent/issues/63),
+which keeps the design notes; A2, A4 and A7–A9 went with it.)*
 The highest value per line on this list, and it needs no container. Give the
 reviewer its own user whose `$HOME` holds the model credential and nothing
 else; `config.yaml`, the store, the token `EnvironmentFile` and the daemon's
@@ -100,7 +154,8 @@ pinned. It pairs with a systemd unit carrying `NoNewPrivileges=yes`,
 `InaccessiblePaths=` over the config and store — and there is no deployment
 or hardening document in `docs/` at all today, so this is where one starts.
 
-**A2. Wrap the child in an OS sandbox — `bwrap` directly.**
+**A2. Wrap the child in an OS sandbox — `bwrap` directly.** *(not
+planned — #63.)*
 On top of A1, not instead of it. `anthropics/sandbox-runtime` is the
 vendor's own answer and wraps bubblewrap with JSON allowlists for paths and
 domains, but it is a declared beta with an unstable config format and it
@@ -126,7 +181,7 @@ flag in `argv()` appears in it. Pure, offline, spends nothing, and testable
 against a captured fixture: the trigger-suite standard from
 [CLAUDE.md](https://github.com/prasadtalasila/pr-review-agent/blob/main/CLAUDE.md) §5.
 
-**A4. Default-deny egress for the engine child.**
+**A4. Default-deny egress for the engine child.** *(not planned — #63.)*
 The child needs `api.anthropic.com`, plus `claude.ai` and
 `platform.claude.com` if the credential refreshes over the network. It needs
 nothing else. With A1 in place that is one nftables rule keyed on the
@@ -161,21 +216,24 @@ the model credential file and refuse to post on a hit. That canary cannot
 catch an encoded secret, but it catches the straightforward one and turns a
 silent leak into an alert.
 
-**A7. Give `Capabilities.read_only_sandbox` a consumer.**
+**A7. Give `Capabilities.read_only_sandbox` a consumer.** *(not planned —
+[#84](https://github.com/prasadtalasila/pr-review-agent/issues/84).)*
 [`engine/models.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/engine/models.py) says plainly that
 the field has none, and `claude.py`'s comment says it is "a claim about the
 argv". Once A1 and A2 exist the field can mean the sandbox, an adapter that
 cannot be wrapped declares `False`, and the worker can decline to run an
 unconfinable engine over an untrusted tree.
 
-**A8. Treat a sandbox denial as a finding, not a failure.**
+**A8. Treat a sandbox denial as a finding, not a failure.** *(not planned:
+there is no sandbox to deny anything while #63 is closed.)*
 A run that tried to read `$HOME/.ssh` is the strongest available evidence
 that the diff under review contained an injection. It deserves a
 `StopReason` of its own in [`budget.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/budget.py) —
 alongside `TIMEOUT` and `ENGINE_ERROR`, which exist for the same reason —
 and a line in the posted comment.
 
-**A9. Extend `host check` to the sandbox.**
+**A9. Extend `host check` to the sandbox.** *(not planned, for the same
+reason as A8.)*
 `setpriv`, `bubblewrap` and `ripgrep` are the Linux prerequisites. The
 bootstrap checks already exist; an operator should learn they are missing
 there rather than from the first review that fails.
@@ -242,9 +300,8 @@ reason the engine does.
 means nothing runs. With B1 in place there is something better to do than
 nothing: post the deterministic findings, say the model pass was skipped for
 budget, and spend zero. `ReviewRequest.mode` already reaches the engine, and
-`ClaudeCliEngine.argv` currently discards it with `del request` and a comment
-saying the mode-aware argv is still to come — so the seam for this exists and
-is unused.
+`ClaudeCliEngine.argv` reads only the trigger's command off the request and
+still ignores the mode — so the seam for this exists and is unused.
 
 **B3. Record where a finding came from.**
 `Severity` and the publisher's `SECTIONS` already tier the report by
@@ -290,12 +347,15 @@ absent or that crashes must not fail the review.
 ## 💬 C. Vocabulary, from pr-agent
 
 `pr-agent` exposes distinct commands — `/describe`, `/review`, `/improve`,
-`/ask` — rather than one monolithic review. Here,
-[`triggers/mention.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/triggers/mention.py) answers a
-single boolean question, `has_mention`, and every trigger costs a full
-review.
+`/ask` — rather than one monolithic review. Since 1.12.0 this project has
+two of them: [`triggers/mention.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/triggers/mention.py)
+reads the word after the handle, and `@claude describe` asks for a pull
+request description where anything else is a review
+([DESCRIBE.md](DESCRIBE.md)). Both still cost a full run.
 
-**C1. A verb after the mention.**
+**C1. A verb after the mention.** *(the verbs `describe` and `review`
+landed in 1.12.0 — [#128](https://github.com/prasadtalasila/pr-review-agent/issues/128);
+`ask` is still planned.)*
 `@claude ask <question>` needs a fraction of a review's tokens; a bare
 `@claude` keeps today's behaviour. This is the cheapest available way to cut
 average spend per trigger, because most follow-up comments on a review are
@@ -304,6 +364,10 @@ questions rather than requests to review again. The prose-stripping in
 fences, indented code, inline spans and blockquotes — but the return type has
 to become a verb rather than a bool, the classifier needs a reason code per
 verb, and each verb needs its own pre-flight estimate and its own bound.
+1.12.0 built the first half — a fixed vocabulary read by `mention_verb`, a
+`command` on every trigger, and a fold that answers only its own kind — and
+priced `describe` as a review, which errs high. `ask` is the verb that needs
+a cheaper ceiling of its own, and it is still to come.
 This touches the trigger layer, which is the part of the system where a
 mistake means a stranger getting a review, so it wants more care than its
 size suggests.
@@ -321,7 +385,9 @@ hold: the exclusion `pathspec` applies to the narrower range unchanged, and
 `ReviewRequest.prior` is what keeps an incremental round able to say "still"
 truthfully about a finding whose lines it no longer sees.
 
-**C3. Committable suggestions.**
+**C3. Committable suggestions.** *(not planned: dropped with `improve`
+when issue #128 was narrowed to `describe` and `review`, for the caveat
+below.)*
 GitHub renders a ` ```suggestion ` block as a one-click commit. It needs no
 new endpoint and no new permission — it is a fenced block inside the comment
 body the publisher already posts. The caveat is real: it puts a
@@ -340,7 +406,10 @@ source contains no such token. Adding the reviews endpoint replaces that
 absent capability with a guarded field. That is a genuine weakening, and it
 should be taken knowingly, with `event: COMMENT` pinned by its own test.
 
-**C5. Per-repository review configuration.**
+**C5. Per-repository review configuration.** *(not planned —
+[#125](https://github.com/prasadtalasila/pr-review-agent/issues/125): the
+agent brings its own standards and skills, and reads nothing from the
+reviewed repository beyond `engine.standards_paths`.)*
 `pr-agent` drives review categories from a checked-in config.
 [`engine/standards.py`](https://github.com/prasadtalasila/pr-review-agent/blob/main/src/pr_review_agent/engine/standards.py) already
 reads instructions from the merge base — deliberately not from the head, so
@@ -400,8 +469,10 @@ change over data that exists. The EU AI Act's transparency obligation applies
 to this project's likely deployment.
 
 **E2. An append-only audit log that survives the retention sweep.**
-The planned sweep purges review content from `runs` on merge, and
-`RunStore.purge_content` is already there waiting for a caller. A JSONL line
+A retention sweep would purge review content from `runs` on merge, and
+`RunStore.purge_content` is already there waiting for a caller; the sweep
+itself is [#28](https://github.com/prasadtalasila/pr-review-agent/issues/28),
+closed as not planned, and the log is worth having without it. A JSONL line
 per run — timestamp, actor id, trigger reason, engine, model, tokens,
 `stop_reason`, outcome — is small, answers "what did the agent do in March"
 after the content is gone, and is greppable by an auditor who will not open
@@ -475,7 +546,9 @@ a default dependency.
 the patch-extension helpers in `algo/git_patch_processing.py` (about 200
 lines with three settings references to parameterise, and 400 lines of
 tests that port intact), the self-reflection scoring rubric, and the
-generated-code exclusion globs. Vendored under
+generated-code exclusion globs. The globs landed in 1.8.0 as data in
+`config/excluded_paths.py`; the self-reflection pass was decided against
+in #127; the patch helpers are still open. Vendored under
 `src/pr_review_agent/_vendor/pr_agent/` with `LICENSE`, a `NOTICE` naming
 the upstream commit, and a provenance test — the shape `skill install`
 already uses for its own vendored copy.
@@ -497,38 +570,25 @@ the counter-example), and no feature widens what the publisher can write.
 
 ## 🧭 Suggested order
 
-Ordered by value per unit of diff, not by section:
+Ordered by value per unit of diff, not by section. Only what is still
+planned is listed; what has landed or been decided against is in
+[the table at the top](#-where-each-item-stands).
 
-1. ~~**A3, the flag check, and A5, absolute binaries.**~~ *Landed in 1.1.4.*
-   Both were small, pure, offline and spent nothing, and each was a live
-   defect rather than a missing layer: an upgraded CLI could silently stop
-   being restricted, and a shadowed `PATH` entry defeated everything else
-   here.
-2. **A1, the reviewer's own uid.** The largest reduction in what a
-   read-and-quote chain can reach, bought with a `setpriv` prefix and a
-   systemd unit rather than a design.
-3. ~~**A6, the outbound comment.**~~ *Landed in 1.1.3:* escaping, a length
-   cap and the secret canary — pure render-layer functions, and the canary is
-   the only thing standing between a leak and a public comment.
-4. ~~**C2, incremental review.**~~ *Landed in 1.9.0,* including after a
-   force-push or a rebase.
-5. **A2 and A4, the sandbox and default-deny egress.** Depth on top of A1,
-   and the point where the operator's answers about tenancy and `npm`
-   decide the route.
-6. **B1 + B2, scanners and the scanner-only rung.** Turns budget exhaustion
+1. **B1 + B2, scanners and the scanner-only rung.** Turns budget exhaustion
    from silence into a cheap answer, and `Mode` already reaches the adapter
    unused.
-7. **E1, the disclosure line, and F1/F3, the cheap ceilings.** Nearly free.
-8. **C1, verbs after the mention.** Cuts average cost per trigger, but lands
-   in the trigger layer, so it wants the most care per line on this list.
-9. **A7–A10, F2, F4.** The consumers, the reason code, the host check, the
-   single confinement file and the remaining residue. A10 is worth more the
-   later it is left undone, because it is what stops A1–A4 from scattering.
-10. **B3–B5, provenance, baselining and silence detection.** Quality of the
-    report rather than new capability.
-11. **C3, C4, D1, D2.** Each is worth doing and none is urgent. C4 costs a
-    guarantee; the other three do not.
-12. **B6, SARIF.** Only after a decision about widening the token's scope.
+2. **E1, the disclosure line, E2, the audit log, and F1/F3, the cheap
+   ceilings.** Nearly free.
+3. **C1's `ask`.** Cuts average cost per trigger. The verb parser landed in
+   1.12.0, so what is left is the cheaper ceiling and its bound.
+4. **A10, F2, F4.** The single confinement file and the remaining residue.
+   A10 is what keeps the reviewer's profile legible as anything is added to
+   it.
+5. **B3–B5, provenance, baselining and silence detection.** Quality of the
+   report rather than new capability.
+6. **C4, D1, D2.** Each is worth doing and none is urgent. C4 costs a
+   guarantee; the other two do not.
+7. **B6, SARIF.** Only after a decision about widening the token's scope.
 
 Nothing above should land without the bound it needs: a feature that widens
 what triggers a review, or that raises what one can spend, says so in its

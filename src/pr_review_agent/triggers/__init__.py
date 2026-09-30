@@ -2,9 +2,10 @@
 
 from .allowlist import Allowlist, AllowlistConfigError
 from .classifier import Classifier
-from .mention import has_mention, neutralise, strip_non_prose
+from .mention import has_mention, mention_verb, neutralise, strip_non_prose
 from .models import (
     Actor,
+    Command,
     Comment,
     CommentSource,
     Decision,
@@ -19,6 +20,7 @@ __all__ = [
     "Allowlist",
     "AllowlistConfigError",
     "Classifier",
+    "Command",
     "Comment",
     "CommentSource",
     "Decision",
@@ -27,6 +29,7 @@ __all__ = [
     "Trigger",
     "TriggerKind",
     "has_mention",
+    "mention_verb",
     "neutralise",
     "strip_non_prose",
 ]

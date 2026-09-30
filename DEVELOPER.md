@@ -13,8 +13,6 @@ made, and [AGENTS.md](AGENTS.md) the coding conventions.
 ```text
 src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
-├── _subprocess.py     # run a child under a clock; terminate, then kill
-├── _time.py           # the aware-UTC clock and the SQLite stamp format
 ├── _startup.py        # token and config, each loadable on its own
 ├── _subprocess.py     # a child process under a clock: terminate, then kill
 ├── _time.py           # the aware-UTC clock and the SQLite stamp format
@@ -30,6 +28,7 @@ src/pr_review_agent/
 │   ├── excluded_paths.py  # the built-in exclusions, generator globs from pr-agent
 │   └── runtime.py     # store, workspace, worker, publish, logging
 ├── daemon.py          # the poll-classify-enqueue loop
+├── description.py     # what @claude describe produces, laid out as a comment
 ├── logs.py            # one level and one format, resolved from three layers
 ├── findings.py        # Finding and Severity: the type every layer handles
 ├── numbering.py       # finding numbers that survive a re-review
@@ -49,12 +48,13 @@ src/pr_review_agent/
 │   ├── cmd_daemon.py  # daemon start
 │   ├── cmd_host.py    # host check
 │   ├── cmd_service.py # service install — place the systemd user unit
-│   └── cmd_skill.py   # skill install — place the review skill for a person
+│   └── cmd_skill.py   # skill install — place the review and description skills
 ├── engine/
 │   ├── models.py      # ReviewEngine protocol, Capabilities, request/result
 │   ├── cli.py         # the subprocess boundary every CLI adapter shares
 │   ├── claude.py      # the `claude` CLI adapter: the first engine that spends
 │   ├── prompt.py      # what the reviewer is told, and how untrusted text is fenced
+│   ├── describe.py    # what the engine is told for @claude describe
 │   ├── standards.py   # review standards, read from the base ref
 │   └── fake.py        # an engine that spends nothing, for tests
 ├── poller/
@@ -66,11 +66,15 @@ src/pr_review_agent/
 │   ├── pulls.py       # one pull request → PullRequestFacts
 │   └── poller.py      # one sweep across all three endpoints
 ├── skills/
-│   ├── __init__.py    # the packaged review skill: one source, two deliveries
-│   └── review-report/ # SKILL.md, references, assets, and three scripts:
-│       ├── collect_context.py # header facts out of git
-│       ├── render_report.py   # findings.json → a report, via report.render
-│       └── check_report.py    # a hand-written report against the contract
+│   ├── __init__.py    # the packaged skills: one source, two deliveries each
+│   ├── review-report/ # SKILL.md, references, assets, and three scripts:
+│   │   ├── collect_context.py # header facts out of git
+│   │   ├── render_report.py   # findings.json → a report, via report.render
+│   │   └── check_report.py    # a hand-written report against the contract
+│   └── pr-description/ # the same shape, for @claude describe:
+│       ├── collect_context.py      # a copy of review-report's, byte for byte
+│       ├── render_description.py   # description.json → a description
+│       └── check_description.py    # a hand-written one against the contract
 ├── templates/
 │   ├── *.example.yaml # the two config templates the wheel ships
 │   ├── pr-review-agent.service    # the single-repository user unit
@@ -305,6 +309,8 @@ pr-review-agent config generate [--output PATH] [--full] [--force]
 pr-review-agent config validate [--config PATH]
 pr-review-agent host   check    [--config PATH]
 pr-review-agent daemon start    [--config PATH]
+pr-review-agent service install [--instance NAME] [--force]
+pr-review-agent skill  install  [--dir PATH] [--force]
 ```
 
 | Exit | Meaning |
@@ -377,8 +383,8 @@ shutdown does not sit through the remainder of a 600 s idle interval.
 
 `SIGHUP` re-reads `config.yaml` and adopts its `budget` section without a
 restart, which is what makes `budget.enabled: false` an emergency brake. A
-broken file is logged and the previous configuration kept. Only `budget` is
-hot-swapped; see [docs/CONFIG.md](docs/CONFIG.md#-reload).
+broken file is logged and the previous configuration kept. Only `budget` and
+`publish` are hot-swapped; see [docs/CONFIG.md](docs/CONFIG.md#-reload).
 
 The SQLite file comes from `store.path` in `config.yaml`, default `state.db`.
 The resolved absolute path is logged at startup: a relative path is resolved

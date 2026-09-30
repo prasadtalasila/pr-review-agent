@@ -207,7 +207,7 @@ name a driver is nulled.
 budget:
   max_changed_files: 100
   max_changed_lines: 5000
-  excluded_paths: ['**/package-lock.json', '**/vendor/**', …]
+  excluded_paths: ['**/*.snap']   # added to the built-in list
 ```
 
 A pull request over either cap raises `PullRequestTooLarge` **before a
@@ -237,7 +237,8 @@ for the [pre-flight estimate](BUDGET.md#-the-pre-flight-token-estimate).
 pathspec kept out, so the posted review can
 [say what it did not read](reporting/review-report.md#rules). It costs two
 more local `git diff --name-only -z` calls, one with the pathspec and one
-without, and only when `excluded_paths` is non-empty. Both lists are needed
+without, and only when the effective exclusion list — the built-ins plus
+`excluded_paths` — is non-empty. Both lists are needed
 because the grouping never names a directory that holds a reviewed file:
 `web/node_modules/` collapses to one entry, while three lockfiles scattered
 beside reviewed code stay three entries.

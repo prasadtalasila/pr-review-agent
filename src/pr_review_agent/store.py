@@ -279,6 +279,15 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
     # before it existed, and for purged ones: `priority_files` are paths
     # from the contributor's tree. A NULL renders no line.
     ("ALTER TABLE runs ADD COLUMN assessment TEXT",),
+    # What a trigger asks for, `review` or `describe` (issue #128), and on a
+    # run the description a `describe` produced, as JSON. NULL there is what
+    # marks a run as a review, which is every row written before this: a
+    # description is never a review round, so the cross-round reads select
+    # on it. A purge writes '{}' rather than NULL for the same reason.
+    (
+        "ALTER TABLE queue ADD COLUMN command TEXT NOT NULL DEFAULT 'review'",
+        "ALTER TABLE runs ADD COLUMN description TEXT",
+    ),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

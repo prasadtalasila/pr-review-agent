@@ -3,7 +3,7 @@
 What starts a review, what does not, and why each rejection is the shape it
 is. Implemented in `src/pr_review_agent/triggers/`, tested in
 `tests/test_classifier.py`, `tests/test_allowlist.py` and
-`tests/test_mention.py`.
+`tests/test_mention.py` and `tests/test_command.py`.
 
 ## ✅ The two accepted events
 
@@ -32,6 +32,9 @@ outside contributions still get reviewed when we want them to".
                   ▼                                  ▼
                   a bot account? ──yes──► bot_author / bot_commenter
                   │no                                 │no
+                  │                                   ▼
+                  │                  posted by this agent? ──yes──► self_comment
+                  │                                   │no
                   ▼                                   ▼
           a draft? ──yes──► draft      mentions @handle outside a
                   │no                  fence, code span or blockquote?
@@ -68,6 +71,7 @@ Every row below is logged at `DEBUG`, accepted decisions included.
 | Already-open pull request seen below the watermark | `not_fresh` |
 | Comment last updated before the watermark | `not_fresh` |
 | Comment on a pull request that is not open | `pr_not_open` |
+| Comment the agent itself posted | `self_comment` |
 
 They are reached with `--log-level DEBUG`,
 `PR_REVIEW_AGENT_LOG_LEVEL=DEBUG` or `logging.level` in `config.yaml` — see
@@ -256,6 +260,14 @@ such as `@claude-ci`.
 
 The handle is configurable (`triggers.handle`), which is what makes the
 pipeline reusable for a different agent.
+
+### The verb after it
+
+The word after the first mention picks what is asked for: `@claude
+describe` is a pull request description, and anything else — `@claude
+review`, a bare `@claude`, prose — is a review. The verb carries no
+argument and the rules above decide who may ask; see
+[DESCRIBE.md](DESCRIBE.md#-how-the-verb-is-read).
 
 ## 🔑 Dedupe keys
 

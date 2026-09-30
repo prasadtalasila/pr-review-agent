@@ -25,6 +25,7 @@ from pathlib import Path
 
 from .._subprocess import communicate
 from ..budget import Usage
+from ..triggers.models import Command
 from .models import Capabilities, ReviewRequest, ReviewResult
 
 logger = logging.getLogger(__name__)
@@ -155,8 +156,12 @@ class CliEngine(ABC):
         """The prompt for one review, delivered on stdin."""
 
     @abstractmethod
-    def parse(self, stdout: str) -> ReviewResult:
-        """Turn what the tool printed into a result."""
+    def parse(self, stdout: str, command: Command = Command.REVIEW) -> ReviewResult:
+        """Turn what the tool printed into a result.
+
+        ``command`` says which schema the tool was held to, so the output is
+        read as what was asked for rather than guessed from its shape.
+        """
 
     async def preflight(self) -> None:  # noqa: B027 - opt-in, not obligatory
         """Whatever has to hold before the first review.
@@ -188,7 +193,7 @@ class CliEngine(ABC):
             sha256(prompt.encode()).hexdigest()[:16],
         )
         stdout = await self.run(argv, prompt, cwd=request.checkout.path)
-        return self.parse(stdout)
+        return self.parse(stdout, request.trigger.command)
 
     async def run(self, argv: tuple[str, ...], prompt: str, *, cwd: Path) -> str:
         """Run the tool over ``cwd``, feeding ``prompt`` on stdin.

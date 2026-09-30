@@ -2,8 +2,9 @@
 
 Every command is `pr-review-agent <noun> <verb>`. The nouns are grouped by the
 order you meet them: `config` writes and checks the file, `host` proves the
-machine can reach GitHub, `daemon` runs the loop, and `service` hands that loop
-to systemd instead of to your terminal.
+machine can reach GitHub, `daemon` runs the loop, `service` hands that loop
+to systemd instead of to your terminal, and `skill` installs the review and
+description skills for a person working in Claude Code.
 
 ```bash
 pr-review-agent --version
@@ -23,7 +24,7 @@ against it needs no change.
 | `host check` | Run the pre-flight checks; exit 1 if any fails. |
 | `daemon start` | Poll, classify, review and publish until stopped. |
 | `service install` | Write the systemd user unit and the directories it names. |
-| `skill install` | Copy the review skill into a Claude Code skills directory. |
+| `skill install` | Copy the review and description skills into a Claude Code skills directory. |
 
 `--config` defaults to `config.yaml` in the directory the command was started
 in — which is also where a relative `store.path` puts `state.db`. See
@@ -134,9 +135,12 @@ three rules the configs have to agree on.
 
 ## 🧠 `skill install`
 
-Copies the packaged **review skill** — the format contract, the false-positive
-list and three scripts — into a Claude Code skills directory, so that a person
-writing a review by hand gets the same report a daemon run would have posted.
+Copies the two packaged skills into a Claude Code skills directory: the
+**review skill**, `review-report` — the format contract, the false-positive
+list and three scripts — so that a person writing a review by hand gets the
+same report a daemon run would have posted, and the **description skill**,
+`pr-description`, which does the same for what `@claude describe` posts
+([Description skill](reporting/pr-description.md)).
 
 | Option | Default | Meaning |
 | --- | --- | --- |

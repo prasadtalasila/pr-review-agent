@@ -54,6 +54,7 @@ nav:
           - Report template: reporting/review-report.md
           - Review prompt: reporting/review-prompt.md
           - Review skill: reporting/review-skill.md
+          - Description skill: reporting/pr-description.md
   - How it works:
       - Triggers: TRIGGERS.md
       - Poller: POLLER.md
@@ -63,6 +64,7 @@ nav:
       - Budget governor: BUDGET.md
       - Workspace and checkout: WORKSPACE.md
       - Incremental review: INCREMENTAL-REVIEW.md
+      - Describe and review verbs: DESCRIBE.md
       - Review worker: WORKER.md
       - Engine seam: ENGINE.md
       - Publisher: PUBLISHER.md
