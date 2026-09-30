@@ -13,8 +13,6 @@ made, and [AGENTS.md](AGENTS.md) the coding conventions.
 ```text
 src/pr_review_agent/
 ├── _compat.py         # the one Python 3.10 shim (enum.StrEnum)
-├── _subprocess.py     # run a child under a clock; terminate, then kill
-├── _time.py           # the aware-UTC clock and the SQLite stamp format
 ├── _startup.py        # token and config, each loadable on its own
 ├── _subprocess.py     # a child process under a clock: terminate, then kill
 ├── _time.py           # the aware-UTC clock and the SQLite stamp format
@@ -50,7 +48,7 @@ src/pr_review_agent/
 │   ├── cmd_daemon.py  # daemon start
 │   ├── cmd_host.py    # host check
 │   ├── cmd_service.py # service install — place the systemd user unit
-│   └── cmd_skill.py   # skill install — place the review skill for a person
+│   └── cmd_skill.py   # skill install — place the review and description skills
 ├── engine/
 │   ├── models.py      # ReviewEngine protocol, Capabilities, request/result
 │   ├── cli.py         # the subprocess boundary every CLI adapter shares
@@ -311,6 +309,8 @@ pr-review-agent config generate [--output PATH] [--full] [--force]
 pr-review-agent config validate [--config PATH]
 pr-review-agent host   check    [--config PATH]
 pr-review-agent daemon start    [--config PATH]
+pr-review-agent service install [--instance NAME] [--force]
+pr-review-agent skill  install  [--dir PATH] [--force]
 ```
 
 | Exit | Meaning |
@@ -383,8 +383,8 @@ shutdown does not sit through the remainder of a 600 s idle interval.
 
 `SIGHUP` re-reads `config.yaml` and adopts its `budget` section without a
 restart, which is what makes `budget.enabled: false` an emergency brake. A
-broken file is logged and the previous configuration kept. Only `budget` is
-hot-swapped; see [docs/CONFIG.md](docs/CONFIG.md#-reload).
+broken file is logged and the previous configuration kept. Only `budget` and
+`publish` are hot-swapped; see [docs/CONFIG.md](docs/CONFIG.md#-reload).
 
 The SQLite file comes from `store.path` in `config.yaml`, default `state.db`.
 The resolved absolute path is logged at startup: a relative path is resolved

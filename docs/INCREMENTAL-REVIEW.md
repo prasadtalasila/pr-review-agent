@@ -66,7 +66,8 @@ the pacer defers such a trigger first. See [CONFIG.md](CONFIG.md#budget).
 ## 🧾 What the posted review says
 
 The [coverage footer](reporting/review-report.md#rules) names the changed
-files `budget.excluded_paths` kept from the engine. On an incremental round
+files the exclusions — the built-in list plus `budget.excluded_paths` —
+kept from the engine. On an incremental round
 it covers the same range as the diff, because `Checkout.omitted` is computed
 from the same `start..head` span. A lockfile changed only in an earlier round
 is therefore not listed again.

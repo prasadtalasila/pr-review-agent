@@ -60,9 +60,11 @@ fixtures, needing no network and spending no tokens:
   [PUBLISHER.md](PUBLISHER.md#-nothing-it-posts-can-summon-another-review).
 - `poller/pulls.py` imports `workspace`, never the reverse. `workspace/` is
   pure git and filesystem, so its suite runs with no HTTP at all.
-- `engine/` imports `workspace`, `triggers` and `budget`. Only `worker.py`
-  imports `engine/`: it is the leaf the whole design is arranged around, and
-  the worker is its single caller. See [ENGINE.md](ENGINE.md).
+- `engine/` imports `workspace`, `triggers`, `budget`, `findings`,
+  `description` and `skills`. `runs.py`, `config` and `daemon.py` import its
+  types, but only `worker.py` calls `review()`: it is the leaf the whole
+  design is arranged around, and the worker is its single caller. See
+  [ENGINE.md](ENGINE.md).
 - `worker.py` is where `queue`, `budget`, `workspace`, `engine` and
   `poller/pulls.py` meet, and nothing imports it but `daemon.py`.
 - `cli/` is the outermost layer and the only one nothing imports. It parses

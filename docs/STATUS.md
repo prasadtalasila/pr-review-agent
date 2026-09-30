@@ -30,6 +30,9 @@ they are reproduced here so they survive the issue being closed.
 | Logging: level, `auto`/`text`/`json` shape, journald priorities | implemented, unit tested |
 | Multi-repo: repo-scoped queue and watermarks, shared budget authority, `service install --instance` | implemented, unit tested |
 | Review skill (`skill install`), and the prompt read from it | implemented, unit tested |
+| Incremental review since the last round, by content | implemented, unit tested |
+| Coverage footer naming what the exclusions withheld | implemented, unit tested |
+| Mandatory effort, risk and merge assessment on every review | implemented, unit tested |
 | `@claude describe` and the description skill | implemented, unit tested |
 | Retention sweep | not started |
 
@@ -88,8 +91,8 @@ linked.
       the poll interval is 10–600 s, so no acknowledgement can be within 15 s
       of a comment being *written*; the 👀 is what makes that latency
       imperceptible, which is the reason it was specified.
-- [x] **A clean review** posts a single "no issues found" comment, edited in
-      place rather than duplicated on re-review.
+- [x] **A clean review** posts a single "no issues found" comment. Since
+      1.3.0 each round posts its own comment rather than editing the last.
 - [ ] **Triggers are correctly scoped:** no review on pushes to an existing
       pull request, no auto-review of an unlisted contributor's pull request,
       no trigger from a non-allowlisted account, no self-reply loop, no

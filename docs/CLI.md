@@ -2,8 +2,9 @@
 
 Every command is `pr-review-agent <noun> <verb>`. The nouns are grouped by the
 order you meet them: `config` writes and checks the file, `host` proves the
-machine can reach GitHub, `daemon` runs the loop, and `service` hands that loop
-to systemd instead of to your terminal.
+machine can reach GitHub, `daemon` runs the loop, `service` hands that loop
+to systemd instead of to your terminal, and `skill` installs the review and
+description skills for a person working in Claude Code.
 
 ```bash
 pr-review-agent --version

@@ -201,12 +201,12 @@ keeps a durable, linkable comment — a maintainer can quote round 2 in a
 discussion and the quote still means what it meant. What is given up is the
 tidy thread, and two things bound the untidiness:
 
-- [`pacing`](BUDGET.md#-the-pacer) collapses a burst of triggers on one pull
+- [`pacing`](BUDGET.md#-the-pacer-one-pull-requests-rate) collapses a burst of triggers on one pull
   request into one review, so an active branch does not produce a comment per
   push.
 - `ReviewQueue.fold` closes every trigger already waiting when a review
-  starts, so three maintainers mentioning the agent get one comment, not
-  three.
+  starts that asked for the same thing and named no other commit, so three
+  maintainers mentioning the agent get one comment, not three.
 
 The body names the commit it describes, because a pull request under review
 has several and a reader has to be able to tell which revision each comment
@@ -224,7 +224,12 @@ order makes the things that changed the things that stand out.
 ### The rendered report
 
 [`reporting/review-report.md`](reporting/review-report.md) is the contract;
-this is the summary.
+this is the summary. Under the header sits one assessment line — effort,
+risk, the advisory recommendation and where to start reading — and above
+the trailer a footer names what the exclusions withheld, when they withheld
+anything. A run asked for with `@claude describe` is rendered by
+`description.render_description` instead, and its header has no round
+([DESCRIBE.md](DESCRIBE.md)).
 
 Findings are grouped under three headings and numbered across the whole
 report:
@@ -475,7 +480,7 @@ and for the same reason — see [above](#-a-head-that-moved-under-the-review).
 
 ## 📋 The `runs` table
 
-See [STORAGE.md](STORAGE.md#-schema) for the columns. Four decisions worth
+See [STORAGE.md](STORAGE.md#-schema) for the columns. The decisions worth
 knowing:
 
 - **Keyed on `dedupe_key`**, matching `queue` and `ledger`, which is what
@@ -495,6 +500,9 @@ knowing:
 - **`publish_outcome` says how publishing ended,** which `published_at`
   cannot: a posted review and one discarded because the head moved both have
   to be stamped, and only the outcome column tells them apart afterwards.
+- **`omitted`, `assessment` and `description` are on the row** because a
+  retried post renders them after the checkout is gone. A `description` is
+  what marks a run as `@claude describe` rather than a review round.
 - **`content_purged_at` is stamped apart from emptying `findings`,** so a run
   whose content was deleted after a merge stays distinguishable from a run
   that looked and found nothing — the same distinction `Outcome` keeps

@@ -1,9 +1,10 @@
 # The review skill
 
 The report format is not only for the daemon. `pr-review-agent skill install`
-copies a Claude Code **skill** into `~/.claude/skills`, so that a review you
-write by hand — on this repository or any other — comes out in the same shape
-as one the agent posts.
+copies two Claude Code **skills** into `~/.claude/skills`. This page is about
+`review-report`, which makes a review you write by hand — on this repository
+or any other — come out in the same shape as one the agent posts; the other
+is the [description skill](pr-description.md).
 
 ```bash
 pr-review-agent skill install          # or --dir <repo>/.claude/skills
@@ -43,11 +44,12 @@ whole import closure into `<skill>/scripts/_vendor/pr_review_agent/`:
 | `report.py` | `render` — the sections, ordering, truncation and trailer. |
 | `numbering.py` | `assign` — stable numbers, and the gaps that mean "fixed". |
 | `findings.py` | `Finding`, `Severity` and `Assessment`. |
+| `description.py` | The `pr-description` skill's renderer, vendored into both skills alike. |
 | `sanitise.py`, `triggers/mention.py` | What `render` puts every title and body through before assembling them. |
 | `_compat.py` | The `StrEnum` shim for Python 3.10. |
 
 That list is short because `report.py` and `findings.py` were split out of
-`publisher.py` and `engine/models.py` to keep it short. None of the five
+`publisher.py` and `engine/models.py` to keep it short. None of them
 imports the config schema, the HTTP client or sqlite, and none of them may
 start to: `test_skill.py` installs the skill and renders the worked example
 in an interpreter where the only importable `pr_review_agent` is the

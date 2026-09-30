@@ -87,7 +87,7 @@ src/pr_review_agent/          importable package (src layout)
     cmd_daemon.py             daemon start
     cmd_host.py               host check
     cmd_service.py            service install -- place the systemd user unit
-    cmd_skill.py              skill install -- place the review skill for a person
+    cmd_skill.py              skill install -- place the review and description skills
   engine/
     models.py                 ReviewEngine protocol, Capabilities, request/result
     cli.py                    the subprocess boundary every CLI adapter shares

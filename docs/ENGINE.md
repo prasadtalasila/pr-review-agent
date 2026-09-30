@@ -2,7 +2,8 @@
 
 The one place a different coding agent plugs in. Everything else — polling,
 allowlisting, dedupe, leasing, the budget windows, publishing — is
-agent-agnostic, so only "run a review" is swappable.
+agent-agnostic, so only "run a review" is swappable — and, since 1.12.0,
+"describe a pull request", which is the same call with a different schema.
 
 This page documents the seam and the one adapter that implements it. The
 adapter **can spend money**, and since the [review worker](WORKER.md) landed
@@ -34,7 +35,7 @@ what produced it.
 | :-- | :-- | :-- |
 | `checkout` | `Checkout` | The tree on disk, its `head_sha`, the merge base, and the diff. |
 | `facts` | `PullRequestFacts` | Number, base ref and the size counts the caps were measured against. |
-| `trigger` | `Trigger` | What asked for this review — an opened pull request or a mention. |
+| `trigger` | `Trigger` | What asked for this run — an opened pull request or a mention — and its `command`, `review` or `describe`. |
 | `mode` | `Mode` | The rung of the [degradation ladder](BUDGET.md) the run was admitted under. |
 | `prior` | `tuple[Finding, ...]` | What the last completed round on this pull request found. Empty on a first round. |
 
@@ -62,7 +63,11 @@ that governs the allowlist; see [DESIGN.md](DESIGN.md#-prompt-injection-is-in-sc
 
 ## 📤 What an engine returns
 
-`ReviewResult` is findings plus usage.
+`ReviewResult` is findings, usage and the `outcome`, plus the
+`assessment` every completed review carries and, on a `@claude describe`
+run, the `description` in place of both — see [DESCRIBE.md](DESCRIBE.md).
+The adapter reads the trigger's `command` to choose the schema and the
+system prompt; the rest of the argv, the sandbox included, is the same.
 
 A `Finding` is `path`, `line`, `severity`, `title`, `body` and an optional
 `number`.
@@ -82,8 +87,8 @@ run is recorded. A number an engine invents is discarded: it is output over
 an untrusted tree, so it is honoured only if this pull request actually
 issued it.
 
-`Severity` is advisory in the strongest sense: the publisher posts event
-`COMMENT` whatever a review concludes, so not even `blocker` can block a
+`Severity` is advisory in the strongest sense: the publisher posts a plain
+issue comment, with no review event, whatever a review concludes, so not even `blocker` can block a
 merge. See [PUBLISHER.md](PUBLISHER.md) for which heading each level renders
 under.
 

@@ -34,8 +34,8 @@ the trailer — is decided here, where a test can read it.
 
 ## Rules
 
-**Header.** Always present, always names the head sha, because the comment is edited in
-place and a reader must be able to tell which revision the text describes. `round` counts
+**Header.** Always present, always names the head sha, because every round posts its own
+comment and a reader must be able to tell which revision each one describes. `round` counts
 recorded runs for this pull request; `<c> commits` is `git rev-list --count
 <merge_base>..<head>`.
 
@@ -67,8 +67,8 @@ finding that persists across rounds keeps its number, and a finding that gets fi
 its number vacant. The gaps are information. Never renumber to close them.
 
 **Ordering within a section.** Carried-forward findings in ascending number, then new
-findings by `(path, line)`. Stable ordering is what makes re-review an edit-in-place with a
-no-op diff when nothing changed.
+findings by `(path, line)`. Stable ordering is what lets a reader compare one round's
+comment with the last and see only what changed.
 
 **Nits are prose.** One paragraph, several small observations joined by sentences. A nit
 that deserves a numbered entry is not a nit.

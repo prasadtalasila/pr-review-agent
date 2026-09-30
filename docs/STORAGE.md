@@ -3,9 +3,11 @@
 One SQLite file, in WAL mode, holding everything that has to survive a
 restart. Implemented in `src/pr_review_agent/store.py`.
 
-Four things live here: the **watermarks** and **ETags** below, the **queue**
-rows whose claim protocol is described in [QUEUE.md](QUEUE.md), and the
-**ledger** the [budget governor](BUDGET.md) computes its windows from. The
+Eight tables live here: the **watermarks** and **ETags** below, the
+**queue** rows whose claim protocol is described in [QUEUE.md](QUEUE.md),
+the **ledger** the [budget governor](BUDGET.md) computes its windows from,
+`budget_state` and `budget_policy` beside it, the **runs** a paid review or
+description produced, and `agent_comments`, the ids the agent posted. The
 schema is declared in one place — this module — because migration order has to
 be a single sequence.
 
@@ -148,7 +150,8 @@ CREATE TABLE ledger (
     reviewed_lines   INTEGER,         -- what the estimate is fitted against
     stop_reason      TEXT,            -- why the run ended; NULL until settled
     repo             TEXT,            -- NULL before migration 11
-    pr_number        INTEGER          -- NULL before migration 11; the pacer reads both
+    pr_number        INTEGER,         -- NULL before migration 11; the pacer reads both
+    reviewed_since   TEXT             -- the head an incremental round diffed from; NULL = full
 );
 -- The one index here that is a constraint rather than a lookup aid: it is
 -- what makes "one open reservation per trigger" a rule the schema holds.
@@ -196,7 +199,8 @@ about one allowance. It is kept apart from `budget_state` even though both are
 small and scalar: that one is what the circuit breaker *learned*, this is what
 an operator *declared*, and resetting either must not disturb the other.
 
-`runs` is the **only** table holding review content, and therefore the only
+`runs` is the **only** table holding review content — findings, the
+assessment, the withheld paths and, for `@claude describe`, the description — and therefore the only
 one the retention sweep purges. It is written before the publisher is asked,
 which is what lets a failed GitHub write be retried without a second review —
 see [PUBLISHER.md](PUBLISHER.md#-a-paid-review-is-kept-until-it-can-be-posted).
@@ -247,8 +251,9 @@ because an unsettled reservation stays charged until it ages out of its
 rolling window rather than being released when its lease lapses — see
 [BUDGET.md](BUDGET.md#a-crashed-workers-reservation-stays-charged).
 
-`repo` and `pr_number` are absent for the same reason: both dedupe-key
-namespaces already carry them, and `queue` rows are kept forever.
+`repo` and `pr_number` were absent for the same reason until migration 11
+added them, because the [pacer](BUDGET.md#-the-pacer-one-pull-requests-rate)
+counts one pull request's reviews off the ledger.
 
 `reviewed_lines` is the one column that exists for something other than the
 windows: it is the predictor the
@@ -350,7 +355,8 @@ recoverable from it — so the honest default was the design constraint rather
 than an afterthought.
 
 **Each migration and its version bump commit together**, in one transaction.
-That is what lets versions 5, 6 and 7 be `ALTER TABLE ADD COLUMN`, which
+That is what lets every `ALTER TABLE ADD COLUMN` migration — 5 to 7, 11 to
+13 and 16 to 19 — be written that way, which
 SQLite has no `IF NOT EXISTS` form for and which fails outright on a second
 application.
 A crash mid-migration rolls the pair back and the migration is simply

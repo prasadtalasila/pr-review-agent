@@ -32,6 +32,9 @@ outside contributions still get reviewed when we want them to".
                   ▼                                  ▼
                   a bot account? ──yes──► bot_author / bot_commenter
                   │no                                 │no
+                  │                                   ▼
+                  │                  posted by this agent? ──yes──► self_comment
+                  │                                   │no
                   ▼                                   ▼
           a draft? ──yes──► draft      mentions @handle outside a
                   │no                  fence, code span or blockquote?
@@ -68,6 +71,7 @@ Every row below is logged at `DEBUG`, accepted decisions included.
 | Already-open pull request seen below the watermark | `not_fresh` |
 | Comment last updated before the watermark | `not_fresh` |
 | Comment on a pull request that is not open | `pr_not_open` |
+| Comment the agent itself posted | `self_comment` |
 
 They are reached with `--log-level DEBUG`,
 `PR_REVIEW_AGENT_LOG_LEVEL=DEBUG` or `logging.level` in `config.yaml` — see

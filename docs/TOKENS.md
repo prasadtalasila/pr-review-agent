@@ -22,8 +22,8 @@ repository the config names, with exactly three permissions:
 
 | Permission | Access | Why |
 | --- | --- | --- |
-| **Pull requests** | Read and write | Read lists the open pull requests and the inline review comments; write is how the publisher posts the review. |
-| **Issues** | Read and write | A pull request's conversation comments are *issue* comments in the REST API. Read is the `@claude` feed; write posts the acknowledgement and the 👀 reaction. |
+| **Pull requests** | Read and write | Read lists the open pull requests and the inline review comments; write puts the 👀 on an inline review comment that mentioned the agent. |
+| **Issues** | Read and write | A pull request's conversation comments are *issue* comments in the REST API. Read is the `@claude` feed; write posts the review or description, the notices, and the 👀 on a conversation comment or the pull request. |
 | **Metadata** | Read only | Mandatory on every fine-grained token, and what `host check` reads the repository with. |
 
 Nothing else. In particular **Contents is not needed**: the checkout fetches

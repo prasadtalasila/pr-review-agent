@@ -104,7 +104,8 @@ pins each one:
   findings, the round number, where an incremental diff starts, the finding
   numbers — skip it. The review after a description is still round 2.
 - **Not a sample for the estimate.** It settles with `reviewed_lines` NULL,
-  like an incremental round: its output is a fraction of a review's, and
+  so the fit never reads it (an incremental round is set aside differently,
+  by `reviewed_since`): its output is a fraction of a review's, and
   fitting it would pull the estimate below a review's price — the direction
   that under-refuses.
 - **Folded only with its own kind.** Several `@claude describe` comments

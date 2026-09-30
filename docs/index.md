@@ -42,7 +42,8 @@ writes a systemd user unit -- see [Running as a service](SERVICE.md).
 
 Installing the package puts `pr-review-agent` on the path. Commands follow a
 `pr-review-agent <noun> <verb>` grammar, grouped by the setup workflow:
-`config` → `host` → `daemon`, plus `service` for the systemd install.
+`config` → `host` → `daemon`, plus `service` for the systemd install and
+`skill` for the Claude Code skills.
 `--config` is optional: without it a command reads `config.yaml` from the
 directory it is started in, which is also where `state.db` is written.
 

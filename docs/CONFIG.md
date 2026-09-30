@@ -113,7 +113,8 @@ An empty allowlist is valid and allows nobody. It is the safe starting state.
 
 ### `budget`
 
-Required, and the only section `SIGHUP` reloads. The full specification is
+Required, and one of the two sections `SIGHUP` reloads (the other is
+`publish`). The full specification is
 [BUDGET.md](BUDGET.md); this is the key list.
 
 | Key | Type | Required | Meaning |
@@ -415,7 +416,8 @@ anything, and most of a review survives a fixup commit. What the reader needs
 is to know which commit the text describes, which the header says. See
 [PUBLISHER.md](PUBLISHER.md#-a-head-that-moved-under-the-review).
 
-`max_publish_attempts` is deliberately well above `worker.max_attempts`. That
+`max_publish_attempts` is deliberately well above the queue's `max_attempts`
+(`queue.DEFAULT_MAX_ATTEMPTS`, 3). That
 bound measures the allowance one poison trigger may drain and a post reaches
 no engine, so a failed post is handed back *unattempted* and counted here
 instead. Ten rather than three because the findings are already paid for: the
@@ -557,9 +559,11 @@ three token counts have no defaults on purpose.
 `SIGHUP` re-reads `config.yaml` and adopts its `budget` section, so stopping
 the agent never requires a restart.
 
-**Only `budget` is hot-swapped.** A changed `github`, `triggers`, `store`,
-`workspace` or `worker` section is logged as needing a restart rather than half-applied:
-the daemon's watermarks describe the repository it started against, and
+**Only `budget` and `publish` are hot-swapped.** A changed `github`,
+`triggers` or `store` section is logged as needing a restart rather than
+half-applied; a changed `workspace` or `worker` section is also left alone
+until a restart, though nothing warns about it. For the first three, the
+daemon's watermarks describe the repository it started against, and
 swapping that mid-flight would make them meaningless. `workspace.cache_dir`
 is in that list for a neighbouring reason — moving the cache under a running
 daemon would orphan the mirror it is fetching into.

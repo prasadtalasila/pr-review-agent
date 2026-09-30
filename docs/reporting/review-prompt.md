@@ -53,9 +53,14 @@ the injection defence are untouched.
 
 > Review pull request #`<n>` against `` `<base_ref>` ``.
 > Head commit `<head_sha>`, merge base `<merge_base>`.
+> The diff below covers the whole pull request, `<merge_base>..<head_sha>`.
 > `<f>` file(s) to review, `<l>` line(s).
 >
 > The working directory holds the pull request head. Read it.
+
+On an [incremental round](../INCREMENTAL-REVIEW.md) the third line instead
+says the diff covers only what changed since the head the previous round
+reviewed, and that earlier findings may sit on lines outside it.
 
 ## Scope
 
