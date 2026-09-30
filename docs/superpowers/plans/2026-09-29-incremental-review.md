@@ -90,6 +90,15 @@ and `test_a_fixup_larger_than_the_cap_is_still_refused` pin the bound.
 3. The posted report does not say the round was incremental. That belongs
    with roadmap Q4, the coverage footer.
 
+   *Update, 1.10.0 (#123).* The coverage footer landed. On an incremental
+   round it names the changed files `budget.excluded_paths` withheld from
+   the **incremental** range, because `Checkout.omitted` is computed from
+   the same `start..head` span as the diff, so a lockfile changed only in an
+   earlier round is not listed again. The footer still does not say the
+   round itself was incremental, or name the head it diffed from. That part
+   of this decision is still open. `Checkout.since_sha` already carries what
+   it would need.
+
 ## Known limit
 
 `runs.head_sha` is the API's head from the facts read, not the fetched one.
