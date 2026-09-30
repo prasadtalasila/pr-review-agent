@@ -1,0 +1,49 @@
+{
+  "properties": {
+    "files": {
+      "items": {
+        "properties": {
+          "change": {
+            "maxLength": 300,
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "change"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "summary": {
+      "maxLength": 3000,
+      "type": "string"
+    },
+    "testing": {
+      "maxLength": 3000,
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "bug_fix",
+        "enhancement",
+        "refactor",
+        "documentation",
+        "tests",
+        "other"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "summary",
+    "files",
+    "testing"
+  ],
+  "type": "object"
+}

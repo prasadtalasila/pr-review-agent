@@ -1,0 +1,20 @@
+## Description: PR #130 (`6a6d208`, 4 commits)
+
+**Type:** Enhancement
+
+Reviews only what changed since the last completed round, so a follow-up push is not charged for the whole pull request again. The previous round's head is read from the run store and the diff starts there, keyed by tree content so a force-push that rewrote history still finds its base. The first round, and any round within `budget.incremental_min_seconds` of the last one, stays a full review. Migration 16 adds `reviewed_since` to the ledger so incremental rounds are kept out of the pre-flight cost fit.
+
+## Changes
+
+| File | Change |
+| :-- | :-- |
+| `src/pr_review_agent/workspace/since.py` | New module that decides where an incremental round's diff starts, or that it has to be full. |
+| `src/pr_review_agent/worker.py` | Passes the last completed round's head to the checkout and records the range the review covered. |
+| `src/pr_review_agent/engine/prompt.py` | Tells the reviewer when the diff covers only the newer commits, so earlier findings are not reported as fixed. |
+| `tests/test_workspace_since.py` | Covers a plain push, a force-push, a rebase onto a moved base and the first round. |
+
+## How to test
+
+Run `poetry run pytest tests/test_workspace_since.py tests/test_worker_review.py`. The force-push cases are the ones to read: each builds a history, rewrites it, and asserts the diff starts at the rewritten commit whose tree matches the last reviewed head.
+
+<sub>Automated description. It takes no action on this pull request beyond this comment; copy what is useful into the description.</sub>

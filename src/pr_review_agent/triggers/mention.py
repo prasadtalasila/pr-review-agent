@@ -32,6 +32,11 @@ _INLINE_CODE_RE = re.compile(r"(?P<ticks>`+)(?s:.)*?(?P=ticks)")
 #: reads back does not contain one.
 _AT_ENTITY = "&#64;"
 
+#: The word a mention is followed by, on the same line. Bounded the way the
+#: handle is, so ``@claude describe-it`` names no verb rather than
+#: ``describe``.
+_VERB_RE = re.compile(r"[ \t]+([A-Za-z]+)(?![A-Za-z0-9_-])")
+
 
 def _blank(text: str) -> str:
     """``text`` as the same number of spaces.
@@ -106,6 +111,23 @@ def _mention_re(handle: str) -> re.Pattern[str]:
 def has_mention(body: str, handle: str = "claude") -> bool:
     """True when ``@handle`` appears in the prose of ``body``."""
     return bool(_mention_re(handle).search(strip_non_prose(body)))
+
+
+def mention_verb(body: str, handle: str = "claude") -> str:
+    """The word after the first ``@handle`` in the prose of ``body``.
+
+    Lower-cased, and ``""`` when there is no mention or no word after it.
+    Only the first mention is read: a comment that says ``@claude describe``
+    and later quotes a colleague's ``@claude`` asked for one thing. Which
+    words mean something is the classifier's decision, not this module's --
+    this one is copied into the skill and knows nothing but ``re``.
+    """
+    stripped = strip_non_prose(body)
+    mention = _mention_re(handle).search(stripped)
+    if mention is None:
+        return ""
+    verb = _VERB_RE.match(stripped, mention.end())
+    return verb.group(1).lower() if verb else ""
 
 
 def neutralise(body: str, handle: str) -> str:

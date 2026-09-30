@@ -1,4 +1,4 @@
-"""``pr-review-agent skill install`` -- put the review skill where Claude finds it.
+"""``pr-review-agent skill install`` -- put the skills where Claude finds them.
 
 The daemon does not need this verb. Its own reviewer is handed the skill's
 text inside the prompt, by ``engine/prompt.py``, precisely because it runs
@@ -8,7 +8,8 @@ file at all. Relaxing any of those to let it load a directory instead would
 trade three argv-level injection defences for a file layout.
 
 This verb is for the other reader: a person, or an interactive Claude Code
-session, writing a review by hand. It copies the packaged skill into a
+session, writing a review or a pull request description by hand. It copies
+both packaged skills, ``review-report`` and ``pr-description``, into a
 skills directory and prints where it went -- a file writer, in the same
 shape as ``service install``, which also declines to take the next step on
 the operator's behalf.
@@ -33,7 +34,7 @@ DEFAULT_DIR = Path.home() / ".claude" / "skills"
 
 @click.group(name="skill")
 def skill_group() -> None:
-    """Install the review skill for an interactive Claude Code session."""
+    """Install the review skills for an interactive Claude Code session."""
 
 
 @skill_group.command(name="install")
@@ -47,10 +48,13 @@ def skill_group() -> None:
 )
 @click.option("--force", is_flag=True, help="overwrite an existing install")
 def install(destination: Path, force: bool) -> None:
-    """Copy the review skill into a skills directory."""
-    try:
-        target = skills.install(destination, force=force)
-    except FileExistsError as exists:
-        fail(f"{exists} already exists; pass --force to replace it")
-    click.echo(f"Installed {skills.SKILL_NAME} to {target}")
-    click.echo("Start a Claude Code session there and ask it to review a change.")
+    """Copy the review and description skills into a skills directory."""
+    for name in skills.SKILLS:
+        try:
+            target = skills.install(destination, force=force, skill=name)
+        except FileExistsError as exists:
+            fail(f"{exists} already exists; pass --force to replace it")
+        click.echo(f"Installed {name} to {target}")
+    click.echo(
+        "Start a Claude Code session there and ask it to review or describe a change."
+    )

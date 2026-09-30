@@ -67,6 +67,7 @@ src/pr_review_agent/          importable package (src layout)
     excluded_paths.py         the built-in exclusions, generator globs from pr-agent
     runtime.py                store, workspace, worker, publish, logging
   daemon.py                   the poll-classify-enqueue loop and entry point
+  description.py              what @claude describe produces, laid out as a comment
   logs.py                     one level and one format, resolved from three layers
   findings.py                 Finding and Severity: the type every layer handles
   numbering.py                finding numbers that survive a re-review
@@ -92,6 +93,7 @@ src/pr_review_agent/          importable package (src layout)
     cli.py                    the subprocess boundary every CLI adapter shares
     claude.py                 the `claude` CLI adapter, the first engine that spends
     prompt.py                 what the reviewer is told; untrusted text fenced off
+    describe.py               what the engine is told for @claude describe
     standards.py              review standards, read from the base ref
     fake.py                   an engine that spends nothing, for tests
   poller/
@@ -102,12 +104,16 @@ src/pr_review_agent/          importable package (src layout)
     payloads.py               raw GitHub dicts to trigger models
     pulls.py                  one pull request to PullRequestFacts
     poller.py                 one sweep across all three endpoints
-  skills/                     the review skill the wheel ships
+  skills/                     the two skills the wheel ships
     __init__.py               one source for the prompt and for Claude Code
     review-report/            SKILL.md, references, assets, and its scripts:
       collect_context.py      header facts out of git
       render_report.py        findings.json to a report, via report.render
       check_report.py         a hand-written report against the contract
+    pr-description/           the same shape, for @claude describe:
+      collect_context.py      a copy of review-report's, byte for byte
+      render_description.py   description.json to a description
+      check_description.py    a hand-written description against the contract
   templates/                  the config templates and systemd units the wheel ships
     pr-review-agent.service   the single-repository user unit
     pr-review-agent@.service  the templated per-instance user unit

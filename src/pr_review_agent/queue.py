@@ -51,7 +51,7 @@ from datetime import datetime, timedelta
 from ._compat import StrEnum
 from ._time import stamp, to_utc
 from .store import SqliteStore
-from .triggers.models import CommentSource, Trigger, TriggerKind
+from .triggers.models import Command, CommentSource, Trigger, TriggerKind
 
 #: The budget governor's hook into :meth:`ReviewQueue.claim`. It is handed
 #: the claim's own transaction, so whatever it writes commits with the lease
@@ -93,9 +93,9 @@ class Claim:
 _ENQUEUE = """
 INSERT OR IGNORE INTO queue
     (dedupe_key, kind, repo, pr_number, head_sha, actor_id, status, enqueued_at,
-     comment_id, comment_source)
+     comment_id, comment_source, command)
 VALUES (:key, :kind, :repo, :pr, :sha, :actor, :pending, :now,
-        :comment_id, :comment_source)
+        :comment_id, :comment_source, :command)
 """
 
 # The complement of _CLAIMABLE's attempts test: a row that would otherwise be
@@ -120,7 +120,7 @@ WHERE repo = :repo
 # every alternative. See ``claim``.
 _CLAIMABLE = """
 SELECT dedupe_key, kind, repo, pr_number, head_sha, actor_id, attempts,
-       comment_id, comment_source
+       comment_id, comment_source, command
 FROM queue AS q
 WHERE q.repo = :repo
   AND q.attempts < :max_attempts
@@ -175,11 +175,14 @@ WHERE dedupe_key = :key AND owner = :owner
 #
 # A publication item is excluded: it names a recorded run of its own, which
 # no review of this one has posted.
+#
+# `command = :command` -- it asked for the same thing. A description does
+# not answer `@claude review`, nor a review `@claude describe`.
 _FOLD = """
 UPDATE queue SET status = :done, leased_until = NULL, owner = NULL
 WHERE repo = :repo AND pr_number = :pr AND status = :pending
   AND kind != :publish AND dedupe_key != :key AND enqueued_at <= :before
-  AND (head_sha IS NULL OR head_sha = :head)
+  AND (head_sha IS NULL OR head_sha = :head) AND command = :command
 """
 
 # Whether this worker still holds the row it claimed. Read immediately before
@@ -225,6 +228,7 @@ class ReviewQueue:
             "actor": trigger.actor_id,
             "comment_id": trigger.comment_id,
             "comment_source": _text(trigger.comment_source),
+            "command": str(trigger.command),
             "pending": str(QueueStatus.PENDING),
             "now": stamp(now, "enqueued_at"),
         }
@@ -306,8 +310,9 @@ class ReviewQueue:
         """Close the triggers ``claim``'s review already answered.
 
         Three maintainers mentioning the agent on one pull request asked one
-        question -- so reviewing each of them separately would pay three
-        times to post three comments saying the same thing. ``before`` is when
+        question, as long as they asked for the same thing -- so reviewing
+        each of them separately would pay three times to post three comments
+        saying the same thing. ``before`` is when
         this review started: everything still waiting at that moment is
         answered by it, and
         anything enqueued since is not. ``head_sha`` is the commit it read,
@@ -328,6 +333,7 @@ class ReviewQueue:
             "key": claim.trigger.dedupe_key,
             "before": stamp(before, "fold boundary"),
             "head": head_sha,
+            "command": str(claim.trigger.command),
         }
         with self._store.transaction() as conn:
             return conn.execute(_FOLD, params).rowcount
@@ -411,6 +417,7 @@ def _claim(row: tuple, *, owner: str, leased_until: datetime) -> Claim:
             dedupe_key=row[0],
             comment_id=row[7],
             comment_source=None if row[8] is None else CommentSource(row[8]),
+            command=Command(row[9]),
         ),
         attempts=row[6] + 1,
         owner=owner,

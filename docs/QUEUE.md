@@ -170,7 +170,10 @@ every other row for that pull request that
   it may be asking about something the review never read;
 - named no other commit (`head_sha IS NULL`, which every mention is, or the
   same sha the review actually read);
-- is not a `publish` item — that names a recorded run of its own.
+- is not a `publish` item — that names a recorded run of its own;
+- asked for the same thing — the `command` column, `review` or `describe`.
+  A description does not answer a waiting `@claude review`
+  ([DESCRIBE.md](DESCRIBE.md)).
 
 Folded rows end `done`, and the count is logged. They are never acknowledged
 with 👀, because the acknowledgement happens at claim time and they were

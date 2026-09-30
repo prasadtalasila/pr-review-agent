@@ -118,6 +118,20 @@ class TriggerKind(StrEnum):
     PUBLISH = "publish"
 
 
+class Command(StrEnum):
+    """What a trigger asks the engine for: a review, or a description.
+
+    Read off the word after the handle -- ``@claude describe`` -- and
+    nothing else in the comment. It is a choice between two outputs the
+    agent already knows how to produce, never a parameter: whatever follows
+    the verb is not read, so a comment body cannot reach the prompt, the
+    budget or the write set through it. See ``mention.command_of``.
+    """
+
+    REVIEW = "review"
+    DESCRIBE = "describe"
+
+
 @dataclass(frozen=True)
 class Trigger:
     """An accepted request to review a pull request.
@@ -131,6 +145,9 @@ class Trigger:
     The id is also embedded in a mention's dedupe key, but that key is an
     opaque identity string and parsing it back out would make a storage
     format into an interface.
+
+    ``command`` is :attr:`Command.REVIEW` for everything but a mention that
+    asked for a description.
     """
 
     kind: TriggerKind
@@ -141,6 +158,7 @@ class Trigger:
     dedupe_key: str
     comment_id: int | None = None
     comment_source: CommentSource | None = None
+    command: Command = Command.REVIEW
 
 
 @dataclass(frozen=True)

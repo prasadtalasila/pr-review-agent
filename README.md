@@ -68,6 +68,7 @@ with every target made absolute and pinned to the tag being released.
 | [docs/QUEUE.md](docs/QUEUE.md) | Where does an accepted trigger wait, and what stops one review being paid for twice? Dedupe, the per-pull-request lease, why leases expire instead of renewing, and the retry bound |
 | [docs/STORAGE.md](docs/STORAGE.md) | What has to survive a restart, and what does a lost watermark actually cost? Why SQLite, and why a watermark only moves forward |
 | [docs/WORKSPACE.md](docs/WORKSPACE.md) | How does a pull request's code get onto disk, and why is none of it ever run? The bare mirror, the per-run worktree, the untrusted-tree hardening, and the diff-size caps |
+| [docs/DESCRIBE.md](docs/DESCRIBE.md) | What do `@claude review` and `@claude describe` do, and what does a description cost against the same caps a review is held to? |
 | [docs/INCREMENTAL-REVIEW.md](docs/INCREMENTAL-REVIEW.md) | Why does a later round read only what changed since the last one, even after a force-push or a rebase? What that changes about the size caps, the pre-flight estimate and the posted review |
 | [docs/BUDGET.md](docs/BUDGET.md) | The rolling windows and the share that guarantees human headroom, reserve-then-settle under concurrency, the degradation ladder, the circuit breaker, and what is still not built |
 | [docs/WORKER.md](docs/WORKER.md) | What drains the queue? The claim-run-settle loop, what a failed run settles at and why, which failures retry and which are permanent, what a run leaves behind, the supervisor, and why not a process per review |

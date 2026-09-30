@@ -3,7 +3,7 @@
 What starts a review, what does not, and why each rejection is the shape it
 is. Implemented in `src/pr_review_agent/triggers/`, tested in
 `tests/test_classifier.py`, `tests/test_allowlist.py` and
-`tests/test_mention.py`.
+`tests/test_mention.py` and `tests/test_command.py`.
 
 ## ✅ The two accepted events
 
@@ -256,6 +256,14 @@ such as `@claude-ci`.
 
 The handle is configurable (`triggers.handle`), which is what makes the
 pipeline reusable for a different agent.
+
+### The verb after it
+
+The word after the first mention picks what is asked for: `@claude
+describe` is a pull request description, and anything else — `@claude
+review`, a bare `@claude`, prose — is a review. The verb carries no
+argument and the rules above decide who may ask; see
+[DESCRIBE.md](DESCRIBE.md#-how-the-verb-is-read).
 
 ## 🔑 Dedupe keys
 

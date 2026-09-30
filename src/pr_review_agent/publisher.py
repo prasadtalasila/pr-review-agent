@@ -70,6 +70,7 @@ from datetime import datetime, timezone
 from ._compat import StrEnum
 from .comments import AgentComments
 from .config import PublishConfig
+from .description import render_description
 from .poller.client import GitHubClient, GitHubClientError
 from .poller.endpoints import RepoEndpoints
 
@@ -302,17 +303,7 @@ class Publisher:
                     run, comment_id=None, outcome=PublishOutcome.SUPERSEDED
                 )
 
-        body = render(
-            run.head_sha,
-            run.findings,
-            pr_number=run.pr_number,
-            round_number=self.runs.round_of(run.repo, run.pr_number, run.dedupe_key),
-            commits=commits,
-            handle=self.handle,
-            moved_to=moved,
-            omitted=run.omitted,
-            assessment=run.assessment,
-        )
+        body = self._body(run, commits=commits, moved=moved)
         if leaks(body, self.secrets):
             # Not retried, and not logged with the body: re-running would
             # spend again to produce the same comment, and an ERROR that
@@ -357,6 +348,33 @@ class Publisher:
             run,
             comment_id=comment_id,
             outcome=(PublishOutcome.SUPERSEDED if moved else PublishOutcome.PUBLISHED),
+        )
+
+    def _body(self, run: RecordedRun, *, commits: int, moved: str | None) -> str:
+        """The comment for ``run``: its description, or its review.
+
+        Either way it is one ordinary comment, so the write set does not
+        change with the command.
+        """
+        if run.description is not None:
+            return render_description(
+                run.head_sha,
+                run.description,
+                pr_number=run.pr_number,
+                commits=commits,
+                handle=self.handle,
+                moved_to=moved,
+            )
+        return render(
+            run.head_sha,
+            run.findings,
+            pr_number=run.pr_number,
+            round_number=self.runs.round_of(run.repo, run.pr_number, run.dedupe_key),
+            commits=commits,
+            handle=self.handle,
+            moved_to=moved,
+            omitted=run.omitted,
+            assessment=run.assessment,
         )
 
     async def _live_pull(self, pr_number: int) -> tuple[str, int]:

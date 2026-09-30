@@ -176,7 +176,9 @@ the run stayed "still owed a comment" for the lifetime of the database. The
 ## 💬 One comment per review
 
 Findings are posted as an ordinary issue comment on the pull request's
-conversation, and a re-review **posts its own comment**. Nothing the agent
+conversation, and a re-review **posts its own comment**. A description asked
+for with `@claude describe` is posted the same way, as one more comment —
+never written into the pull request body ([DESCRIBE.md](DESCRIBE.md)). Nothing the agent
 has posted is ever edited, and the `comment_id` recorded against a run is
 never dereferenced again.
 

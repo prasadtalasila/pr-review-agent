@@ -129,7 +129,8 @@ CREATE TABLE queue (
     leased_until TEXT,
     owner        TEXT,
     comment_id     INTEGER,          -- the comment a mention came from
-    comment_source TEXT              -- issue|review: which endpoint it was on
+    comment_source TEXT,             -- issue|review: which endpoint it was on
+    command      TEXT NOT NULL DEFAULT 'review'  -- review|describe
 );
 CREATE TABLE ledger (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,7 +166,10 @@ CREATE TABLE runs (
     content_purged_at TEXT,
     publish_outcome   TEXT,             -- published|superseded|dry_run|refused
     publish_attempts  INTEGER NOT NULL DEFAULT 0,  -- posts tried for this run
-    publish_failed_at TEXT              -- set once it is given up on
+    publish_failed_at TEXT,             -- set once it is given up on
+    omitted           TEXT NOT NULL DEFAULT '[]', -- what excluded_paths withheld
+    assessment        TEXT,             -- JSON; NULL before 18, on a description, once purged
+    description       TEXT              -- JSON; NULL on a review, '{}' once purged
 );
 CREATE TABLE agent_comments (
     repo       TEXT NOT NULL,
@@ -288,7 +292,10 @@ comment a mention was written in; version 8 adds `runs`; version 9 adds
 index the [pacer](BUDGET.md#-the-pacer-one-pull-requests-rate) reads; version
 12 adds `runs.publish_outcome`; version 13 adds `runs.publish_attempts` and
 `runs.publish_failed_at`; version 14 adds `agent_comments`; version 15 adds
-the `ledger_open` unique index.
+the `ledger_open` unique index; version 16 adds `ledger.reviewed_since`;
+version 17 adds `runs.omitted`; version 18 adds `runs.assessment`; version
+19 adds `queue.command` and `runs.description`, for
+[`@claude describe`](DESCRIBE.md).
 
 **Version 15 cleans up before it constrains, and that order is the whole
 migration.** A unique index cannot be created over a table that already

@@ -24,8 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .allowlist import Allowlist
-from .mention import has_mention
-from .models import Comment, Decision, PullRequest, Trigger, TriggerKind
+from .mention import has_mention, mention_verb
+from .models import Command, Comment, Decision, PullRequest, Trigger, TriggerKind
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,19 @@ logger = logging.getLogger(__name__)
 #: per comment on every pull request the repository has ever closed. They
 #: stay at ``DEBUG`` so the operator-relevant rejections are readable at
 #: ``INFO``.
+
+
+def command_of(body: str, handle: str) -> Command:
+    """What a mention asks for: a description if it says so, else a review.
+
+    A closed set rather than a lookup of whatever word follows the handle,
+    and an unknown word reads as a review, which is what every ``@claude``
+    meant before verbs existed -- ``@claude please take a look`` keeps
+    working. The verb chooses between two outputs; it carries no argument.
+    """
+    if mention_verb(body, handle) == str(Command.DESCRIBE):
+        return Command.DESCRIBE
+    return Command.REVIEW
 
 
 @dataclass(frozen=True)
@@ -173,6 +186,7 @@ class Classifier:
                 dedupe_key=f"mention:{comment.repo}:{comment.pr_number}:{comment.comment_id}",
                 comment_id=comment.comment_id,
                 comment_source=comment.source,
+                command=command_of(comment.body, self.handle),
             ),
             "accepted",
         )

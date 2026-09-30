@@ -1,4 +1,5 @@
-"""The review skill, shipped in the wheel because two readers need it.
+"""The review and description skills, shipped in the wheel because two
+readers need them.
 
 An interactive Claude Code session loads ``review-report/SKILL.md`` and reads
 its references on demand. The daemon's own reviewer never does:
@@ -17,6 +18,10 @@ the text existed twice -- once as ``REVIEW_INSTRUCTIONS`` and once as
 ``docs/reporting/review-prompt.md`` -- and the constant's own comment said
 paraphrasing it would let the two drift silently.
 
+``pr-description`` is the second skill and follows the same rule: the
+daemon's ``@claude describe`` prompt reads its
+``references/description-contract.md`` from here (``engine/describe.py``).
+
 Addressed through ``importlib.resources`` rather than ``__file__`` for the
 same reason the systemd units are: an installed wheel is the case that has to
 work, and for thirteen releases the data files this package needs were not in
@@ -34,6 +39,13 @@ from pathlib import Path
 #: the two have to agree, because a skill is resolved by the directory it
 #: sits in and named by the ``name:`` in its front matter.
 SKILL_NAME = "review-report"
+
+#: The skill behind ``@claude describe``, and the one a person uses to write
+#: a pull request description by hand.
+DESCRIBE_SKILL = "pr-description"
+
+#: Every skill ``skill install`` places, in the order it places them.
+SKILLS = (SKILL_NAME, DESCRIBE_SKILL)
 
 #: The distribution package these modules live in, which is also the
 #: directory name the vendored copy has to take: the scripts import
@@ -59,6 +71,7 @@ VENDOR_DIR = ("scripts", "_vendor")
 VENDORED = (
     "__init__.py",
     "_compat.py",
+    "description.py",
     "findings.py",
     "numbering.py",
     "report.py",
@@ -80,49 +93,50 @@ the real ``__init__`` imports on the way to it.
 '''
 
 
-def root():
-    """The packaged skill directory, as a ``Traversable``.
+def root(skill: str = SKILL_NAME):
+    """A packaged skill directory, as a ``Traversable``.
 
     Not a ``Path``: inside a zip-imported wheel there is no directory on
     disk, and returning something that only sometimes has a filesystem path
     is how that case gets discovered in production rather than here.
     """
-    return files(__name__).joinpath(SKILL_NAME)
+    return files(__name__).joinpath(skill)
 
 
-def reference(name: str) -> str:
+def reference(name: str, skill: str = SKILL_NAME) -> str:
     """One reference file's text, with the trailing newline stripped.
 
     Stripped because the caller splicing this into a prompt is assembling
     paragraphs, not concatenating files, and a stray blank line is a
     difference a test comparing prompts would have to know about.
     """
-    reference_file = root().joinpath("references").joinpath(name)
+    reference_file = root(skill).joinpath("references").joinpath(name)
     return reference_file.read_text(encoding="utf-8").rstrip("\n")
 
 
-def install(destination: Path, *, force: bool = False) -> Path:
-    """Copy the skill into ``destination``, returning where it landed.
+def install(destination: Path, *, force: bool = False, skill: str = SKILL_NAME) -> Path:
+    """Copy one skill into ``destination``, returning where it landed.
 
     A file writer and nothing else, in the shape ``service install`` already
     uses: it places files and leaves the decision to *use* them to whoever
     ran it. ``destination`` is a skills directory -- ``~/.claude/skills`` for
     every project, ``<repo>/.claude/skills`` for one -- and the skill lands
-    in a ``review-report`` child of it.
+    in a child named for it. Each skill carries its own vendored copy of the
+    package, so either works installed alone.
 
     ``force`` overwrites, but only a directory this function could have
     written: an existing ``review-report`` with no ``SKILL.md`` in it is
     somebody else's, and removing it because the name collided would be a
     destructive act taken on a guess.
     """
-    target = destination / SKILL_NAME
+    target = destination / skill
     if target.exists():
         if not force:
             raise FileExistsError(target)
         if not (target / "SKILL.md").is_file():
             raise FileExistsError(target)
         shutil.rmtree(target)
-    _copy(root(), target)
+    _copy(root(skill), target)
     _vendor(target.joinpath(*VENDOR_DIR) / PACKAGE)
     return target
 

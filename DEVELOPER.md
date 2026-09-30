@@ -30,6 +30,7 @@ src/pr_review_agent/
 │   ├── excluded_paths.py  # the built-in exclusions, generator globs from pr-agent
 │   └── runtime.py     # store, workspace, worker, publish, logging
 ├── daemon.py          # the poll-classify-enqueue loop
+├── description.py     # what @claude describe produces, laid out as a comment
 ├── logs.py            # one level and one format, resolved from three layers
 ├── findings.py        # Finding and Severity: the type every layer handles
 ├── numbering.py       # finding numbers that survive a re-review
@@ -55,6 +56,7 @@ src/pr_review_agent/
 │   ├── cli.py         # the subprocess boundary every CLI adapter shares
 │   ├── claude.py      # the `claude` CLI adapter: the first engine that spends
 │   ├── prompt.py      # what the reviewer is told, and how untrusted text is fenced
+│   ├── describe.py    # what the engine is told for @claude describe
 │   ├── standards.py   # review standards, read from the base ref
 │   └── fake.py        # an engine that spends nothing, for tests
 ├── poller/
@@ -66,11 +68,15 @@ src/pr_review_agent/
 │   ├── pulls.py       # one pull request → PullRequestFacts
 │   └── poller.py      # one sweep across all three endpoints
 ├── skills/
-│   ├── __init__.py    # the packaged review skill: one source, two deliveries
-│   └── review-report/ # SKILL.md, references, assets, and three scripts:
-│       ├── collect_context.py # header facts out of git
-│       ├── render_report.py   # findings.json → a report, via report.render
-│       └── check_report.py    # a hand-written report against the contract
+│   ├── __init__.py    # the packaged skills: one source, two deliveries each
+│   ├── review-report/ # SKILL.md, references, assets, and three scripts:
+│   │   ├── collect_context.py # header facts out of git
+│   │   ├── render_report.py   # findings.json → a report, via report.render
+│   │   └── check_report.py    # a hand-written report against the contract
+│   └── pr-description/ # the same shape, for @claude describe:
+│       ├── collect_context.py      # a copy of review-report's, byte for byte
+│       ├── render_description.py   # description.json → a description
+│       └── check_description.py    # a hand-written one against the contract
 ├── templates/
 │   ├── *.example.yaml # the two config templates the wheel ships
 │   ├── pr-review-agent.service    # the single-repository user unit

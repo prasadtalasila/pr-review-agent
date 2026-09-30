@@ -30,6 +30,7 @@ they are reproduced here so they survive the issue being closed.
 | Logging: level, `auto`/`text`/`json` shape, journald priorities | implemented, unit tested |
 | Multi-repo: repo-scoped queue and watermarks, shared budget authority, `service install --instance` | implemented, unit tested |
 | Review skill (`skill install`), and the prompt read from it | implemented, unit tested |
+| `@claude describe` and the description skill | implemented, unit tested |
 | Retention sweep | not started |
 
 The ordering is deliberate: the **budget governor lands before the review

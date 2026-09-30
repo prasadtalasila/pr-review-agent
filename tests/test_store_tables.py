@@ -46,10 +46,12 @@ def test_an_existing_database_adopts_the_comment_columns(tmp_path):
         conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_attempts")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_failed_at")
-        # Migrations 16 to 18 go too: a rewound version replays them.
+        # Migrations 16 to 19 go too: a rewound version replays them.
         conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("ALTER TABLE runs DROP COLUMN omitted")
         conn.execute("ALTER TABLE runs DROP COLUMN assessment")
+        conn.execute("ALTER TABLE queue DROP COLUMN command")
+        conn.execute("ALTER TABLE runs DROP COLUMN description")
         conn.execute("PRAGMA user_version = 6")
 
     with SqliteStore(path) as reopened:
@@ -83,8 +85,10 @@ def test_an_existing_database_adopts_the_runs_table(tmp_path):
             conn.execute("DROP INDEX ledger_by_pr")
             conn.execute("ALTER TABLE ledger DROP COLUMN repo")
             conn.execute("ALTER TABLE ledger DROP COLUMN pr_number")
-            # Migrations 16 to 18 go too: a rewound version replays them.
+            # Migrations 16 to 19 go too: a rewound version replays them.
+            # The runs half of 17 to 19 went with the table.
             conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
+            conn.execute("ALTER TABLE queue DROP COLUMN command")
             conn.execute("PRAGMA user_version = 7")
 
     with SqliteStore(path) as reopened:
@@ -113,10 +117,12 @@ def test_an_existing_database_adopts_the_breaker_state(tmp_path):
         conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_attempts")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_failed_at")
-        # Migrations 16 to 18 go too: a rewound version replays them.
+        # Migrations 16 to 19 go too: a rewound version replays them.
         conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("ALTER TABLE runs DROP COLUMN omitted")
         conn.execute("ALTER TABLE runs DROP COLUMN assessment")
+        conn.execute("ALTER TABLE queue DROP COLUMN command")
+        conn.execute("ALTER TABLE runs DROP COLUMN description")
         conn.execute("PRAGMA user_version = 8")
 
     with SqliteStore(path) as reopened, reopened.transaction() as conn:
@@ -145,10 +151,12 @@ def test_an_existing_database_adopts_the_budget_policy(tmp_path):
         conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_attempts")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_failed_at")
-        # Migrations 16 to 18 go too: a rewound version replays them.
+        # Migrations 16 to 19 go too: a rewound version replays them.
         conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("ALTER TABLE runs DROP COLUMN omitted")
         conn.execute("ALTER TABLE runs DROP COLUMN assessment")
+        conn.execute("ALTER TABLE queue DROP COLUMN command")
+        conn.execute("ALTER TABLE runs DROP COLUMN description")
         conn.execute("PRAGMA user_version = 9")
 
     with SqliteStore(path) as reopened:
@@ -202,10 +210,12 @@ def test_an_existing_database_adopts_the_publish_attempt_columns(tmp_path):
         )
         conn.execute("ALTER TABLE runs DROP COLUMN publish_attempts")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_failed_at")
-        # Migrations 16 to 18 go too: a rewound version replays them.
+        # Migrations 16 to 19 go too: a rewound version replays them.
         conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("ALTER TABLE runs DROP COLUMN omitted")
         conn.execute("ALTER TABLE runs DROP COLUMN assessment")
+        conn.execute("ALTER TABLE queue DROP COLUMN command")
+        conn.execute("ALTER TABLE runs DROP COLUMN description")
         conn.execute("PRAGMA user_version = 12")
 
     with SqliteStore(path) as reopened, reopened.transaction() as conn:
@@ -227,10 +237,12 @@ def test_an_existing_database_adopts_the_agent_comment_table(tmp_path):
     path = tmp_path / "state.db"
     with SqliteStore(path) as store, store.transaction() as conn:
         conn.execute("DROP TABLE agent_comments")
-        # Migrations 16 to 18 go too: a rewound version replays them.
+        # Migrations 16 to 19 go too: a rewound version replays them.
         conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("ALTER TABLE runs DROP COLUMN omitted")
         conn.execute("ALTER TABLE runs DROP COLUMN assessment")
+        conn.execute("ALTER TABLE queue DROP COLUMN command")
+        conn.execute("ALTER TABLE runs DROP COLUMN description")
         conn.execute("PRAGMA user_version = 13")
 
     with SqliteStore(path) as reopened, reopened.transaction() as conn:
