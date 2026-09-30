@@ -65,6 +65,20 @@ that deserves a numbered entry is not a nit.
 `No issues found.`, then the trailer. Round and commit count still appear: "round 3 found
 nothing" and "round 1 found nothing" are different statements.
 
+**Coverage footer.** When `budget.excluded_paths` withheld changed files from the
+reviewer, one line above the trailer says so, on the empty report too:
+
+```markdown
+_Not reviewed: 301 changed files matched `budget.excluded_paths`: `web/node_modules/` (300 files), `yarn.lock`._
+```
+
+A directory is named only when nothing changed under it was reviewed, and a directory
+standing for one file is named as that file. At most ten entries are named; the rest
+are counted as `and <n> more`. Each path is a code span whose fence its own backticks
+cannot close, and a control character in a path shows as `?`. Nothing withheld renders
+no footer, which is also what the skill's `render_report.py` produces. The footer sits
+below the truncation note when both apply, and counts against the same length limit.
+
 **Trailer.** Unchanged, verbatim, on every comment including the empty one.
 
 ## Worked example

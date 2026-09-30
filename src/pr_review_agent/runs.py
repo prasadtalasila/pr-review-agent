@@ -56,17 +56,20 @@ logger = logging.getLogger(__name__)
 
 _RECORD = """
 INSERT INTO runs
-    (dedupe_key, repo, pr_number, head_sha, outcome, findings, recorded_at)
-VALUES (:key, :repo, :pr, :sha, :outcome, :findings, :now)
+    (dedupe_key, repo, pr_number, head_sha, outcome, findings, omitted,
+     recorded_at)
+VALUES (:key, :repo, :pr, :sha, :outcome, :findings, :omitted, :now)
 ON CONFLICT(dedupe_key) DO UPDATE SET
-    head_sha = :sha, outcome = :outcome, findings = :findings, recorded_at = :now
+    head_sha = :sha, outcome = :outcome, findings = :findings,
+    omitted = :omitted, recorded_at = :now
 """
 
 # One named run, if it is still waiting to be posted. `content_purged_at IS
 # NULL` because a purged run has no findings left and publishing it would
 # post an empty review over a real one.
 _UNPUBLISHED = """
-SELECT dedupe_key, repo, pr_number, head_sha, outcome, findings, comment_id
+SELECT dedupe_key, repo, pr_number, head_sha, outcome, findings, comment_id,
+       omitted
 FROM runs
 WHERE dedupe_key = :key
   AND published_at IS NULL AND content_purged_at IS NULL
@@ -96,9 +99,10 @@ SELECT publish_failed_at FROM runs WHERE dedupe_key = :key
 """
 
 # `findings` is emptied rather than set NULL: the column is NOT NULL, and an
-# empty list is what a reader of a purged row should see.
+# empty list is what a reader of a purged row should see. `omitted` goes with
+# it: the paths are the contributor's tree as much as the findings are.
 _PURGE = """
-UPDATE runs SET findings = '[]', content_purged_at = :now
+UPDATE runs SET findings = '[]', omitted = '[]', content_purged_at = :now
 WHERE repo = :repo AND pr_number = :pr AND content_purged_at IS NULL
 """
 
@@ -126,7 +130,13 @@ ORDER BY recorded_at, rowid
 
 @dataclass(frozen=True)
 class RecordedRun:
-    """One completed review, as it was stored."""
+    """One completed review, as it was stored.
+
+    ``omitted`` is ``Checkout.omitted`` for the diff the review was shown.
+    """
+
+    # One field per stored column the publisher reads back; a nested record
+    # would only rename them. pylint: disable=too-many-instance-attributes
 
     dedupe_key: str
     repo: str
@@ -135,6 +145,7 @@ class RecordedRun:
     outcome: Outcome
     findings: tuple[Finding, ...]
     comment_id: int | None
+    omitted: tuple[tuple[str, int], ...] = ()
 
 
 #: Prefixed so a publication item can never collide with the review whose
@@ -214,6 +225,7 @@ class RunStore:
         head_sha: str,
         result: ReviewResult,
         now: datetime,
+        omitted: tuple[tuple[str, int], ...] = (),
     ) -> RecordedRun:
         """Store what this run produced, before anything is posted.
 
@@ -236,6 +248,7 @@ class RunStore:
                     "sha": head_sha,
                     "outcome": str(result.outcome),
                     "findings": _dump(result.findings),
+                    "omitted": json.dumps(omitted),
                     "now": stamp(now, "run timestamp"),
                 },
             )
@@ -247,6 +260,7 @@ class RunStore:
             outcome=result.outcome,
             findings=result.findings,
             comment_id=None,
+            omitted=omitted,
         )
 
     def unpublished(self, dedupe_key: str) -> RecordedRun | None:
@@ -406,4 +420,5 @@ def _run(row: tuple) -> RecordedRun:
         outcome=Outcome(row[4]),
         findings=_load(row[5]),
         comment_id=row[6],
+        omitted=tuple((path, files) for path, files in json.loads(row[7])),
     )

@@ -5,7 +5,7 @@ import sys
 import pytest
 
 from pr_review_agent.config import DEFAULT_EXCLUDED_PATHS
-from pr_review_agent.workspace.exclusions import pathspec
+from pr_review_agent.workspace.exclusions import omitted, pathspec
 from pr_review_agent.workspace.gitcmd import run_git
 
 
@@ -98,3 +98,34 @@ async def test_each_generator_group_excludes_its_output_and_keeps_the_source(
     await run_git("add", "--all", cwd=tmp_path)
     listed = await run_git("ls-files", *pathspec((pattern,)), cwd=tmp_path)
     assert listed.split() == [sibling]
+
+
+# -- what the coverage footer is told was withheld -----------------------
+
+
+def test_a_directory_nothing_was_reviewed_in_is_named_once():
+    changed = ["web/node_modules/a/x.js", "web/node_modules/b/y.js", "web/app.ts"]
+    assert omitted(changed, ["web/app.ts"]) == (("web/node_modules/", 2),)
+
+
+def test_a_directory_holding_a_reviewed_file_is_never_named():
+    """Saying ``src/`` was not read would be false: ``src/app.py`` was."""
+    changed = ["src/x.min.js", "src/y.min.js", "src/app.py"]
+    assert omitted(changed, ["src/app.py"]) == (
+        ("src/x.min.js", 1),
+        ("src/y.min.js", 1),
+    )
+
+
+def test_a_directory_standing_for_one_file_is_named_as_that_file():
+    changed = ["a/yarn.lock", "b/yarn.lock", "src/app.py"]
+    assert omitted(changed, ["src/app.py"]) == (("a/yarn.lock", 1), ("b/yarn.lock", 1))
+
+
+def test_the_highest_unreviewed_directory_is_the_one_named():
+    changed = ["web/node_modules/a/x.js", "web/yarn.lock", "src/app.py"]
+    assert omitted(changed, ["src/app.py"]) == (("web/", 2),)
+
+
+def test_nothing_withheld_is_nothing_to_say():
+    assert omitted(["src/app.py"], ["src/app.py"]) == ()

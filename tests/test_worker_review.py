@@ -5,6 +5,8 @@ round's findings so a number survives it, and the checkout it ran against
 does not.
 """
 
+import json
+
 from worker_harness import (
     NOW,
     POSIX_ONLY,
@@ -110,6 +112,17 @@ async def test_the_engine_is_handed_the_checkout_and_the_rung(wired, git_remote)
     assert request.checkout.head_sha == git_remote.head_sha
     assert "feature.py" in request.checkout.diff
     assert request.facts.number == PR
+
+
+async def test_the_posted_review_names_what_the_exclusions_withheld(wired):
+    """The shipped exclusions keep ``vendor/`` from the engine; the comment says so."""
+    fixture = wired()
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    (comment,) = fixture.github.comments
+    assert "`vendor/lib.js`._" in json.loads(comment.content)["body"]
 
 
 async def test_a_mention_is_reviewed_at_the_head_the_api_reports(wired, git_remote):

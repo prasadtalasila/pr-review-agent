@@ -310,6 +310,7 @@ class Publisher:
             commits=commits,
             handle=self.handle,
             moved_to=moved,
+            omitted=run.omitted,
         )
         if leaks(body, self.secrets):
             # Not retried, and not logged with the body: re-running would

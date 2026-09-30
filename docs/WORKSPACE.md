@@ -233,6 +233,15 @@ request is no longer refused for the size of the whole — while a fixup that
 is itself over a cap still is. `Checkout.reviewed` carries those two numbers
 for the [pre-flight estimate](BUDGET.md#-the-pre-flight-token-estimate).
 
+`Checkout.omitted` is the other side of the same range: the changed paths the
+pathspec kept out, so the posted review can
+[say what it did not read](reporting/review-report.md#rules). It costs two
+more local `git diff --name-only -z` calls, one with the pathspec and one
+without, and only when `excluded_paths` is non-empty. Both lists are needed
+because the grouping never names a directory that holds a reviewed file:
+`web/node_modules/` collapses to one entry, while three lockfiles scattered
+beside reviewed code stay three entries.
+
 A refusal now happens between the fetch and the worktree, where a run-scoped
 ref already exists, so the ref is deleted on the way out. Before exclusions
 the gate fired before the fetch and there was nothing to clean up; leaving it
