@@ -45,9 +45,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from ._time import stamp
+from ._time import parse, stamp
 from .engine import Finding, Outcome, ReviewResult, Severity
 from .store import SqliteStore
 from .triggers.models import Trigger, TriggerKind
@@ -109,7 +109,7 @@ WHERE repo = :repo AND pr_number = :pr AND content_purged_at IS NULL
 # issued. A purged row is excluded because its findings were deleted, not
 # resolved -- reusing its numbers would relabel items a reader referred to.
 _HISTORY = """
-SELECT findings FROM runs
+SELECT findings, head_sha, recorded_at FROM runs
 WHERE repo = :repo AND pr_number = :pr
   AND outcome = 'completed' AND content_purged_at IS NULL
 ORDER BY recorded_at DESC, rowid DESC
@@ -174,10 +174,31 @@ class PullRequestHistory:
     reviewer is shown so it can say "still" truthfully. ``high_water`` is the
     largest number ever issued here, including on findings that have since
     been fixed -- a retired number must never come back on something else.
+
+    ``head_sha`` and ``recorded_at`` are that same last completed round's
+    head and when it was recorded, ``None`` before the first. The head is
+    what an incremental round diffs from; ``prior`` is deliberately *not*
+    narrowed with it, because a finding on a line the narrower diff no
+    longer shows is still one the reviewer has to say "still" about.
     """
 
     prior: tuple[Finding, ...]
     high_water: int
+    head_sha: str | None = None
+    recorded_at: datetime | None = None
+
+    def incremental_base(self, now: datetime, min_seconds: int) -> str | None:
+        """The head to diff from, or ``None`` when this round must be full.
+
+        ``None`` before the first completed round, and when that round was
+        recorded fewer than ``min_seconds`` ago -- ``budget.
+        incremental_min_seconds``, where zero disables the threshold.
+        """
+        if self.recorded_at is None or (
+            min_seconds and now - self.recorded_at < timedelta(seconds=min_seconds)
+        ):
+            return None
+        return self.head_sha
 
 
 class RunStore:
@@ -247,9 +268,11 @@ class RunStore:
             rows = conn.execute(_HISTORY, {"repo": repo, "pr": pr_number}).fetchall()
         rounds = [_load(row[0]) for row in rows]
         numbers = [f.number for round_ in rounds for f in round_ if f.number]
-        return PullRequestHistory(
-            prior=rounds[0] if rounds else (),
-            high_water=max(numbers, default=0),
+        history = PullRequestHistory(prior=(), high_water=max(numbers, default=0))
+        if not rows:
+            return history
+        return replace(
+            history, prior=rounds[0], head_sha=rows[0][1], recorded_at=parse(rows[0][2])
         )
 
     def round_of(self, repo: str, pr_number: int, dedupe_key: str) -> int:

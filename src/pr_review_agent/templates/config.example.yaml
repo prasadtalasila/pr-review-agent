@@ -188,6 +188,23 @@ budget:
   # say the cap was reached.
   # max_reviews_per_pull_request: 5
 
+  # Optional (both default 0, disabled). A later round on a pull request is
+  # shown only what changed since the head the previous completed round
+  # reviewed -- including after a force-push or a rebase, which are compared
+  # by content, with upstream commits left out. The size caps and the token
+  # estimate measure that narrower diff, so a small fixup on a large pull
+  # request is no longer refused for the size of the whole. The worktree is
+  # still the whole head, and earlier findings are still re-checked.
+  #
+  # These two only force a FULL round below a threshold: fewer new commits
+  # than incremental_min_commits, or a previous round more recent than
+  # incremental_min_seconds. The pacer above already defers anything sooner
+  # than min_review_interval_seconds, so a seconds value at or below that
+  # never fires. Rebased pull requests need git 2.38 or later to be
+  # reviewed incrementally; older git reviews them in full.
+  incremental_min_commits: 0
+  incremental_min_seconds: 0
+
   # Optional (defaults 100 / 5000). Layer 2's diff-size caps: a pull request
   # over either is refused before a worktree is created and before any diff
   # reaches the reviewer. Both exist because neither bounds the other --

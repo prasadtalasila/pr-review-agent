@@ -133,6 +133,8 @@ Required, and the only section `SIGHUP` reloads. The full specification is
 | `min_review_interval_seconds` | integer ≥ 0 | no (default `900`) | How long one pull request waits between reviews. A trigger arriving sooner is **deferred**, not dropped. `0` disables it. |
 | `mention_min_review_interval_seconds` | integer ≥ 0 | no (default `300`) | The same, for a `@claude`: a person is waiting, so it is shorter. May not exceed `min_review_interval_seconds`. |
 | `max_reviews_per_pull_request` | integer ≥ 1 | no (default: **no cap**) | The most reviews one pull request may have in a trailing 24 hours. |
+| `incremental_min_commits` | integer ≥ 0 | no (default `0`) | A later round is shown only what changed since the last completed one. Below this many new commits it is full instead. `0` disables it. |
+| `incremental_min_seconds` | integer ≥ 0 | no (default `0`) | The same, for a previous round more recent than this. At or below `min_review_interval_seconds` it never fires, because the pacer defers such a trigger first. |
 
 **A token count** is a positive integer, written however reads best:
 `1500000`, `1_500_000`, `1500k` and `1.5m` are the same number. The suffixes

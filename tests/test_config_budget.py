@@ -166,6 +166,37 @@ def test_an_unusable_per_pull_request_cap_is_rejected(value):
         Config.from_mapping(data)
 
 
+def test_the_incremental_thresholds_are_off_by_default():
+    budget = Config.from_mapping(VALID).budget
+    assert budget.incremental_min_commits == 0
+    assert budget.incremental_min_seconds == 0
+
+
+def test_the_incremental_thresholds_are_read():
+    data = {
+        **VALID,
+        "budget": {
+            **BUDGET,
+            "incremental_min_commits": 3,
+            "incremental_min_seconds": 3600,
+        },
+    }
+    budget = Config.from_mapping(data).budget
+    assert (budget.incremental_min_commits, budget.incremental_min_seconds) == (
+        3,
+        3600,
+    )
+
+
+@pytest.mark.parametrize("key", ["commits", "seconds"])
+@pytest.mark.parametrize("value", [-1, "3", 1.5, True])
+def test_an_unusable_incremental_threshold_is_rejected(key, value):
+    name = f"incremental_min_{key}"
+    data = {**VALID, "budget": {**BUDGET, name: value}}
+    with pytest.raises(ConfigError, match=name):
+        Config.from_mapping(data)
+
+
 def test_superseded_reviews_are_posted_by_default():
     """The tokens are spent before the head is re-read; discarding shows nobody."""
     assert Config.from_mapping(VALID).publish.post_superseded is True

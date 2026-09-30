@@ -120,6 +120,7 @@ src/pr_review_agent/          importable package (src layout)
     gitcmd.py                 the one hardened `git` invocation
     exclusions.py             configured path patterns to git pathspec arguments
     repo.py                   bare mirror, per-run worktree, diff, teardown
+    since.py                  where an incremental round's diff starts, or that it is full
 tests/                        pytest suite; a family per module under test
   conftest.py                 the loopback https git remote, and the plugin list
   *_harness.py                one family's doubles and fixtures, imported by it

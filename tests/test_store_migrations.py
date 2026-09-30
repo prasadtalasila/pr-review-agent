@@ -43,7 +43,7 @@ def test_reopening_does_not_lose_data_to_a_re_migration(tmp_path):
 
 def test_the_ledger_arrives_with_the_schema(tmp_path):
     with SqliteStore(tmp_path / "state.db") as store:
-        assert store.schema_version == SCHEMA_VERSION == 15
+        assert store.schema_version == SCHEMA_VERSION == 16
         with store.transaction() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
@@ -51,6 +51,8 @@ def test_the_ledger_arrives_with_the_schema(tmp_path):
     # usage_confidence exists because some engines report no tokens at all,
     # and an operator has to be able to see when that was the case.
     assert {"reserved_tokens", "used_tokens", "usage_confidence", "mode"} <= columns
+    # reviewed_since keeps incremental rounds out of the pre-flight fit.
+    assert "reviewed_since" in columns
 
 
 def test_an_existing_database_adopts_the_ledger(tmp_path):
@@ -104,6 +106,8 @@ def test_an_existing_database_adopts_the_contributor_index(tmp_path):
         conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_attempts")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_failed_at")
+        # Migration 16 goes too, for the same reason.
+        conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("PRAGMA user_version = 3")
 
     with SqliteStore(path) as reopened:
@@ -139,6 +143,8 @@ def test_an_existing_database_adopts_the_reviewed_lines_column(tmp_path):
         conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_attempts")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_failed_at")
+        # Migration 16 goes too, for the same reason.
+        conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("PRAGMA user_version = 4")
 
     with SqliteStore(path) as reopened:
@@ -171,6 +177,8 @@ def test_an_existing_database_adopts_the_stop_reason_column(tmp_path):
         conn.execute("ALTER TABLE runs DROP COLUMN publish_outcome")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_attempts")
         conn.execute("ALTER TABLE runs DROP COLUMN publish_failed_at")
+        # Migration 16 goes too, for the same reason.
+        conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("PRAGMA user_version = 5")
         conn.execute(
             "INSERT INTO ledger (dedupe_key, owner, actor_id, mode, "
