@@ -208,34 +208,26 @@ budget:
   max_changed_files: 100
   max_changed_lines: 5000
 
-  # Optional. Paths excluded from the caps above AND from the diff the
-  # reviewer is shown -- one list, one mechanism, so the two cannot drift
+  # Optional (default true). The built-in exclusions -- lockfiles, vendored
+  # trees (vendor/, node_modules/, third_party/), generated code (protobuf,
+  # OpenAPI/Swagger, GraphQL, gRPC and Go generators, *.generated.*) and
+  # minified bundles -- are subtracted from the caps above AND from the diff
+  # the reviewer is shown: one list, one mechanism, so the two cannot drift
   # apart. Reviewing a lockfile is close to worthless while its thousands of
   # lines still count against a cap, which makes this the largest saving
-  # available for zero tokens.
+  # available for zero tokens. The list itself lives in the package
+  # (pr_review_agent/config/excluded_paths.py; docs/BUDGET.md names it) so
+  # a config file does not have to repeat it.
   #
-  # Glob patterns, matched at any depth via "**/". SETTING THIS REPLACES THE
-  # LIST BELOW rather than adding to it; an empty list excludes nothing. A
-  # pattern may not begin with ":", because the pathspec magic is the
-  # agent's to supply.
-  excluded_paths:
-    - '**/package-lock.json'
-    - '**/yarn.lock'
-    - '**/pnpm-lock.yaml'
-    - '**/poetry.lock'
-    - '**/Cargo.lock'
-    - '**/Gemfile.lock'
-    - '**/composer.lock'
-    - '**/go.sum'
-    - '**/vendor/**'
-    - '**/node_modules/**'
-    - '**/third_party/**'
-    - '**/*.pb.go'
-    - '**/*_pb2.py'
-    - '**/*.generated.*'
-    - '**/*.min.js'
-    - '**/*.min.css'
-    - '**/*.map'
+  # Set false for a repository that genuinely reviews its lockfiles or its
+  # generated code; excluded_paths below is then the whole list.
+  # default_exclusions: true
+
+  # Optional. The operator's own exclusions, ADDED to the built-ins above
+  # rather than replacing them. Glob patterns, matched at any depth via
+  # "**/". A pattern may not begin with ":", because the pathspec magic is
+  # the agent's to supply.
+  excluded_paths: []
 
 # ---------------------------------------------------------------------------
 # store -- optional. Where the daemon's memory lives.

@@ -24,7 +24,6 @@ import yaml
 from ..triggers.classifier import Classifier
 from ._sections import ConfigError, _keys, _section
 from .budget import (
-    DEFAULT_EXCLUDED_PATHS,
     DEFAULT_MAX_CHANGED_FILES,
     DEFAULT_MAX_CHANGED_LINES,
     DEFAULT_REVIEWER_SHARE_PCT,
@@ -32,6 +31,7 @@ from .budget import (
     BudgetConfig,
 )
 from .engine import DEFAULT_ENGINE_BINARY, EngineConfig
+from .excluded_paths import DEFAULT_EXCLUDED_PATHS
 from .github_triggers import GitHubConfig, TriggerConfig
 from .runtime import (
     DEFAULT_CACHE_DIR,
