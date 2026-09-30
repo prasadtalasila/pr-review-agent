@@ -38,6 +38,7 @@ from pathlib import Path
 
 from .exclusions import pathspec
 from .gitcmd import WorkspaceError, run_git
+from .since import diff_start
 
 logger = logging.getLogger(__name__)
 
@@ -136,13 +137,21 @@ class DiffSize:
 
 @dataclass(frozen=True)
 class Checkout:
-    """An untrusted tree on disk, and the diff that describes it."""
+    """An untrusted tree on disk, and the diff that describes it.
+
+    ``since_sha`` is set when the diff covers only what changed since the
+    head a previous round reviewed, and ``None`` when it covers the whole
+    pull request from ``merge_base``. ``reviewed`` always measures the diff
+    actually shown, whichever it is. The tree on disk is the whole head
+    either way, so a finding outside the diff can still be checked.
+    """
 
     path: Path
     head_sha: str
     merge_base: str
     diff: str
     reviewed: DiffSize
+    since_sha: str | None = None
 
 
 class PullRequestTooLarge(WorkspaceError):
@@ -277,7 +286,12 @@ class Workspace:
         max_changed_files: int,
         max_changed_lines: int,
         excluded_paths: tuple[str, ...] = (),
+        since_sha: str | None = None,
+        min_commits: int = 0,
     ) -> AsyncIterator[Checkout]:
+        # Every keyword is a reloadable setting or a round's input, passed per
+        # call for the reason the docstring gives; bundling them would only
+        # move the list. pylint: disable=too-many-arguments,too-many-locals
         """Check the pull request head out, and take it away afterwards.
 
         The caps are arguments rather than state because ``budget`` is
@@ -289,6 +303,12 @@ class Workspace:
         The gate fires after the fetch rather than before it, because
         exclusions cannot be subtracted from the API's three aggregate
         integers -- see ``_gate``.
+
+        ``since_sha`` is the head the previous completed round reviewed.
+        When :func:`since.diff_start` finds a safe place to start from, the
+        size gate and the diff both measure from there -- one variable feeds
+        both, so they cannot disagree -- and otherwise the round is full.
+        ``min_commits`` is ``budget.incremental_min_commits``.
         """
         run_id = uuid.uuid4().hex[:12]
         ref = f"{RUN_REF_PREFIX}/{run_id}"
@@ -309,28 +329,18 @@ class Workspace:
                     head_sha,
                 )
             ).strip()
-            paths = pathspec(excluded_paths)
-            numstat = await run_git(
-                "-C",
-                str(self.mirror),
-                "diff",
-                "--no-ext-diff",
-                "--numstat",
-                merge_base,
-                head_sha,
-                *paths,
+            start = since_sha and await diff_start(
+                self.mirror,
+                base_ref=facts.base_ref,
+                merge_base=merge_base,
+                head_sha=head_sha,
+                since_sha=since_sha,
+                min_commits=min_commits,
             )
-            reviewed = DiffSize.from_numstat(numstat)
+            span = (start or merge_base, head_sha, *pathspec(excluded_paths))
+            reviewed = DiffSize.from_numstat(await self._diff("--numstat", *span))
             self._gate(facts, reviewed, max_changed_files, max_changed_lines)
-            diff = await run_git(
-                "-C",
-                str(self.mirror),
-                "diff",
-                "--no-ext-diff",
-                merge_base,
-                head_sha,
-                *paths,
-            )
+            diff = await self._diff(*span)
             self.runs.mkdir(parents=True, exist_ok=True)
             await run_git(
                 "-C",
@@ -351,9 +361,14 @@ class Workspace:
                 merge_base=merge_base,
                 diff=diff,
                 reviewed=reviewed,
+                since_sha=since_sha if start else None,
             )
         finally:
             await self._teardown(run_path, ref)
+
+    async def _diff(self, *args: str) -> str:
+        """``git diff`` in the mirror, where in-tree attributes cannot reach it."""
+        return await run_git("-C", str(self.mirror), "diff", "--no-ext-diff", *args)
 
     @staticmethod
     def _gate(

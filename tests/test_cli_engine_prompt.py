@@ -117,3 +117,29 @@ def test_the_schema_requires_a_title_and_leaves_the_number_optional():
     assert "title" in item["required"]
     assert "number" not in item["required"]
     assert item["properties"]["number"]["type"] == "integer"
+
+
+# -- which range the diff covers ------------------------------------------
+
+
+def test_a_full_round_says_the_diff_is_the_whole_pull_request(tmp_path):
+    base = request(tmp_path)
+    prompt = build_prompt(base, standards="")
+    checkout = base.checkout
+    assert "covers the whole pull request" in prompt
+    assert f"{checkout.merge_base}..{checkout.head_sha}" in prompt
+    assert "changed since" not in prompt
+
+
+def test_an_incremental_round_names_the_head_it_diffs_from(tmp_path):
+    base = request(tmp_path)
+    since_sha = "f" * 40
+    incremental = replace(base, checkout=replace(base.checkout, since_sha=since_sha))
+    prompt = build_prompt(replace(incremental, prior=PRIOR), standards="")
+    assert f"only what changed since {since_sha}" in prompt
+    assert "covers the whole pull request" not in prompt
+    # The earlier findings are still there to re-check, and the reviewer is
+    # told why one may not be in the diff.
+    assert "script/docs.sh:46" in prompt
+    assert "outside it" in prompt
+    assert prompt.index("changed since") < prompt.index("## Diff")

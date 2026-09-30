@@ -145,6 +145,14 @@ def _interval(data: dict, key: str, default: int) -> int:
     return value
 
 
+def _commits(data: dict, key: str) -> int:
+    """Read an optional commit-count threshold. Zero disables it."""
+    value = data.get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"budget.{key} must be a whole number of commits, or 0")
+    return value
+
+
 def _reviews_cap(data: dict) -> int | None:
     """Read the optional per-pull-request daily review cap."""
     value = data.get("max_reviews_per_pull_request")
@@ -248,6 +256,15 @@ class BudgetConfig:
     #: gains nothing from it. Counted over a trailing 24 hours, the same
     #: duration as the daily window.
     max_reviews_per_pull_request: int | None = None
+    #: Incremental review (roadmap C2) is on whenever a previous completed
+    #: round exists; these only make a round full *below* a threshold --
+    #: fewer new commits than this, or a previous round more recent than
+    #: this many seconds. Zero disables each, and is the default. Note that
+    #: the pacer already defers a trigger sooner than
+    #: ``min_review_interval_seconds``, so a seconds threshold at or below
+    #: that interval never fires. See docs/BUDGET.md.
+    incremental_min_commits: int = 0
+    incremental_min_seconds: int = 0
 
     @property
     def effective_excluded_paths(self) -> tuple[str, ...]:
@@ -371,6 +388,8 @@ class BudgetConfig:
                 DEFAULT_MENTION_MIN_REVIEW_INTERVAL_SECONDS,
             ),
             max_reviews_per_pull_request=_reviews_cap(data),
+            incremental_min_commits=_commits(data, "incremental_min_commits"),
+            incremental_min_seconds=_interval(data, "incremental_min_seconds", 0),
         )
         if (
             config.mention_min_review_interval_seconds

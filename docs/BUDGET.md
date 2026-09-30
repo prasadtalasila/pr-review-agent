@@ -162,6 +162,13 @@ requests per claimed trigger, truncates at three thousand files, and is the
 endpoint [WORKSPACE.md](WORKSPACE.md#-why-a-checkout-rather-than-the-api-diff)
 already rejected for the diff.
 
+**On an incremental round the caps measure the narrower range.** A pull
+request whose whole diff is over `max_changed_lines` is reviewed when the
+commits since the last completed round fit under it, and a fixup that is
+itself over the cap is still refused. This widens what may be reviewed, and
+`tests/test_workspace_since.py` pins the bound: the caps apply to exactly the
+range the engine is shown, because one variable feeds both `git diff` calls.
+
 A refusal logs both figures — what survived exclusion and what the API
 reported. "Refused at 3 files" is baffling beside a pull request GitHub says
 has 900; the gap between the two numbers *is* the explanation.
@@ -209,6 +216,23 @@ at `exact` zero — each spent less than reviewing those lines actually costs,
 so each would fit a rate below the truth and the estimate would refuse less
 than it should. Every other run leaves the column NULL, which is how a row
 says nothing about tokens per line rather than saying something wrong.
+
+**Only a full round is a sample.** An [incremental
+round](WORKSPACE.md#-a-later-round-sees-only-what-changed) pays the same fixed
+overhead — the instructions, the earlier findings, the reviewer reading the
+tree — over fewer lines, so its tokens per line run high, and a fit mixing
+the two would drift with the ratio of pushes to first reviews rather than
+with what a review costs. `settle` writes `reviewed_since`, the head an
+incremental round diffed from, and the fit reads only rows where it is NULL.
+Every row written before the column existed was a full round, which is what
+NULL says. The rate predicts a whole pull request, which is what the cap
+refuses; an incremental round is still checked against it, on its own
+narrower line count.
+
+An incremental round with nothing reviewable in it — usually a force-push
+that changed no content — is refused for free like any empty pull request,
+but its notice says nothing has changed since the previous head rather than
+that every path is excluded, which would be false.
 
 ### The cold start errs high
 

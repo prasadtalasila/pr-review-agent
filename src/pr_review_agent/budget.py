@@ -269,7 +269,7 @@ _SETTLE = """
 UPDATE ledger
 SET used_tokens = :used, usage_confidence = :confidence,
     engine = :engine, model = :model, reviewed_lines = :lines,
-    stop_reason = :reason, settled_at = :now
+    reviewed_since = :since, stop_reason = :reason, settled_at = :now
 WHERE dedupe_key = :key AND owner = :owner AND settled_at IS NULL
 """
 
@@ -278,11 +278,19 @@ WHERE dedupe_key = :key AND owner = :owner AND settled_at IS NULL
 # token count: `estimated` and `unavailable` rows describe a run the governor
 # could not measure, and fitting a rate to them would turn a known-weaker
 # guarantee into a confidently wrong number.
+#
+# Full rounds only. An incremental round pays the same fixed overhead -- the
+# instructions, the earlier findings, the reviewer reading the tree -- over
+# fewer lines, so its tokens per line run high, and a fit mixing the two
+# would drift with the ratio of pushes to first reviews rather than with
+# what reviewing costs. The rate is for predicting a whole pull request,
+# which is what the cap refuses.
 _FIT_SAMPLE = """
 SELECT COUNT(*), COALESCE(SUM(used_tokens), 0), COALESCE(SUM(reviewed_lines), 0)
 FROM ledger
 WHERE settled_at IS NOT NULL AND usage_confidence = :exact
   AND reviewed_lines IS NOT NULL AND reviewed_lines > 0
+  AND reviewed_since IS NULL
 """
 
 
@@ -402,6 +410,7 @@ class Governor:
         now: datetime,
         stop_reason: StopReason,
         reviewed_lines: int | None = None,
+        reviewed_since: str | None = None,
     ) -> bool:
         """Record what the run actually spent, releasing the remainder.
 
@@ -415,12 +424,15 @@ class Governor:
         was handed -- and an adapter that under-reported would bias the rate
         downward, which is a spending control taking its input from the
         thing it controls. The worker reads it off ``Checkout.reviewed``.
+        ``reviewed_since`` comes off the same checkout, for the same reason:
+        it is what keeps an incremental round out of the fit.
 
         ``stop_reason`` is required and has no default. A default would be a
         reason nobody gave, and the column exists precisely to remove that
         ambiguity -- a ``NULL`` here would mean the thing it was added to
         stop meaning, which is "something happened".
         """
+        # One keyword per ledger column. pylint: disable=too-many-arguments
         with self._store.transaction() as conn:
             return (
                 conn.execute(
@@ -431,6 +443,7 @@ class Governor:
                         "engine": usage.engine,
                         "model": usage.model,
                         "lines": reviewed_lines,
+                        "since": reviewed_since,
                         "reason": str(stop_reason),
                         "now": stamp(now),
                         "key": claim.trigger.dedupe_key,
@@ -488,7 +501,14 @@ class Governor:
         """
         return round(self._rate() * reviewed_lines)
 
-    def preflight(self, claim: Claim, reviewed_lines: int, now: datetime) -> str | None:
+    def preflight(
+        self,
+        claim: Claim,
+        reviewed_lines: int,
+        now: datetime,
+        *,
+        since: str | None = None,
+    ) -> str | None:
         """Why this run is not worth starting, or ``None`` to start it.
 
         Refuses a pull request predicted to cost more than one run may spend,
@@ -519,17 +539,16 @@ class Governor:
         Each notice names the setting that would turn this refusal into a
         review, because that is the only part a reader can act on, and
         carries the same numbers as the log line beside it.
+
+        ``since`` is ``Checkout.since_sha``. An incremental round with
+        nothing to review is usually a force-push that changed no content,
+        and saying every path is excluded would be false; see
+        :func:`_nothing_to_review`.
         """
         key = claim.trigger.dedupe_key
         max_run_tokens = self._effective_now().max_run_tokens
         if reviewed_lines <= 0:
-            logger.info(
-                "nothing left to review in %s after path exclusions: refusing", key
-            )
-            notice = (
-                "Every path this pull request changes is excluded from review "
-                "by `budget.excluded_paths`, so there is nothing left to read."
-            )
+            notice = _nothing_to_review(key, since)
         else:
             predicted = self.estimate(reviewed_lines)
             if predicted <= max_run_tokens:
@@ -687,6 +706,22 @@ class Governor:
             )
             return False
         return True
+
+
+def _nothing_to_review(key: str, since: str | None) -> str:
+    """The notice for a refusal with no reviewable lines, and its log line."""
+    if since is None:
+        logger.info("nothing left to review in %s after path exclusions: refusing", key)
+        return (
+            "Every path this pull request changes is excluded from review "
+            "by `budget.excluded_paths`, so there is nothing left to read."
+        )
+    logger.info("nothing new to review in %s since %s: refusing", key, since)
+    return (
+        f"Nothing reviewable has changed since `{since[:12]}`, the head the "
+        "previous review read: the new commits change no content, or only "
+        "paths excluded by `budget.excluded_paths`. The earlier review stands."
+    )
 
 
 def _windows(config: BudgetConfig) -> tuple[Window, ...]:

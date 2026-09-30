@@ -308,7 +308,9 @@ This touches the trigger layer, which is the part of the system where a
 mistake means a stranger getting a review, so it wants more care than its
 size suggests.
 
-**C2. Incremental review.**
+**C2. Incremental review.** *(landed in 1.9.0 — compared by content rather
+than history, so a force-push or a rebase is incremental too; see
+[WORKSPACE.md](WORKSPACE.md#-a-later-round-sees-only-what-changed).)*
 `pr-agent` reviews only what changed since the last reviewed commit.
 `Checkout` computes `merge_base..head` every round, so round five re-reads
 everything rounds one to four already read. The ledger records the previous
@@ -508,8 +510,8 @@ Ordered by value per unit of diff, not by section:
 3. ~~**A6, the outbound comment.**~~ *Landed in 1.1.3:* escaping, a length
    cap and the secret canary — pure render-layer functions, and the canary is
    the only thing standing between a leak and a public comment.
-4. **C2, incremental review.** The largest budget saving, and the ledger
-   already holds the range it needs.
+4. ~~**C2, incremental review.**~~ *Landed in 1.9.0,* including after a
+   force-push or a rebase.
 5. **A2 and A4, the sandbox and default-deny egress.** Depth on top of A1,
    and the point where the operator's answers about tenancy and `npm`
    decide the route.

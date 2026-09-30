@@ -83,7 +83,8 @@ src/pr_review_agent/
 └── workspace/
     ├── gitcmd.py      # the one hardened `git` invocation
     ├── exclusions.py  # configured path patterns → git pathspec arguments
-    └── repo.py        # bare mirror, per-run worktree, diff, teardown
+    ├── repo.py        # bare mirror, per-run worktree, diff, teardown
+    └── since.py       # where an incremental round's diff starts, or that it is full
 ```
 
 `tests/test_docs_layout.py` walks `src/pr_review_agent` and fails if a module

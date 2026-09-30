@@ -62,6 +62,8 @@ def test_an_existing_database_settles_its_duplicate_open_reservations(tmp_path):
         for tokens in (10, 20, 30):
             _reserve(conn, "k", tokens)
         _reserve(conn, "untouched", 40)
+        # Migration 16 goes too: a rewound version replays it.
+        conn.execute("ALTER TABLE ledger DROP COLUMN reviewed_since")
         conn.execute("PRAGMA user_version = 14")
 
     with SqliteStore(path) as reopened, reopened.transaction() as conn:

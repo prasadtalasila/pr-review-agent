@@ -5,7 +5,16 @@ round's findings so a number survives it, and the checkout it ran against
 does not.
 """
 
-from worker_harness import NOW, POSIX_ONLY, PR, REPO, mention, opened
+from worker_harness import (
+    NOW,
+    POSIX_ONLY,
+    PR,
+    REPO,
+    GitHubDouble,
+    budget,
+    mention,
+    opened,
+)
 
 from pr_review_agent.budget import Mode
 from pr_review_agent.engine import FakeEngine, Finding, Severity
@@ -143,3 +152,78 @@ async def test_nothing_carries_from_one_run_to_the_next(wired):
     first, second = engine.requests
     assert first.checkout.path != second.checkout.path
     assert not first.checkout.path.exists()
+
+
+# -- issue #124: a later round is shown only what changed -----------------
+
+
+def reviewed_since(store) -> list[str | None]:
+    with store.transaction() as conn:
+        return [
+            row[0]
+            for row in conn.execute("SELECT reviewed_since FROM ledger ORDER BY id")
+        ]
+
+
+async def _pushed_rounds(wired, git_remote, push):
+    """Review once, let ``push`` move the head, then review again."""
+    github = GitHubDouble(git_remote.head_sha)
+    fixture = wired(engine=FakeEngine(findings=(finding(),)), github=github)
+    fixture.queue.enqueue(opened(head_sha=git_remote.head_sha), now=NOW)
+    await fixture.worker.run_once()
+    head = push()
+    github.move_head(head)
+    fixture.queue.enqueue(opened(head_sha=head), now=NOW)
+    await fixture.worker.run_once()
+    assert isinstance(fixture.engine, FakeEngine)
+    return fixture, fixture.engine.requests
+
+
+async def test_a_later_round_is_shown_only_the_new_commits(
+    wired, git_remote, contributor
+):
+    fixture, (first, second) = await _pushed_rounds(
+        wired, git_remote, lambda: contributor.commit("fixup.py", "x = 1\n")
+    )
+
+    assert first.checkout.since_sha is None
+    assert second.checkout.since_sha == git_remote.head_sha
+    assert "fixup.py" in second.checkout.diff
+    assert "feature.py" not in second.checkout.diff
+    # The numbering invariant: prior is the whole of round one, not narrowed
+    # to what the incremental diff happens to show.
+    assert [(f.path, f.number) for f in second.prior] == [("feature.py", 1)]
+    # And the ledger keeps the incremental round out of the pre-flight fit.
+    assert reviewed_since(fixture.store) == [None, git_remote.head_sha]
+
+
+async def test_a_force_push_is_compared_by_content(wired, git_remote, contributor):
+    _, (_, second) = await _pushed_rounds(
+        wired,
+        git_remote,
+        lambda: contributor.commit(
+            "feature.py", "def added():\n    return 2\n", amend=True
+        ),
+    )
+
+    assert second.checkout.since_sha == git_remote.head_sha
+    assert "return 2" in second.checkout.diff
+    assert "vendor/lib.js" not in second.checkout.diff
+
+
+async def test_the_commit_threshold_makes_a_small_push_full(
+    wired, git_remote, contributor
+):
+    config = budget(incremental_min_commits=2)
+    github = GitHubDouble(git_remote.head_sha)
+    fixture = wired(config=config, github=github)
+    fixture.queue.enqueue(opened(head_sha=git_remote.head_sha), now=NOW)
+    await fixture.worker.run_once()
+    head = contributor.commit("fixup.py", "x = 1\n")
+    github.move_head(head)
+    fixture.queue.enqueue(opened(head_sha=head), now=NOW)
+    await fixture.worker.run_once()
+
+    assert isinstance(fixture.engine, FakeEngine)
+    assert fixture.engine.requests[1].checkout.since_sha is None
+    assert reviewed_since(fixture.store) == [None, None]

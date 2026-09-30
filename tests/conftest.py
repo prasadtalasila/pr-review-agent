@@ -237,6 +237,66 @@ def _build_fixture_repo(root: pathlib.Path) -> tuple[pathlib.Path, str]:
     return serve, head_sha
 
 
+class Contributor:
+    """A clone that pushes to ``refs/pull/N/head`` and to ``main``.
+
+    What incremental review has to survive is ordinary contributor
+    behaviour -- a fixup, an amend, a rebase, a merge from the base -- so
+    the tests make those pushes for real rather than inventing shas.
+    """
+
+    def __init__(self, remote, root):
+        self.remote = remote
+        self.work = root / "contributor"
+        git("clone", "-q", str(remote.serve_root), str(self.work))
+        self._git("fetch", "-q", "origin", f"refs/pull/{PR_NUMBER}/head")
+        self._git("checkout", "-q", "-b", "pr", "FETCH_HEAD")
+
+    def _git(self, *args):
+        return git(*args, cwd=self.work)
+
+    def write(self, path, text):
+        (self.work / path).write_text(text)
+        self._git("add", "-A")
+
+    def commit(self, path, text, *, amend=False):
+        self.write(path, text)
+        self._git(
+            "commit", "-q", *(["--amend", "--no-edit"] if amend else ["-m", path])
+        )
+        return self.push()
+
+    def reword(self):
+        """A force-push whose content is identical: a squash, in effect."""
+        self._git("commit", "-q", "--amend", "-m", "reworded")
+        return self.push()
+
+    def push(self):
+        self._git("push", "-q", "-f", "origin", f"HEAD:refs/pull/{PR_NUMBER}/head")
+        return self._git("rev-parse", "HEAD")
+
+    def advance_base(self, path, text):
+        """Someone else lands a commit on ``main``."""
+        self._git("checkout", "-q", "main")
+        self.commit(path, text)
+        self._git("push", "-q", "origin", "main")
+        self._git("checkout", "-q", "pr")
+
+    def rebase(self, *options):
+        self._git("rebase", "-q", *options, "main")
+        return self.push()
+
+    def merge_base_in(self):
+        self._git("merge", "-q", "--no-edit", "main")
+        return self.push()
+
+
+@pytest.fixture
+def contributor(git_remote: GitRemote, tmp_path) -> Contributor:
+    """Somebody who can push to the pull request the double serves."""
+    return Contributor(git_remote, tmp_path)
+
+
 @pytest.fixture
 def workspace(git_remote: GitRemote, tmp_path, monkeypatch) -> Workspace:
     """A workspace pointed at the double.

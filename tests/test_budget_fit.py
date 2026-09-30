@@ -29,9 +29,16 @@ from pr_review_agent.queue import QueueStatus, ReviewQueue
 # -- the pre-flight estimate --------------------------------------------
 
 
-def fit_rows(store, governor, count, *, tokens, lines, confidence=None):
-    """Settle ``count`` runs, each spending ``tokens`` over ``lines`` lines."""
-    claims = admit_all(store, governor, [opened(pr=n) for n in range(count)])
+def fit_rows(
+    store, governor, count, *, tokens, lines, confidence=None, since=None, first=0
+):
+    """Settle ``count`` runs, each spending ``tokens`` over ``lines`` lines.
+
+    ``since`` marks them as incremental rounds; ``first`` offsets the pull
+    request numbers so a second batch does not collide with the first.
+    """
+    numbers = range(first, first + count)
+    claims = admit_all(store, governor, [opened(pr=n) for n in numbers])
     assert len(claims) == count, "the window ran out before the sample did"
     for claim in claims:
         governor.settle(
@@ -44,6 +51,7 @@ def fit_rows(store, governor, count, *, tokens, lines, confidence=None):
             now=NOON,
             stop_reason=StopReason.COMPLETED,
             reviewed_lines=lines,
+            reviewed_since=since,
         )
 
 
@@ -97,6 +105,32 @@ def test_rows_the_engine_could_not_measure_are_not_fitted(store):
     assert governor.estimate(100) == 100 * DEFAULT_TOKENS_PER_LINE
 
 
+def test_incremental_rounds_are_not_a_sample(store):
+    """Issue #124: fewer lines under the same overhead reads as a higher rate.
+
+    Enough of them to reach the sample size on their own still leave the
+    documented constant in place.
+    """
+    governor = Governor(store, budget(weekly_tokens=250_000, session_tokens=250_000))
+    fit_rows(store, governor, MIN_FIT_SAMPLES, tokens=300, lines=3, since="a" * 40)
+    assert governor.estimate(100) == 100 * DEFAULT_TOKENS_PER_LINE
+
+
+def test_incremental_rounds_do_not_move_a_fitted_rate(store):
+    governor = Governor(store, budget(weekly_tokens=250_000, session_tokens=250_000))
+    fit_rows(store, governor, MIN_FIT_SAMPLES, tokens=300, lines=100)
+    fit_rows(
+        store,
+        governor,
+        MIN_FIT_SAMPLES,
+        tokens=100,
+        lines=100,
+        since="a" * 40,
+        first=MIN_FIT_SAMPLES,
+    )
+    assert governor.estimate(100) == 300
+
+
 def test_a_refused_run_hands_its_reservation_straight_back(store):
     """Issue #17's criterion, honoured as "released" rather than "never taken".
 
@@ -143,6 +177,19 @@ def test_each_refusal_names_the_setting_that_would_change_it(store):
     assert "budget.excluded_paths" in nothing_left
     assert over_budget is not None
     assert "budget.max_run_tokens" in over_budget
+
+
+def test_an_incremental_round_with_nothing_new_says_so(store):
+    """A content-identical force-push: "every path is excluded" would be false."""
+    governor = Governor(store, budget())
+    (claim,) = admit_all(store, governor, [opened(pr=1)])
+
+    notice = governor.preflight(claim, 0, NOON, since="a" * 40)
+
+    assert notice is not None
+    assert "since `aaaaaaaaaaaa`" in notice
+    assert "The earlier review stands." in notice
+    assert governor.headroom(NOON).remaining == budget().daily_limit
 
 
 def test_a_refusal_never_contributes_to_the_fit(store):

@@ -342,6 +342,41 @@ def test_another_pull_requests_history_is_not_borrowed(runs):
     assert runs.history(REPO, 7).prior == ()
 
 
+# -- what an incremental round diffs from --
+
+
+def test_a_first_review_has_nothing_to_diff_from(runs):
+    assert runs.history(REPO, 7).incremental_base(LATER, 0) is None
+
+
+def test_the_newest_completed_rounds_head_is_the_one_to_diff_from(runs):
+    runs.record(trigger(key="k1"), head_sha="a" * 40, result=result(), now=NOON)
+    runs.record(trigger(key="k2"), head_sha="b" * 40, result=result(), now=LATER)
+    runs.record(
+        trigger(key="k3"),
+        head_sha="c" * 40,
+        result=result((), outcome=Outcome.TRUNCATED),
+        now=LATER,
+    )
+    history = runs.history(REPO, 7)
+    assert (history.head_sha, history.recorded_at) == ("b" * 40, LATER)
+    assert history.incremental_base(LATER, 0) == "b" * 40
+
+
+def test_a_round_newer_than_the_threshold_is_not_diffed_from(runs):
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    history = runs.history(REPO, 7)
+    gap = int((LATER - NOON).total_seconds())
+    assert history.incremental_base(LATER, gap + 1) is None
+    assert history.incremental_base(LATER, gap) == HEAD
+
+
+def test_a_purged_round_is_not_diffed_from(runs):
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    runs.purge_content(REPO, 7, now=LATER)
+    assert runs.history(REPO, 7).incremental_base(LATER, 0) is None
+
+
 def test_the_first_completed_run_is_round_one(runs):
     runs.record(trigger(key="k1"), head_sha=HEAD, result=result(), now=NOON)
     assert runs.round_of(REPO, 7, "k1") == 1

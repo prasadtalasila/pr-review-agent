@@ -136,7 +136,9 @@ class RunEnd:
 
     ``reviewed`` and ``reviewed_lines`` are set only by a run that finished
     a review -- the recorded findings to post, and the line count the
-    pre-flight estimate is fitted against.
+    pre-flight estimate is fitted against. ``reviewed_since`` rides with the
+    line count: set when those lines were an incremental range, which keeps
+    the round out of the fit.
     """
 
     usage: Usage
@@ -144,6 +146,7 @@ class RunEnd:
     finish: Finish
     reviewed: RecordedRun | None = None
     reviewed_lines: int | None = None
+    reviewed_since: str | None = None
 
 
 @dataclass
@@ -545,12 +548,17 @@ class ReviewWorker:
             max_changed_files=config.max_changed_files,
             max_changed_lines=config.max_changed_lines,
             excluded_paths=config.effective_excluded_paths,
+            # Issue #124: only what changed since the last completed round,
+            # when the workspace finds that safe. `prior` below is the whole
+            # of that round's findings either way.
+            since_sha=history.incremental_base(_now(), config.incremental_min_seconds),
+            min_commits=config.incremental_min_commits,
         ) as checkout:
             # Captured here because the checkout is torn down by the time the
             # run settles, and it is the worker's own number rather than the
             # adapter's: see `Governor.settle`.
-            lines = checkout.reviewed.lines
-            refused = self.governor.preflight(claim, lines, _now())
+            lines, since = checkout.reviewed.lines, checkout.since_sha
+            refused = self.governor.preflight(claim, lines, _now(), since=since)
             if refused is not None:
                 # The last free refusal, and it released the reservation
                 # inside that call -- so this path must not settle again.
@@ -573,7 +581,9 @@ class ReviewWorker:
                     prior=history.prior,
                 )
             )
-        return self._reviewed(claim, result, facts=facts, history=history, lines=lines)
+        return self._reviewed(
+            claim, result, facts=facts, history=history, lines=lines, since=since
+        )
 
     def _abandon_closed(self, claim: Claim, facts: PullRequestFacts) -> None:
         """End a claim whose pull request was merged or closed while it waited.
@@ -610,8 +620,10 @@ class ReviewWorker:
         facts: PullRequestFacts,
         history: PullRequestHistory,
         lines: int,
+        since: str | None,
     ) -> RunEnd:
         """Record what a finished review produced, and say how the run ended."""
+        # All but two keyword-only. pylint: disable=too-many-arguments
         end = RunEnd(
             usage=result.usage,
             reason=_REASON_FOR[result.outcome],
@@ -640,6 +652,7 @@ class ReviewWorker:
                 # settles at *exact* zero -- all three fit a rate lower than
                 # the truth, which is the direction that under-refuses.
                 reviewed_lines=lines,
+                reviewed_since=since,
             )
         _log_reviewed(claim, result, end.usage)
         return end
@@ -796,6 +809,7 @@ class ReviewWorker:
             now=_now(),
             stop_reason=end.reason,
             reviewed_lines=end.reviewed_lines,
+            reviewed_since=end.reviewed_since,
         ):
             logger.warning(
                 "no reservation to settle for %s: discarding the run",

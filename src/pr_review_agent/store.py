@@ -261,6 +261,13 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "CREATE UNIQUE INDEX IF NOT EXISTS ledger_open "
         "ON ledger (dedupe_key) WHERE settled_at IS NULL",
     ),
+    # The head an incremental round diffed from, NULL for a full round. The
+    # pre-flight fit reads only full rounds: an incremental one carries the
+    # same fixed prompt overhead over fewer lines, and fitting it would pull
+    # the rate below what a full review costs -- the direction that
+    # under-refuses. Rows written before this are all full rounds, which is
+    # what NULL says.
+    ("ALTER TABLE ledger ADD COLUMN reviewed_since TEXT",),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

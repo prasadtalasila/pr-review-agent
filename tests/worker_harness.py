@@ -150,6 +150,10 @@ class GitHubDouble:
         self._merged = merged
         self._reads = 0
 
+    def move_head(self, head_sha: str) -> None:
+        """Answer later reads with ``head_sha``: somebody pushed."""
+        self._head_sha = head_sha
+
     def client(self) -> GitHubClient:
         return GitHubClient(
             token="fake-token", transport=httpx.MockTransport(self._handle)

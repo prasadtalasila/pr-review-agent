@@ -144,6 +144,63 @@ Sandboxing the *engine* — containers, seccomp, a read-only tool set — is
 guarantees is that the checkout executes nothing and that the tree cannot
 reach outside itself.
 
+## 🔁 A later round sees only what changed
+
+Every round used to diff `merge_base..head`, so round five re-read what
+rounds one to four had already read. Now a round after a completed one is
+handed only what changed since the head that round reviewed. The worker
+passes that head in as `since_sha`, and `workspace/since.py` decides where
+the diff starts. `Checkout.since_sha` records the answer: the previous head
+when the diff is incremental, `None` when it covers the whole pull request.
+
+**Trees are compared, not history.** The reviewer never read the commits. It
+read the old head's content, and `git diff <old head> <new head>` compares
+two contents whatever the graph between them looks like. So a force-push is
+the ordinary case, not a reason to start over:
+
+| What the contributor did | What the round is shown |
+| :-- | :-- |
+| Pushed a fixup commit | The fixup |
+| Amended, squashed, reworded or reordered | What the rewrite changed, often nothing |
+| Rebased onto a newer base | What changed beyond the rebase |
+| Merged the base branch in | What changed beyond the merge |
+
+**When the base moved, the old content is replayed first.** A rebase or a
+merge from the base carries upstream commits into the new head, and a plain
+diff against the old head would show them as the pull request's own. When
+the old head's merge base differs from the new one, the old head's changes
+are replayed onto the new merge base with `git merge-tree --write-tree`,
+and the diff starts from that tree. This cannot hide anything the
+contributor wrote: a line that reads the same in the replayed tree and the
+new head is either content the previous round reviewed, or the base
+branch's, which is not the pull request's.
+
+**Everything else is a full round, logged with the reason.** None of these
+is refused, and none diffs against nothing. Any other git failure while
+placing the old head raises, like every other step of the checkout.
+
+- the first round on a pull request;
+- a head that has not moved, such as a mention asking for a re-review;
+- an old head the mirror no longer holds, or one sharing no history with
+  the base;
+- a replay that conflicts, or that fails outright, which is also logged at
+  ERROR so a stuck replay cannot stop a pull request being reviewed;
+- a git older than 2.38, which has no `--write-tree`. It says so once at
+  WARNING, and every rebased pull request is reviewed in full. Fixups and
+  amends are still incremental. The floor stays 2.32.
+- fewer new commits than `budget.incremental_min_commits`, or a previous
+  round more recent than `budget.incremental_min_seconds`. Both default to
+  `0`, which disables them.
+
+**The tree on disk is always the whole head.** Only the diff narrows. The
+previous round's findings still reach the prompt in full, and the prompt
+says the diff is incremental and that an earlier finding may sit on lines
+outside it, so "still present" stays checkable.
+
+Like every diff here, the replay runs in the bare mirror, so no in-tree
+`.gitattributes` or merge driver is consulted, and the config that could
+name a driver is nulled.
+
 ## 💰 The caps are layer 2 of the budget
 
 ```yaml
@@ -170,7 +227,10 @@ integer. The trade is set out in
 costs bandwidth, and these caps bound tokens.
 
 The same pathspec arguments produce `Checkout.diff`, so the engine is shown
-exactly what the caps counted. `Checkout.reviewed` carries those two numbers
+exactly what the caps counted. On an incremental round both measure the
+same narrower range, from one variable, so a small fixup on a large pull
+request is no longer refused for the size of the whole — while a fixup that
+is itself over a cap still is. `Checkout.reviewed` carries those two numbers
 for the [pre-flight estimate](BUDGET.md#-the-pre-flight-token-estimate).
 
 A refusal now happens between the fetch and the worktree, where a run-scoped
