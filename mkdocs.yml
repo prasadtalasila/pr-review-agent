@@ -62,6 +62,7 @@ nav:
       - Storage: STORAGE.md
       - Budget governor: BUDGET.md
       - Workspace and checkout: WORKSPACE.md
+      - Incremental review: INCREMENTAL-REVIEW.md
       - Review worker: WORKER.md
       - Engine seam: ENGINE.md
       - Publisher: PUBLISHER.md
