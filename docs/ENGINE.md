@@ -291,7 +291,10 @@ Two consequences worth stating rather than discovering from a ledger row:
 
 Keeping `FINDINGS_SCHEMA` small and flat is therefore a spending decision,
 not a style one. Every required field is another way for a run to end in the
-retry path.
+retry path. The one required addition since is `assessment` (issue #126): effort,
+risk, recommendation and priority files, all enums or bounded values, which
+constrained decoding rarely gets wrong. It is required by decision, and the
+adapter refuses output that leaves it out.
 
 #### The sizes in the prompt are the reviewable ones
 

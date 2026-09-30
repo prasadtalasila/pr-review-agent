@@ -4,8 +4,9 @@ The shape `report.render` produces (re-exported as `publisher.render`). Derived 
 reference report. See issue #45.
 
 This is a *rendering* contract, not a prompt. The reviewer supplies `title`, `body`,
-`severity`, `path`, `line` and an optional carried-forward `number`; everything below —
-headings, ordering, numbering, the trailer — is decided here, where a test can read it.
+`severity`, `path`, `line` and an optional carried-forward `number` for each finding, and
+one `assessment` for the pull request; everything below — headings, ordering, numbering,
+the trailer — is decided here, where a test can read it.
 
 ---
 
@@ -13,6 +14,8 @@ headings, ordering, numbering, the trailer — is decided here, where a test can
 
 ```markdown
 ## Review: PR #<number> — round <r> (`<sha7>`, <c> commits)
+
+**Effort** <e>/5 · **Risk** <risk> · **<Recommendation>** · Start with: `<path>`, `<path>`
 
 ## Blocking
 
@@ -35,6 +38,15 @@ headings, ordering, numbering, the trailer — is decided here, where a test can
 place and a reader must be able to tell which revision the text describes. `round` counts
 recorded runs for this pull request; `<c> commits` is `git rev-list --count
 <merge_base>..<head>`.
+
+**Assessment.** One line directly under the header, on every review including the empty
+one (issue #126). Effort is 1–5; risk is `low`, `medium` or `high`; the recommendation
+reads **Safe to merge**, **Merge with caution** or **Changes required**. `Start with:`
+names up to five priority files as code spans, fenced like the coverage footer's paths,
+and is left off when the reviewer named none. The line goes through `sanitise`, because
+the paths are engine output. It is the only verdict the comment carries, it is advisory,
+and it is never written as a label: the publisher posts a plain comment and nothing else.
+A run recorded before this existed has no assessment and renders no line.
 
 **Sections.** Only non-empty sections are emitted. Order is fixed: Blocking, Should fix,
 Nits. Severity maps:
@@ -61,8 +73,8 @@ no-op diff when nothing changed.
 **Nits are prose.** One paragraph, several small observations joined by sentences. A nit
 that deserves a numbered entry is not a nit.
 
-**Empty report.** `## Review: PR #<n> — round <r> (\`<sha7>\`, <c> commits)`, then
-`No issues found.`, then the trailer. Round and commit count still appear: "round 3 found
+**Empty report.** `## Review: PR #<n> — round <r> (\`<sha7>\`, <c> commits)`, then the
+assessment line, then `No issues found.`, then the trailer. Round and commit count still appear: "round 3 found
 nothing" and "round 1 found nothing" are different statements.
 
 **Coverage footer.** When `budget.excluded_paths` withheld changed files from the
@@ -87,6 +99,8 @@ Two findings from the reference report, rendered through this template.
 
 ```markdown
 ## Review: PR #1765 — round 3 (`d61de17`, 3 commits)
+
+**Effort** 3/5 · **Risk** medium · **Changes required** · Start with: `script/docs.sh`, `script/build_brand.py`
 
 ## Blocking
 

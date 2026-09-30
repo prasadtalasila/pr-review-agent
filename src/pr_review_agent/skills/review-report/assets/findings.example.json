@@ -1,4 +1,10 @@
 {
+  "assessment": {
+    "effort": 3,
+    "risk": "medium",
+    "recommendation": "changes_required",
+    "priority_files": ["script/docs.sh", "script/build_brand.py"]
+  },
   "findings": [
     {
       "number": 2,

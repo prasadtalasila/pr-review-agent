@@ -21,6 +21,7 @@ from worker_harness import (
 from pr_review_agent.budget import Mode
 from pr_review_agent.engine import FakeEngine, Finding, Severity
 from pr_review_agent.engine.models import Outcome
+from pr_review_agent.findings import Assessment, Recommendation, Risk
 
 pytestmark = POSIX_ONLY
 
@@ -123,6 +124,26 @@ async def test_the_posted_review_names_what_the_exclusions_withheld(wired):
 
     (comment,) = fixture.github.comments
     assert "`vendor/lib.js`._" in json.loads(comment.content)["body"]
+
+
+async def test_the_posted_review_carries_the_engines_assessment(wired):
+    """Issue #126: engine to run row to comment, through the real worker."""
+    assessment = Assessment(
+        effort=4,
+        risk=Risk.MEDIUM,
+        recommendation=Recommendation.MERGE_WITH_CAUTION,
+        priority_files=("src/app.py",),
+    )
+    fixture = wired(engine=FakeEngine(findings=(finding(),), assessment=assessment))
+    fixture.queue.enqueue(opened(), now=NOW)
+
+    await fixture.worker.run_once()
+
+    (comment,) = fixture.github.comments
+    assert (
+        "**Effort** 4/5 · **Risk** medium · **Merge with caution** · "
+        "Start with: `src/app.py`" in json.loads(comment.content)["body"]
+    )
 
 
 async def test_a_mention_is_reviewed_at_the_head_the_api_reports(wired, git_remote):

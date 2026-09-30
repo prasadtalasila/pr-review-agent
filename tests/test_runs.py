@@ -6,6 +6,7 @@ import pytest
 
 from pr_review_agent.budget import Usage, UsageConfidence
 from pr_review_agent.engine import Finding, Outcome, ReviewResult, Severity
+from pr_review_agent.findings import Assessment, Recommendation, Risk
 from pr_review_agent.runs import RunStore, publication_of, published_run_key
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
@@ -55,11 +56,21 @@ def trigger(pr=7, key="pr_opened:o/r:7:deadbeef"):
     )
 
 
-def result(findings=FINDINGS, outcome=Outcome.COMPLETED):
+#: What a completed run carries beside its findings (issue #126).
+ASSESSMENT = Assessment(
+    effort=3,
+    risk=Risk.HIGH,
+    recommendation=Recommendation.CHANGES_REQUIRED,
+    priority_files=("src/x.py", "src/y.py"),
+)
+
+
+def result(findings=FINDINGS, outcome=Outcome.COMPLETED, assessment=None):
     return ReviewResult(
         findings=findings,
         usage=Usage(100, UsageConfidence.EXACT, engine="fake"),
         outcome=outcome,
+        assessment=assessment,
     )
 
 
@@ -167,6 +178,28 @@ def test_purging_empties_what_the_review_did_not_read(runs, store):
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON, omitted=withheld)
     runs.purge_content(REPO, 7, now=LATER)
     assert row(store, "pr_opened:o/r:7:deadbeef", "omitted") == "[]"
+
+
+def test_the_assessment_is_kept_for_a_retried_post(runs):
+    runs.record(
+        trigger(), head_sha=HEAD, result=result(assessment=ASSESSMENT), now=NOON
+    )
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef").assessment == ASSESSMENT
+
+
+def test_a_run_recorded_without_an_assessment_reads_back_without_one(runs):
+    """The state of every row written before migration 18."""
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef").assessment is None
+
+
+def test_purging_empties_the_assessment(runs, store):
+    """Its priority files are paths from the contributor's tree."""
+    runs.record(
+        trigger(), head_sha=HEAD, result=result(assessment=ASSESSMENT), now=NOON
+    )
+    runs.purge_content(REPO, 7, now=LATER)
+    assert row(store, "pr_opened:o/r:7:deadbeef", "assessment") is None
 
 
 def test_purging_twice_purges_nothing_the_second_time(runs):

@@ -49,6 +49,7 @@ from datetime import datetime, timedelta
 
 from ._time import parse, stamp
 from .engine import Finding, Outcome, ReviewResult, Severity
+from .findings import Assessment, Recommendation, Risk
 from .store import SqliteStore
 from .triggers.models import Trigger, TriggerKind
 
@@ -57,11 +58,12 @@ logger = logging.getLogger(__name__)
 _RECORD = """
 INSERT INTO runs
     (dedupe_key, repo, pr_number, head_sha, outcome, findings, omitted,
-     recorded_at)
-VALUES (:key, :repo, :pr, :sha, :outcome, :findings, :omitted, :now)
+     assessment, recorded_at)
+VALUES (:key, :repo, :pr, :sha, :outcome, :findings, :omitted, :assessment,
+        :now)
 ON CONFLICT(dedupe_key) DO UPDATE SET
     head_sha = :sha, outcome = :outcome, findings = :findings,
-    omitted = :omitted, recorded_at = :now
+    omitted = :omitted, assessment = :assessment, recorded_at = :now
 """
 
 # One named run, if it is still waiting to be posted. `content_purged_at IS
@@ -69,7 +71,7 @@ ON CONFLICT(dedupe_key) DO UPDATE SET
 # post an empty review over a real one.
 _UNPUBLISHED = """
 SELECT dedupe_key, repo, pr_number, head_sha, outcome, findings, comment_id,
-       omitted
+       omitted, assessment
 FROM runs
 WHERE dedupe_key = :key
   AND published_at IS NULL AND content_purged_at IS NULL
@@ -99,10 +101,12 @@ SELECT publish_failed_at FROM runs WHERE dedupe_key = :key
 """
 
 # `findings` is emptied rather than set NULL: the column is NOT NULL, and an
-# empty list is what a reader of a purged row should see. `omitted` goes with
-# it: the paths are the contributor's tree as much as the findings are.
+# empty list is what a reader of a purged row should see. `omitted` and
+# `assessment` go with it: their paths are the contributor's tree as much as
+# the findings are.
 _PURGE = """
-UPDATE runs SET findings = '[]', omitted = '[]', content_purged_at = :now
+UPDATE runs SET findings = '[]', omitted = '[]', assessment = NULL,
+                content_purged_at = :now
 WHERE repo = :repo AND pr_number = :pr AND content_purged_at IS NULL
 """
 
@@ -133,6 +137,7 @@ class RecordedRun:
     """One completed review, as it was stored.
 
     ``omitted`` is ``Checkout.omitted`` for the diff the review was shown.
+    ``assessment`` is ``None`` only on a row written before it existed.
     """
 
     # One field per stored column the publisher reads back; a nested record
@@ -146,6 +151,7 @@ class RecordedRun:
     findings: tuple[Finding, ...]
     comment_id: int | None
     omitted: tuple[tuple[str, int], ...] = ()
+    assessment: Assessment | None = None
 
 
 #: Prefixed so a publication item can never collide with the review whose
@@ -249,6 +255,7 @@ class RunStore:
                     "outcome": str(result.outcome),
                     "findings": _dump(result.findings),
                     "omitted": json.dumps(omitted),
+                    "assessment": _dump_assessment(result.assessment),
                     "now": stamp(now, "run timestamp"),
                 },
             )
@@ -261,6 +268,7 @@ class RunStore:
             findings=result.findings,
             comment_id=None,
             omitted=omitted,
+            assessment=result.assessment,
         )
 
     def unpublished(self, dedupe_key: str) -> RecordedRun | None:
@@ -421,4 +429,32 @@ def _run(row: tuple) -> RecordedRun:
         findings=_load(row[5]),
         comment_id=row[6],
         omitted=tuple((path, files) for path, files in json.loads(row[7])),
+        assessment=_load_assessment(row[8]),
+    )
+
+
+def _dump_assessment(assessment: Assessment | None) -> str | None:
+    """``assessment`` as the JSON stored in its column, or NULL."""
+    if assessment is None:
+        return None
+    return json.dumps(
+        {
+            "effort": assessment.effort,
+            "risk": str(assessment.risk),
+            "recommendation": str(assessment.recommendation),
+            "priority_files": list(assessment.priority_files),
+        }
+    )
+
+
+def _load_assessment(raw: str | None) -> Assessment | None:
+    """The stored assessment, or ``None`` for a row without one."""
+    if raw is None:
+        return None
+    item = json.loads(raw)
+    return Assessment(
+        effort=item["effort"],
+        risk=Risk(item["risk"]),
+        recommendation=Recommendation(item["recommendation"]),
+        priority_files=tuple(item["priority_files"]),
     )

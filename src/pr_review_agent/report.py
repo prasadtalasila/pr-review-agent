@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 
-from .findings import Finding, Severity
+from .findings import Assessment, Finding, Recommendation, Severity
 from .sanitise import sanitise
 from .triggers.mention import neutralise
 
@@ -93,6 +93,21 @@ TRUNCATION_NOTE = (
 #: files -- lockfiles, bundles -- that no directory can stand for.
 MAX_OMITTED_ENTRIES = 10
 
+#: How each recommendation reads on the assessment line.
+RECOMMENDATION_LABELS: dict[Recommendation, str] = {
+    Recommendation.SAFE_TO_MERGE: "Safe to merge",
+    Recommendation.MERGE_WITH_CAUTION: "Merge with caution",
+    Recommendation.CHANGES_REQUIRED: "Changes required",
+}
+
+#: The shape of the assessment line, for the skill's checker to match rather
+#: than restate. Anchored at the start only: the paths after it are free text.
+ASSESSMENT_RE = re.compile(
+    r"\A\*\*Effort\*\* [1-5]/5 · \*\*Risk\*\* (?:low|medium|high) · \*\*(?:"
+    + "|".join(RECOMMENDATION_LABELS.values())
+    + r")\*\*"
+)
+
 
 def render(
     head_sha: str,
@@ -104,6 +119,7 @@ def render(
     handle: str,
     moved_to: str | None = None,
     omitted: tuple[tuple[str, int], ...] = (),
+    assessment: Assessment | None = None,
 ) -> str:
     """The comment body for a review of ``head_sha``.
 
@@ -135,6 +151,10 @@ def render(
     review that never saw the lockfile must not read as one that did. Empty
     renders nothing, which is what the skill's renderer passes.
 
+    ``assessment`` renders as one line directly under the header, on an
+    empty report too. ``None`` renders nothing, which only a run recorded
+    before the assessment existed can be.
+
     See ``docs/reporting/review-report.md`` for the contract this
     implements.
     """
@@ -142,6 +162,8 @@ def render(
         f"## Review: PR #{pr_number} — round {round_number} "
         f"(`{head_sha[:7]}`, {commits} commits)"
     )
+    if assessment is not None:
+        header = f"{header}\n\n{_assessment(assessment)}"
     if moved_to is not None:
         header = f"{header}\n\n{_moved_note(head_sha, moved_to)}"
     if not findings:
@@ -209,6 +231,24 @@ def _moved_note(head_sha: str, moved_to: str) -> str:
         f"the branch has since moved to `{moved_to[:7]}`. Findings may already "
         "be addressed. Mention me again for a review of the new head._"
     )
+
+
+def _assessment(assessment: Assessment) -> str:
+    """The assessment on one line, paths fenced as the footer's are.
+
+    The enum values are ours, but ``priority_files`` is engine output naming
+    paths in the contributor's tree, so the line goes through ``sanitise``.
+    """
+    parts = [
+        f"**Effort** {assessment.effort}/5",
+        f"**Risk** {assessment.risk}",
+        f"**{RECOMMENDATION_LABELS[assessment.recommendation]}**",
+    ]
+    if assessment.priority_files:
+        parts.append(
+            "Start with: " + ", ".join(_code(p) for p in assessment.priority_files)
+        )
+    return sanitise(" · ".join(parts))
 
 
 def _footer(omitted: tuple[tuple[str, int], ...]) -> str:

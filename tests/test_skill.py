@@ -34,6 +34,7 @@ from pr_review_agent.engine.prompt import (
     FINDINGS_SCHEMA,
     REVIEW_INSTRUCTIONS,
 )
+from pr_review_agent.findings import Assessment
 from pr_review_agent.publisher import TRAILER, render
 
 ROOT = Path(str(skills.root()))
@@ -62,6 +63,12 @@ def example_findings() -> tuple[Finding, ...]:
     return load_script("render_report.py").findings_from(data)
 
 
+def example_assessment() -> Assessment:
+    """The worked example's assessment, parsed by the script that renders it."""
+    data = json.loads((ASSETS / "findings.example.json").read_text(encoding="utf-8"))
+    return load_script("render_report.py").assessment_from(data)
+
+
 def test_prompt_reads_the_skill_reference() -> None:
     """The daemon's instructions are the skill's, not a paraphrase of them."""
     assert skills.reference("finding-contract.md") == REVIEW_INSTRUCTIONS
@@ -87,6 +94,7 @@ def test_worked_example_is_what_the_renderer_produces() -> None:
         round_number=3,
         commits=3,
         handle="claude",
+        assessment=example_assessment(),
     )
     assert (ASSETS / "report.example.md").read_text(encoding="utf-8") == rendered + "\n"
 
@@ -126,6 +134,7 @@ def test_checker_passes_the_worked_example() -> None:
             "nits-are-prose",
         ),
         (lambda t: t.replace(TRAILER, ""), "trailer"),
+        (lambda t: t.replace("**Effort** 3/5", "Effort 3/5"), "assessment"),
     ],
 )
 def test_checker_names_the_rule_that_was_broken(mutate, rule: str) -> None:
@@ -137,8 +146,33 @@ def test_checker_names_the_rule_that_was_broken(mutate, rule: str) -> None:
 
 def test_empty_report_is_accepted() -> None:
     check = load_script("check_report.py")
-    body = render("a" * 40, (), pr_number=7, round_number=2, commits=1, handle="claude")
+    body = render(
+        "a" * 40,
+        (),
+        pr_number=7,
+        round_number=2,
+        commits=1,
+        handle="claude",
+        assessment=example_assessment(),
+    )
     assert check.violations(body) == []
+
+
+def test_checker_refuses_a_report_without_an_assessment() -> None:
+    """Mandatory: an empty report without the line breaks the contract too."""
+    check = load_script("check_report.py")
+    body = render("a" * 40, (), pr_number=7, round_number=2, commits=1, handle="claude")
+    assert [v for v in check.violations(body) if v.startswith("assessment:")]
+
+
+def test_render_script_refuses_findings_without_an_assessment(tmp_path: Path) -> None:
+    data = json.loads((ASSETS / "findings.example.json").read_text(encoding="utf-8"))
+    del data["assessment"]
+    findings = tmp_path / "findings.json"
+    findings.write_text(json.dumps(data), encoding="utf-8")
+    argv = [str(findings), "--pr", "1", "--head-sha", "a" * 40]
+    with pytest.raises(SystemExit, match="needs an `assessment`"):
+        load_script("render_report.py").main([*argv, "--round", "1", "--commits", "1"])
 
 
 def test_render_script_reproduces_the_example(tmp_path: Path) -> None:

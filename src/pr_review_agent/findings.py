@@ -66,3 +66,56 @@ class Finding:
     title: str
     body: str
     number: int | None = None
+
+
+class Risk(StrEnum):
+    """How much a mistake in this change could cost if it merged."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class Recommendation(StrEnum):
+    """The one verdict a report may carry, and it is advisory.
+
+    Like ``Severity`` it cannot act: the publisher still posts a plain
+    comment, never a review event, and writes no label. It is here so a
+    maintainer triaging several pull requests can sort them, not so that
+    anything downstream can.
+    """
+
+    SAFE_TO_MERGE = "safe_to_merge"
+    MERGE_WITH_CAUTION = "merge_with_caution"
+    CHANGES_REQUIRED = "changes_required"
+
+
+#: How many paths ``priority_files`` may name. A list of every file is not a
+#: priority, and the line it renders on has to stay one line.
+MAX_PRIORITY_FILES = 5
+
+
+@dataclass(frozen=True)
+class Assessment:
+    """The reviewer's view of the whole pull request, beside its findings.
+
+    Required of every completed review (issue #126). Every value is the
+    engine's judgement, not a measurement: ``effort`` is how long a
+    maintainer needs to review the change, 1 to 5, and ``priority_files`` are
+    the paths to read first. The bounds are checked here as well as in the
+    schema, because a report rendered by hand never meets the schema.
+    """
+
+    effort: int
+    risk: Risk
+    recommendation: Recommendation
+    priority_files: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.effort <= 5:
+            raise ValueError(f"effort must be 1 to 5, got {self.effort}")
+        if len(self.priority_files) > MAX_PRIORITY_FILES:
+            raise ValueError(
+                f"at most {MAX_PRIORITY_FILES} priority files, "
+                f"got {len(self.priority_files)}"
+            )

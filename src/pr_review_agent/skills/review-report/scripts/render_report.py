@@ -69,7 +69,13 @@ def _missing(script: str, what: str) -> SystemExit:
 sys.path.append(str(Path(__file__).resolve().parent / "_vendor"))
 
 try:
-    from pr_review_agent.findings import Finding, Severity
+    from pr_review_agent.findings import (
+        Assessment,
+        Finding,
+        Recommendation,
+        Risk,
+        Severity,
+    )
     from pr_review_agent.numbering import assign
     from pr_review_agent.report import render
 except ModuleNotFoundError as missing:  # pragma: no cover - see test_skill.py
@@ -93,6 +99,27 @@ def findings_from(data: dict) -> tuple[Finding, ...]:
         )
         for item in data["findings"]
     )
+
+
+def assessment_from(data: dict) -> Assessment:
+    """The required ``assessment`` object, or a message saying what is wrong.
+
+    Required here as it is of the daemon's reviewer: a report without one
+    breaks the contract, so it is refused rather than rendered without it.
+    """
+    try:
+        item = data["assessment"]
+        return Assessment(
+            effort=int(item["effort"]),
+            risk=Risk(item["risk"]),
+            recommendation=Recommendation(item["recommendation"]),
+            priority_files=tuple(item["priority_files"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(
+            "findings.json needs an `assessment` matching findings.schema.json: "
+            f"{exc!r}"
+        ) from exc
 
 
 def _high_water(findings: tuple[Finding, ...], given: int | None) -> int:
@@ -146,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         round_number=facts["round"],
         commits=facts["commits"],
         handle=args.handle,
+        assessment=assessment_from(data),
     )
     if args.out:
         args.out.write_text(body + "\n", encoding="utf-8")

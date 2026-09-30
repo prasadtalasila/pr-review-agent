@@ -20,6 +20,7 @@ from pr_review_agent.engine import (
     ReviewResult,
     Severity,
 )
+from pr_review_agent.findings import Assessment, Recommendation, Risk
 from pr_review_agent.queue import ReviewQueue
 from pr_review_agent.store import SqliteStore
 from pr_review_agent.triggers.models import Trigger, TriggerKind
@@ -71,7 +72,15 @@ class StubbedClaude(ClaudeCliEngine):
             "type": "result",
             "subtype": "success",
             "usage": {"input_tokens": 900, "output_tokens": 100},
-            "structured_output": {"findings": []},
+            "structured_output": {
+                "assessment": {
+                    "effort": 1,
+                    "risk": "low",
+                    "recommendation": "safe_to_merge",
+                    "priority_files": [],
+                },
+                "findings": [],
+            },
         }
     )
 
@@ -181,6 +190,33 @@ def test_a_run_that_did_not_complete_cannot_carry_findings(outcome):
             ),
             usage=Usage(tokens=10, confidence=UsageConfidence.EXACT, engine="fake"),
             outcome=outcome,
+        )
+
+
+@pytest.mark.parametrize("outcome", [Outcome.TRUNCATED, Outcome.FAILED])
+def test_a_run_that_did_not_complete_cannot_carry_an_assessment(outcome):
+    with pytest.raises(ValueError, match="cannot carry an assessment"):
+        ReviewResult(
+            findings=(),
+            usage=Usage(tokens=10, confidence=UsageConfidence.EXACT, engine="fake"),
+            outcome=outcome,
+            assessment=Assessment(
+                effort=1, risk=Risk.LOW, recommendation=Recommendation.SAFE_TO_MERGE
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("effort", "files"), [(0, ()), (6, ()), (3, ("a", "b", "c", "d", "e", "f"))]
+)
+def test_an_assessment_out_of_bounds_is_refused(effort, files):
+    """Checked on the type too: a hand-written report never meets the schema."""
+    with pytest.raises(ValueError):
+        Assessment(
+            effort=effort,
+            risk=Risk.LOW,
+            recommendation=Recommendation.SAFE_TO_MERGE,
+            priority_files=files,
         )
 
 

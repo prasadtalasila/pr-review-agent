@@ -14,8 +14,9 @@ no review:
   instead of the body.
 - **Numbers are stable across rounds, and gaps are information.** A vacant
   number says an earlier finding was fixed. Renumbering destroys that.
-- **The report takes no action.** No verdict, no approval, no merge
-  recommendation. The trailer says so and is not editable.
+- **The report takes no action.** No approval, and no verdict except the
+  advisory `recommendation` on the assessment line. The trailer says so and
+  is not editable.
 
 ## When not to use this
 
@@ -64,8 +65,11 @@ answer in prose and stop.
    names. A report that spends its first item on a nitpick does not get read
    to its second.
 
-6. **Write findings as JSON**, one object per finding, matching
-   `assets/findings.schema.json`. Write the prose here, in `title` and `body`.
+6. **Write findings and the assessment as JSON**, one object per finding
+   and one `assessment` for the whole pull request, matching
+   `assets/findings.schema.json`. The assessment is required, even when
+   there are no findings; `references/finding-contract.md` defines its
+   fields. Write the prose here, in `title` and `body`.
    Do not write markdown headings, section names or item numbers — those are
    the renderer's, and text that fights the renderer loses.
 
@@ -84,8 +88,8 @@ Read these on demand, not up front.
 
 | File | Read it when |
 |---|---|
-| `references/finding-contract.md` | Before reviewing. What is in scope, what to sweep, how to write a title and a body, what each severity means. |
-| `references/report-contract.md` | When rendering by hand, or when a check fails and you need the rule. Sections, ordering, numbering, the empty report, the trailer. |
+| `references/finding-contract.md` | Before reviewing. What is in scope, what to sweep, how to write a title and a body, what each severity means, and how to fill in the assessment. |
+| `references/report-contract.md` | When rendering by hand, or when a check fails and you need the rule. The assessment line, sections, ordering, numbering, the empty report, the trailer. |
 | `references/false-positives.md` | After sweeping, before writing. What not to report. |
 
 ## Scripts
@@ -108,7 +112,7 @@ the renderer without reinstalling the skill.
 | Script | Does |
 |---|---|
 | `scripts/collect_context.py` | Header facts from git: head sha, merge base, commit count, changed paths, round number — and the standards files present at the merge base. |
-| `scripts/render_report.py` | `findings.json` → the report. `--assign` fills in numbers for new findings against a carried-forward set. |
+| `scripts/render_report.py` | `findings.json` → the report, refusing one without an `assessment`. `--assign` fills in numbers for new findings against a carried-forward set. |
 | `scripts/check_report.py` | Validates a rendered report against `references/report-contract.md`. Exit 1 on violation. |
 
 None of them touch the network, and none of them post anything. Publishing is
