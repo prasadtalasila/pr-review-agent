@@ -268,6 +268,12 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
     # under-refuses. Rows written before this are all full rounds, which is
     # what NULL says.
     ("ALTER TABLE ledger ADD COLUMN reviewed_since TEXT",),
+    # What `budget.excluded_paths` withheld from a run's diff, as the JSON
+    # list of `[path, files]` pairs the coverage footer renders. On the run
+    # rather than recomputed at publish time, because a retried post happens
+    # after the checkout is gone. Rows written before this read as empty:
+    # nothing recorded what they left out, and the footer says nothing.
+    ("ALTER TABLE runs ADD COLUMN omitted TEXT NOT NULL DEFAULT '[]'",),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

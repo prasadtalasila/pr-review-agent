@@ -558,6 +558,7 @@ class ReviewWorker:
             # run settles, and it is the worker's own number rather than the
             # adapter's: see `Governor.settle`.
             lines, since = checkout.reviewed.lines, checkout.since_sha
+            omitted = checkout.omitted
             refused = self.governor.preflight(claim, lines, _now(), since=since)
             if refused is not None:
                 # The last free refusal, and it released the reservation
@@ -582,7 +583,13 @@ class ReviewWorker:
                 )
             )
         return self._reviewed(
-            claim, result, facts=facts, history=history, lines=lines, since=since
+            claim,
+            result,
+            facts=facts,
+            history=history,
+            lines=lines,
+            since=since,
+            omitted=omitted,
         )
 
     def _abandon_closed(self, claim: Claim, facts: PullRequestFacts) -> None:
@@ -621,6 +628,7 @@ class ReviewWorker:
         history: PullRequestHistory,
         lines: int,
         since: str | None,
+        omitted: tuple[tuple[str, int], ...] = (),
     ) -> RunEnd:
         """Record what a finished review produced, and say how the run ended."""
         # All but two keyword-only. pylint: disable=too-many-arguments
@@ -644,7 +652,11 @@ class ReviewWorker:
                 # failure after it. Only a completed run has publishable
                 # findings -- the seam enforces that -- so only one is kept.
                 reviewed=self.runs.record(
-                    claim.trigger, head_sha=facts.head_sha, result=result, now=_now()
+                    claim.trigger,
+                    head_sha=facts.head_sha,
+                    result=result,
+                    now=_now(),
+                    omitted=omitted,
                 ),
                 # Only a finished review is a sample of what reviewing this
                 # many lines costs. A truncated or failed run spent less than

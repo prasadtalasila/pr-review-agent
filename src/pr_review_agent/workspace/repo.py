@@ -36,7 +36,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .exclusions import pathspec
+from .exclusions import omitted, pathspec
 from .gitcmd import WorkspaceError, run_git
 from .since import diff_start
 
@@ -144,6 +144,10 @@ class Checkout:
     pull request from ``merge_base``. ``reviewed`` always measures the diff
     actually shown, whichever it is. The tree on disk is the whole head
     either way, so a finding outside the diff can still be checked.
+
+    ``omitted`` is what ``excluded_paths`` withheld from that same diff, as
+    :func:`.exclusions.omitted` groups it, so the review can say what it did
+    not read.
     """
 
     path: Path
@@ -152,6 +156,7 @@ class Checkout:
     diff: str
     reviewed: DiffSize
     since_sha: str | None = None
+    omitted: tuple[tuple[str, int], ...] = ()
 
 
 class PullRequestTooLarge(WorkspaceError):
@@ -341,6 +346,7 @@ class Workspace:
             reviewed = DiffSize.from_numstat(await self._diff("--numstat", *span))
             self._gate(facts, reviewed, max_changed_files, max_changed_lines)
             diff = await self._diff(*span)
+            withheld = await self._withheld(*span[:2], excluded_paths)
             self.runs.mkdir(parents=True, exist_ok=True)
             await run_git(
                 "-C",
@@ -362,9 +368,29 @@ class Workspace:
                 diff=diff,
                 reviewed=reviewed,
                 since_sha=since_sha if start else None,
+                omitted=withheld,
             )
         finally:
             await self._teardown(run_path, ref)
+
+    async def _withheld(
+        self, start: str, head_sha: str, excluded_paths: tuple[str, ...]
+    ) -> tuple[tuple[str, int], ...]:
+        """The changed paths ``excluded_paths`` kept out of ``start..head_sha``.
+
+        Two name lists over the same range, with and without the pathspec,
+        rather than the pathspec inverted: the grouping needs to know what
+        *was* reviewed as well, to never name a directory that was. ``-z``
+        because a path may hold a newline, and ``--no-renames`` so both lists
+        pair a move the same way. Local git in the mirror; no engine, no
+        tokens.
+        """
+        if not excluded_paths:
+            return ()
+        names = ("--name-only", "-z", "--no-renames", start, head_sha)
+        changed = await self._diff(*names)
+        kept = await self._diff(*names, *pathspec(excluded_paths))
+        return omitted(changed.split("\0")[:-1], kept.split("\0")[:-1])
 
     async def _diff(self, *args: str) -> str:
         """``git diff`` in the mirror, where in-tree attributes cannot reach it."""

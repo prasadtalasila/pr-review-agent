@@ -37,3 +37,37 @@ def pathspec(patterns: tuple[str, ...]) -> list[str]:
     if not patterns:
         return []
     return ["--", _EVERYTHING, *(f"{_MAGIC}{pattern}" for pattern in patterns)]
+
+
+def omitted(changed: list[str], kept: list[str]) -> tuple[tuple[str, int], ...]:
+    """What the exclusions withheld from ``changed``, grouped for a reader.
+
+    Each entry is a path and how many changed files it stands for. A file is
+    grouped under its highest directory holding no ``kept`` file, so a
+    dependency bump reads as ``web/node_modules/`` rather than three hundred
+    lines -- and a directory is only ever named when *nothing* changed
+    under it was reviewed, which is what keeps "not reviewed: ``src/``" from
+    being said about a tree the review did read. A directory standing for
+    one file is named as that file. Sorted, so the same pull request renders
+    the same footer.
+
+    Grouping by the pattern that matched would say *why* instead, but git
+    does not report which one did, and a second implementation of its glob
+    rules is a second answer to "is this path excluded".
+    """
+    kept_dirs = {path[: i + 1] for path in kept for i, c in enumerate(path) if c == "/"}
+    groups: dict[str, list[str]] = {}
+    for path in sorted(set(changed) - set(kept)):
+        cut = next(
+            (
+                i + 1
+                for i, c in enumerate(path)
+                if c == "/" and path[: i + 1] not in kept_dirs
+            ),
+            None,
+        )
+        groups.setdefault(path[:cut] if cut else path, []).append(path)
+    return tuple(
+        (paths[0], 1) if len(paths) == 1 else (group, len(paths))
+        for group, paths in sorted(groups.items())
+    )

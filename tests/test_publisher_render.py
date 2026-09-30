@@ -8,16 +8,20 @@ from dataclasses import replace
 
 from publisher_harness import (
     HEAD,
+    NOON,
     NUMBERED,
     Transport,
     body_of,
     make_publisher,
+    opened,
     recorded,
     rendered,
+    result_of,
 )
 
 from pr_review_agent.engine import Severity
 from pr_review_agent.publisher import TRAILER, render
+from pr_review_agent.report import MAX_BODY_CHARS, MAX_OMITTED_ENTRIES
 
 # -- the rendered report -------------------------------------------------
 
@@ -93,6 +97,92 @@ def test_input_order_does_not_change_the_output():
         handle="claude",
     )
     assert reversed_ == rendered()
+
+
+# -- the coverage footer --------------------------------------------------
+
+
+def footer_of(omitted, findings=NUMBERED):
+    body = render(
+        HEAD,
+        findings,
+        pr_number=1,
+        round_number=1,
+        commits=1,
+        handle="claude",
+        omitted=omitted,
+    )
+    return body.split("\n\n")[-2]
+
+
+def test_the_footer_names_what_the_review_did_not_read():
+    footer = footer_of((("web/node_modules/", 300), ("yarn.lock", 1)))
+    assert footer == (
+        "_Not reviewed: 301 changed files matched `budget.excluded_paths`: "
+        "`web/node_modules/` (300 files), `yarn.lock`._"
+    )
+
+
+def test_nothing_withheld_renders_no_footer():
+    assert rendered() == render(
+        HEAD,
+        NUMBERED,
+        pr_number=1765,
+        round_number=3,
+        commits=3,
+        handle="claude",
+        omitted=(),
+    )
+    assert "Not reviewed" not in rendered()
+
+
+def test_a_clean_review_still_says_what_it_did_not_read():
+    """ "No issues found" over an unread lockfile is the case that matters most."""
+    assert "`yarn.lock`" in footer_of((("yarn.lock", 1),), findings=())
+
+
+def test_the_footer_counts_what_it_does_not_name():
+    many = tuple((f"p{i}.lock", 1) for i in range(MAX_OMITTED_ENTRIES + 3))
+    footer = footer_of(many)
+    assert f"{MAX_OMITTED_ENTRIES + 3} changed files" in footer
+    assert "and 3 more._" in footer
+    assert "`p12.lock`" not in footer
+
+
+def test_a_path_cannot_break_out_of_its_code_span():
+    """A contributor names the file, so a backtick in it must not end the fence."""
+    footer = footer_of((("a`@evil b\n## Blocking", 1),))
+    assert "\n" not in footer
+    assert "`` a`@evil b?## Blocking ``" in footer
+
+
+def test_the_footer_counts_against_the_comment_limit():
+    huge = (replace(NUMBERED[0], body="x" * MAX_BODY_CHARS),)
+    body = render(
+        HEAD,
+        huge,
+        pr_number=1,
+        round_number=1,
+        commits=1,
+        handle="claude",
+        omitted=(("yarn.lock", 1),),
+    )
+    assert len(body) <= MAX_BODY_CHARS
+    assert "`yarn.lock`" in body
+
+
+async def test_a_published_review_carries_the_recorded_footer(runs, posted):
+    runs.record(
+        opened(),
+        head_sha=HEAD,
+        result=result_of(),
+        now=NOON,
+        omitted=(("yarn.lock", 1),),
+    )
+    transport = Transport()
+    run = runs.unpublished(opened().dedupe_key)
+    await make_publisher(runs, posted, transport).publish(run)
+    assert "`yarn.lock`._" in body_of(transport)
 
 
 # -- the header's three numbers, at publish time -------------------------

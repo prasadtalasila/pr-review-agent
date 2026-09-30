@@ -244,7 +244,18 @@ async def test_an_excluded_path_is_not_in_the_diff_the_engine_is_shown(
         assert "def added():" in checkout.diff
 
 
+async def test_the_checkout_names_what_the_exclusions_withheld(workspace, git_remote):
+    """Issue #123: the review has to be able to say what it did not read."""
+    async with workspace.checkout(
+        facts(git_remote), **CAPS, excluded_paths=VENDORED
+    ) as checkout:
+        assert checkout.omitted == (("vendor/lib.js", 1),)
+
+
 async def test_excluding_nothing_counts_everything(workspace, git_remote):
+    async with workspace.checkout(facts(git_remote), **CAPS) as checkout:
+        assert checkout.omitted == ()
+
     async with workspace.checkout(facts(git_remote), **CAPS) as checkout:
         assert checkout.reviewed.lines == VENDORED_LINES + REVIEWABLE_LINES
         # feature.py, vendor/lib.js and the binary blob.

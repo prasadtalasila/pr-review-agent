@@ -154,6 +154,21 @@ def test_purging_empties_the_content_and_keeps_the_rest(runs, store):
     assert row(store, "pr_opened:o/r:7:deadbeef", "comment_id") == 555
 
 
+def test_what_the_review_did_not_read_is_kept_for_a_retried_post(runs):
+    """The checkout is gone by the time a failed post is retried."""
+    withheld = (("web/node_modules/", 300), ("yarn.lock", 1))
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON, omitted=withheld)
+    assert runs.unpublished("pr_opened:o/r:7:deadbeef").omitted == withheld
+
+
+def test_purging_empties_what_the_review_did_not_read(runs, store):
+    """The paths are the contributor's tree, like the findings."""
+    withheld = (("yarn.lock", 1),)
+    runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON, omitted=withheld)
+    runs.purge_content(REPO, 7, now=LATER)
+    assert row(store, "pr_opened:o/r:7:deadbeef", "omitted") == "[]"
+
+
 def test_purging_twice_purges_nothing_the_second_time(runs):
     runs.record(trigger(), head_sha=HEAD, result=result(), now=NOON)
     runs.purge_content(REPO, 7, now=LATER)

@@ -21,6 +21,8 @@ The contract this implements is ``docs/reporting/review-report.md``.
 
 from __future__ import annotations
 
+import re
+
 from .findings import Finding, Severity
 from .sanitise import sanitise
 from .triggers.mention import neutralise
@@ -86,6 +88,11 @@ TRUNCATION_NOTE = (
     "The lowest-severity sections were dropped first._"
 )
 
+#: How many withheld paths the coverage footer names before it counts the
+#: rest. A vendored tree is already one entry; this bounds the scattered
+#: files -- lockfiles, bundles -- that no directory can stand for.
+MAX_OMITTED_ENTRIES = 10
+
 
 def render(
     head_sha: str,
@@ -96,6 +103,7 @@ def render(
     commits: int,
     handle: str,
     moved_to: str | None = None,
+    omitted: tuple[tuple[str, int], ...] = (),
 ) -> str:
     """The comment body for a review of ``head_sha``.
 
@@ -122,6 +130,11 @@ def render(
     what a reader sees is unchanged, and what GitHub would have *done* with
     it -- notify an account, cross-reference an issue, render HTML -- it no
     longer does. The trailer is the only HTML in the result, and it is ours.
+    ``omitted`` is what ``budget.excluded_paths`` kept from the reviewer,
+    as ``(path, files)`` pairs, and renders as a footer saying so -- a clean
+    review that never saw the lockfile must not read as one that did. Empty
+    renders nothing, which is what the skill's renderer passes.
+
     See ``docs/reporting/review-report.md`` for the contract this
     implements.
     """
@@ -132,7 +145,12 @@ def render(
     if moved_to is not None:
         header = f"{header}\n\n{_moved_note(head_sha, moved_to)}"
     if not findings:
-        return neutralise(f"{header}\n\nNo issues found.\n\n{TRAILER}", handle)
+        return neutralise(
+            _assemble(
+                header, ["No issues found."], truncated=False, footer=_footer(omitted)
+            ),
+            handle,
+        )
     ordered = sorted(findings, key=_order)
     sections = []
     for heading, severities in SECTIONS:
@@ -141,7 +159,7 @@ def render(
             continue
         rendered = _prose(section) if heading == "Nits" else _items(section)
         sections.append(f"## {heading}\n\n{rendered}")
-    return neutralise(_fit(header, sections), handle)
+    return neutralise(_fit(header, sections, _footer(omitted)), handle)
 
 
 def refusal(notice: str, *, handle: str) -> str:
@@ -193,7 +211,43 @@ def _moved_note(head_sha: str, moved_to: str) -> str:
     )
 
 
-def _fit(header: str, sections: list[str]) -> str:
+def _footer(omitted: tuple[tuple[str, int], ...]) -> str:
+    """What the review did not read, in one line; empty when nothing.
+
+    Paths come from the contributor's tree, so they are untrusted even
+    though git printed them: each is fenced as code, and the line still
+    goes through ``sanitise`` in case a path's backticks break a fence.
+    """
+    if not omitted:
+        return ""
+    total = sum(files for _, files in omitted)
+    named = [
+        _code(path) + (f" ({files} files)" if files > 1 else "")
+        for path, files in omitted[:MAX_OMITTED_ENTRIES]
+    ]
+    if len(omitted) > MAX_OMITTED_ENTRIES:
+        named.append(f"and {len(omitted) - MAX_OMITTED_ENTRIES} more")
+    noun = "file" if total == 1 else "files"
+    return sanitise(
+        f"_Not reviewed: {total} changed {noun} matched `budget.excluded_paths`: "
+        f"{', '.join(named)}._"
+    )
+
+
+def _code(path: str) -> str:
+    """``path`` as a code span that its own characters cannot end early.
+
+    A control character is shown as ``?`` because a newline would end the
+    line the footer is on. The fence is one backtick longer than the
+    longest run inside, which is CommonMark's rule for a literal backtick.
+    """
+    path = "".join(c if c.isprintable() else "?" for c in path)
+    fence = "`" * (max(map(len, re.findall("`+", path)), default=0) + 1)
+    pad = " " if len(fence) > 1 else ""
+    return f"{fence}{pad}{path}{pad}{fence}"
+
+
+def _fit(header: str, sections: list[str], footer: str = "") -> str:
     """The body, trimmed to ``MAX_BODY_CHARS`` if it does not fit.
 
     Whole sections go first, lowest severity first, because ``SECTIONS`` is
@@ -204,21 +258,32 @@ def _fit(header: str, sections: list[str]) -> str:
     """
     kept = list(sections)
     while True:
-        body = _assemble(header, kept, truncated=len(kept) < len(sections))
+        body = _assemble(
+            header, kept, truncated=len(kept) < len(sections), footer=footer
+        )
         if len(body) <= MAX_BODY_CHARS:
             return body
         if len(kept) == 1:
             break
         kept.pop()
-    room = MAX_BODY_CHARS - len(_assemble(header, [""], truncated=True))
-    return _assemble(header, [kept[0][: max(room, 0)].rstrip()], truncated=True)
+    room = MAX_BODY_CHARS - len(_assemble(header, [""], truncated=True, footer=footer))
+    cut = kept[0][: max(room, 0)].rstrip()
+    return _assemble(header, [cut], truncated=True, footer=footer)
 
 
-def _assemble(header: str, sections: list[str], *, truncated: bool) -> str:
-    """Header, sections, the truncation note if one is owed, then the trailer."""
+def _assemble(
+    header: str, sections: list[str], *, truncated: bool, footer: str = ""
+) -> str:
+    """Header, sections, the notes owed, then the trailer.
+
+    The truncation note and the coverage footer sit together, above the
+    trailer: both say what this comment does not contain.
+    """
     parts = [header, *sections]
     if truncated:
         parts.append(TRUNCATION_NOTE)
+    if footer:
+        parts.append(footer)
     parts.append(TRAILER)
     return "\n\n".join(parts)
 
