@@ -17,6 +17,7 @@ from .cli import (
 )
 from .fake import FULL, FakeEngine
 from .models import (
+    Assessment,
     Capabilities,
     Finding,
     Outcome,
@@ -28,6 +29,7 @@ from .models import (
 
 __all__ = [
     "FULL",
+    "Assessment",
     "Capabilities",
     "ClaudeCliEngine",
     "CliEngine",

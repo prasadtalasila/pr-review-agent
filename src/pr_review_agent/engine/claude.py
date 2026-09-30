@@ -22,6 +22,7 @@ import json
 import logging
 
 from ..budget import Usage, UsageConfidence
+from ..findings import Recommendation, Risk
 from .cli import (
     CliEngine,
     EngineError,
@@ -30,6 +31,7 @@ from .cli import (
     UsageLimited,
 )
 from .models import (
+    Assessment,
     Capabilities,
     Finding,
     Outcome,
@@ -308,10 +310,12 @@ class ClaudeCliEngine(CliEngine):
                 envelope.get("subtype"),
             )
             return ReviewResult(findings=(), usage=usage, outcome=outcome)
+        structured = envelope["structured_output"]
         return ReviewResult(
-            findings=self._findings(envelope["structured_output"]),
+            findings=self._findings(structured),
             usage=usage,
             outcome=outcome,
+            assessment=self._assessment(structured),
         )
 
     def _envelope(self, stdout: str) -> dict:
@@ -392,4 +396,24 @@ class ClaudeCliEngine(CliEngine):
         except (KeyError, TypeError, ValueError) as exc:
             raise EngineProtocolError(
                 f"{self.name} returned findings that do not fit the schema: {exc}"
+            ) from exc
+
+    def _assessment(self, structured: dict) -> Assessment:
+        """The required assessment, or a protocol error like a bad finding.
+
+        Missing is refused rather than tolerated: the schema requires it, so
+        output without it is output that did not follow the schema.
+        """
+        try:
+            item = structured["assessment"]
+            return Assessment(
+                effort=int(item["effort"]),
+                risk=Risk(item["risk"]),
+                recommendation=Recommendation(item["recommendation"]),
+                priority_files=tuple(str(path) for path in item["priority_files"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EngineProtocolError(
+                f"{self.name} returned an assessment that does not fit the schema: "
+                f"{exc}"
             ) from exc

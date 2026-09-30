@@ -20,8 +20,10 @@ from publisher_harness import (
 )
 
 from pr_review_agent.engine import Severity
+from pr_review_agent.findings import Assessment, Recommendation, Risk
 from pr_review_agent.publisher import TRAILER, render
 from pr_review_agent.report import MAX_BODY_CHARS, MAX_OMITTED_ENTRIES
+from pr_review_agent.triggers.mention import has_mention
 
 # -- the rendered report -------------------------------------------------
 
@@ -183,6 +185,70 @@ async def test_a_published_review_carries_the_recorded_footer(runs, posted):
     run = runs.unpublished(opened().dedupe_key)
     await make_publisher(runs, posted, transport).publish(run)
     assert "`yarn.lock`._" in body_of(transport)
+
+
+# -- the assessment line (issue #126) -------------------------------------
+
+ASSESSMENT = Assessment(
+    effort=3,
+    risk=Risk.HIGH,
+    recommendation=Recommendation.MERGE_WITH_CAUTION,
+    priority_files=("src/budget.py", "src/publisher.py"),
+)
+
+
+def render_with(assessment, findings=NUMBERED):
+    return render(
+        HEAD,
+        findings,
+        pr_number=1765,
+        round_number=3,
+        commits=3,
+        handle="claude",
+        assessment=assessment,
+    )
+
+
+def test_the_assessment_is_the_line_under_the_header():
+    lines = render_with(ASSESSMENT).splitlines()
+    assert lines[1] == ""
+    assert lines[2] == (
+        "**Effort** 3/5 · **Risk** high · **Merge with caution** · "
+        "Start with: `src/budget.py`, `src/publisher.py`"
+    )
+    assert lines[4] == "## Blocking"
+
+
+def test_an_empty_review_still_carries_its_assessment():
+    body = render_with(ASSESSMENT, findings=())
+    assert body.index("**Effort** 3/5") < body.index("No issues found.")
+
+
+def test_no_priority_files_leaves_off_the_start_with():
+    line = render_with(replace(ASSESSMENT, priority_files=())).splitlines()[2]
+    assert line == "**Effort** 3/5 · **Risk** high · **Merge with caution**"
+
+
+def test_a_run_without_an_assessment_renders_no_line():
+    """Only a run recorded before migration 18 can reach here without one."""
+    assert render_with(None) == rendered()
+
+
+def test_a_priority_file_cannot_mention_or_break_the_line():
+    """The paths are engine output about the contributor's tree."""
+    hostile = replace(ASSESSMENT, priority_files=("@evil", "a`b\n## Blocking <b>"))
+    line = render_with(hostile).splitlines()[2]
+    assert "`@evil`" in line
+    assert "`` a`b?## Blocking <b> ``" in line
+    assert not has_mention(render_with(hostile), "evil")
+
+
+async def test_a_published_review_carries_the_recorded_assessment(runs, posted):
+    transport = Transport()
+    await make_publisher(runs, posted, transport).publish(
+        recorded(runs, assessment=ASSESSMENT)
+    )
+    assert "**Effort** 3/5 · **Risk** high" in body_of(transport)
 
 
 # -- the header's three numbers, at publish time -------------------------

@@ -274,6 +274,11 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
     # after the checkout is gone. Rows written before this read as empty:
     # nothing recorded what they left out, and the footer says nothing.
     ("ALTER TABLE runs ADD COLUMN omitted TEXT NOT NULL DEFAULT '[]'",),
+    # The reviewer's assessment of the whole pull request (issue #126), as a
+    # JSON object, rendered on a line under the header. NULL for rows written
+    # before it existed, and for purged ones: `priority_files` are paths
+    # from the contributor's tree. A NULL renders no line.
+    ("ALTER TABLE runs ADD COLUMN assessment TEXT",),
 )
 
 SCHEMA_VERSION = len(_MIGRATIONS)

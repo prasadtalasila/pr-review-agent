@@ -1,6 +1,45 @@
 {
   "type": "object",
   "properties": {
+    "assessment": {
+      "type": "object",
+      "properties": {
+        "effort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "risk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "recommendation": {
+          "type": "string",
+          "enum": [
+            "safe_to_merge",
+            "merge_with_caution",
+            "changes_required"
+          ]
+        },
+        "priority_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5
+        }
+      },
+      "required": [
+        "effort",
+        "risk",
+        "recommendation",
+        "priority_files"
+      ]
+    },
     "findings": {
       "type": "array",
       "items": {
@@ -44,6 +83,7 @@
     }
   },
   "required": [
+    "assessment",
     "findings"
   ]
 }

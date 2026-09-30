@@ -9,6 +9,7 @@ the boundary legible to a model that is already confined.
 
 from __future__ import annotations
 
+from ..findings import MAX_PRIORITY_FILES
 from ..skills import reference
 from .models import Finding, ReviewRequest
 
@@ -61,9 +62,31 @@ FALSE_POSITIVES = reference("false-positives.md")
 #: tokens and produced nothing. ``title`` earns its place because the report
 #: cannot be rendered without it; the remedy does not, and is required by the
 #: prompt as the last paragraph of ``body`` instead.
+#:
+#: ``assessment`` is required despite that rule, by decision (issue #126):
+#: a review without one is refused rather than posted without it. Its four
+#: fields are enums and bounded integers, the shapes a constrained decoder
+#: rarely gets wrong, and it costs a few dozen output tokens.
 FINDINGS_SCHEMA: dict = {
     "type": "object",
     "properties": {
+        "assessment": {
+            "type": "object",
+            "properties": {
+                "effort": {"type": "integer", "minimum": 1, "maximum": 5},
+                "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+                "recommendation": {
+                    "type": "string",
+                    "enum": ["safe_to_merge", "merge_with_caution", "changes_required"],
+                },
+                "priority_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": MAX_PRIORITY_FILES,
+                },
+            },
+            "required": ["effort", "risk", "recommendation", "priority_files"],
+        },
         "findings": {
             "type": "array",
             "items": {
@@ -81,9 +104,9 @@ FINDINGS_SCHEMA: dict = {
                 },
                 "required": ["path", "line", "severity", "title", "body"],
             },
-        }
+        },
     },
-    "required": ["findings"],
+    "required": ["assessment", "findings"],
 }
 
 

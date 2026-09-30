@@ -1,5 +1,7 @@
 ## Review: PR #1765 — round 3 (`d61de17`, 3 commits)
 
+**Effort** 3/5 · **Risk** medium · **Changes required** · Start with: `script/docs.sh`, `script/build_brand.py`
+
 ## Blocking
 
 2. **`script/docs.sh` copies an asset this PR deletes, so the docs build breaks.**

@@ -54,6 +54,15 @@ USAGE = {
 }
 
 
+#: A valid assessment, which every completed run must carry (issue #126).
+ASSESSMENT = {
+    "effort": 2,
+    "risk": "low",
+    "recommendation": "safe_to_merge",
+    "priority_files": ["src/x.py"],
+}
+
+
 def envelope(**overrides) -> str:
     """A result envelope shaped like the one the CLI prints."""
     data = {
@@ -65,7 +74,7 @@ def envelope(**overrides) -> str:
         "total_cost_usd": 0.12,
         "usage": USAGE,
         "modelUsage": {"claude-sonnet-5": {"inputTokens": 1_000}},
-        "structured_output": {"findings": []},
+        "structured_output": {"assessment": ASSESSMENT, "findings": []},
     }
     data.update(overrides)
     return json.dumps(data)

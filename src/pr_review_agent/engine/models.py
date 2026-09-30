@@ -21,6 +21,7 @@ from ..budget import Mode, Usage, UsageConfidence
 # one engine and now live in :mod:`pr_review_agent.findings`, which is
 # poor enough to be copied onto a machine without this package. Importing
 # them from here still works, because half the codebase does.
+from ..findings import Assessment as Assessment
 from ..findings import Finding as Finding
 from ..findings import Severity as Severity
 from ..triggers.models import Trigger
@@ -105,11 +106,16 @@ class ReviewResult:
     ``settle`` takes exactly this object. Usage is carried on every outcome,
     including the failed ones: a run that spent money and produced nothing
     still has to settle.
+
+    ``assessment`` is required of a completed run by the schema, and the
+    adapter refuses output without one. It is optional here only because a
+    run that did not finish has none to give.
     """
 
     findings: tuple[Finding, ...]
     usage: Usage
     outcome: Outcome = Outcome.COMPLETED
+    assessment: Assessment | None = None
 
     def __post_init__(self) -> None:
         # An unknown cost and a number are mutually exclusive answers. A
@@ -128,6 +134,8 @@ class ReviewResult:
         # adapter: "the publisher may post these" is a property of the seam.
         if self.findings and self.outcome is not Outcome.COMPLETED:
             raise ValueError(f"a {self.outcome} run cannot carry publishable findings")
+        if self.assessment is not None and self.outcome is not Outcome.COMPLETED:
+            raise ValueError(f"a {self.outcome} run cannot carry an assessment")
 
 
 @runtime_checkable

@@ -10,7 +10,14 @@ import asyncio
 import logging
 
 import pytest
-from cli_engine_harness import USAGE, Recorder, engine, envelope, request
+from cli_engine_harness import (
+    ASSESSMENT,
+    USAGE,
+    Recorder,
+    engine,
+    envelope,
+    request,
+)
 
 from pr_review_agent.budget import UsageConfidence
 from pr_review_agent.engine import (
@@ -21,6 +28,7 @@ from pr_review_agent.engine import (
     Severity,
     UsageLimited,
 )
+from pr_review_agent.findings import Assessment, Recommendation, Risk
 
 # -- parsing the envelope --
 
@@ -33,7 +41,13 @@ async def test_a_successful_run_yields_findings(tmp_path, run):
         "title": "The retry loop never terminates on a persistent failure.",
         "body": "unbounded loop",
     }
-    run(Recorder(envelope(structured_output={"findings": [finding]})))
+    run(
+        Recorder(
+            envelope(
+                structured_output={"assessment": ASSESSMENT, "findings": [finding]}
+            )
+        )
+    )
     result = await engine().review(request(tmp_path))
     assert result.outcome is Outcome.COMPLETED
     assert result.findings[0].severity is Severity.MAJOR
@@ -86,8 +100,49 @@ async def test_unreadable_output_raises_rather_than_reviewing_nothing(
 
 
 async def test_findings_that_do_not_fit_the_schema_raise(tmp_path, run):
-    run(Recorder(envelope(structured_output={"findings": [{"path": "x"}]})))
+    run(
+        Recorder(
+            envelope(
+                structured_output={
+                    "assessment": ASSESSMENT,
+                    "findings": [{"path": "x"}],
+                }
+            )
+        )
+    )
     with pytest.raises(EngineProtocolError, match="do not fit the schema"):
+        await engine().review(request(tmp_path))
+
+
+async def test_a_successful_run_carries_its_assessment(tmp_path, run):
+    run(Recorder(envelope()))
+    result = await engine().review(request(tmp_path))
+    assert result.assessment == Assessment(
+        effort=2,
+        risk=Risk.LOW,
+        recommendation=Recommendation.SAFE_TO_MERGE,
+        priority_files=("src/x.py",),
+    )
+
+
+@pytest.mark.parametrize(
+    "assessment",
+    [
+        None,
+        {**ASSESSMENT, "effort": 6},
+        {**ASSESSMENT, "risk": "severe"},
+        {**ASSESSMENT, "recommendation": "approve"},
+        {**ASSESSMENT, "priority_files": ["a", "b", "c", "d", "e", "f"]},
+        {k: v for k, v in ASSESSMENT.items() if k != "priority_files"},
+    ],
+)
+async def test_a_missing_or_malformed_assessment_raises(tmp_path, run, assessment):
+    """Mandatory, not optional: a review without one is not posted without one."""
+    structured = {"findings": []}
+    if assessment is not None:
+        structured["assessment"] = assessment
+    run(Recorder(envelope(structured_output=structured)))
+    with pytest.raises(EngineProtocolError, match="assessment that does not fit"):
         await engine().review(request(tmp_path))
 
 
@@ -164,7 +219,16 @@ MARKED_FINDING = {
 
 async def test_a_marker_quoted_by_a_finding_is_not_a_usage_limit(tmp_path, run):
     """The review's own prose is attacker-influenced; it must not trip the breaker."""
-    run(Recorder(envelope(structured_output={"findings": [MARKED_FINDING]})))
+    run(
+        Recorder(
+            envelope(
+                structured_output={
+                    "assessment": ASSESSMENT,
+                    "findings": [MARKED_FINDING],
+                }
+            )
+        )
+    )
     result = await engine().review(request(tmp_path))
 
     assert result.outcome is Outcome.COMPLETED
@@ -187,7 +251,10 @@ async def test_an_errored_envelope_still_reports_its_usage_limit(tmp_path, run):
                 subtype="success",
                 is_error=True,
                 result="Claude usage limit reached",
-                structured_output={"findings": [MARKED_FINDING]},
+                structured_output={
+                    "assessment": ASSESSMENT,
+                    "findings": [MARKED_FINDING],
+                },
             )
         )
     )

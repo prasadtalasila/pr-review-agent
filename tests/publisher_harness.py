@@ -147,7 +147,7 @@ def opened():
     )
 
 
-def recorded(runs, findings=FINDINGS, head_sha=HEAD, key="k1"):
+def recorded(runs, findings=FINDINGS, head_sha=HEAD, key="k1", assessment=None):
     """Store a run the way the worker does, and hand back what it stored.
 
     Recording before publishing is the order the worker uses and the reason
@@ -157,7 +157,7 @@ def recorded(runs, findings=FINDINGS, head_sha=HEAD, key="k1"):
     runs.record(
         replace(opened(), dedupe_key=key),
         head_sha=head_sha,
-        result=result_of(findings),
+        result=result_of(findings, assessment),
         now=NOON,
     )
     return RecordedRun(
@@ -168,6 +168,7 @@ def recorded(runs, findings=FINDINGS, head_sha=HEAD, key="k1"):
         outcome=Outcome.COMPLETED,
         findings=findings,
         comment_id=None,
+        assessment=assessment,
     )
 
 
@@ -206,11 +207,12 @@ def body_of(transport: Transport) -> str:
     return json.loads(transport.writes[0].content)["body"]
 
 
-def result_of(findings=FINDINGS):
+def result_of(findings=FINDINGS, assessment=None):
     return ReviewResult(
         findings=findings,
         usage=Usage(100, UsageConfidence.EXACT, engine="fake"),
         outcome=Outcome.COMPLETED,
+        assessment=assessment,
     )
 
 

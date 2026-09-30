@@ -71,6 +71,7 @@ sys.path.append(str(Path(__file__).resolve().parent / "_vendor"))
 
 try:
     from pr_review_agent.report import (
+        ASSESSMENT_RE,
         MAX_BODY_CHARS,
         SECTIONS,
         TRAILER,
@@ -79,9 +80,9 @@ try:
 except ModuleNotFoundError as missing:  # pragma: no cover - see test_skill.py
     raise _missing(
         "check_report.py",
-        "This script reads `MAX_BODY_CHARS`, `SECTIONS`, `TRAILER` and\n"
-        "`TRUNCATION_NOTE` out of `report`; the rules it enforces are\n"
-        "the renderer's own.\n",
+        "This script reads `ASSESSMENT_RE`, `MAX_BODY_CHARS`, `SECTIONS`,\n"
+        "`TRAILER` and `TRUNCATION_NOTE` out of `report`; the rules it\n"
+        "enforces are the renderer's own.\n",
     ) from missing
 
 HEADER = re.compile(
@@ -131,6 +132,17 @@ def check_header(report: Report) -> list[str]:
     return []
 
 
+def check_assessment(report: Report) -> list[str]:
+    """**assessment** -- the first line after the header, on every report."""
+    body = [line for line in report.lines[1:] if line.strip()]
+    if not body or not ASSESSMENT_RE.match(body[0]):
+        return [
+            "assessment: the line after the header must be the assessment "
+            "(effort, risk, recommendation)"
+        ]
+    return []
+
+
 def check_sections(report: Report) -> list[str]:
     """**sections** -- only the three known headings, each once, in order."""
     found = report.headings
@@ -165,7 +177,11 @@ def check_empty_report(report: Report) -> list[str]:
     """**empty-report** -- a report with no sections says so, and stops."""
     if report.headings:
         return []
-    middle = [line for line in report.lines[1:] if line.strip() and line != TRAILER]
+    middle = [
+        line
+        for line in report.lines[1:]
+        if line.strip() and line != TRAILER and not ASSESSMENT_RE.match(line)
+    ]
     if middle != ["No issues found."]:
         return ["empty-report: a report with no sections says 'No issues found.'"]
     return []
@@ -189,6 +205,7 @@ def check_length(report: Report) -> list[str]:
 
 CHECKS = (
     check_header,
+    check_assessment,
     check_sections,
     check_numbering,
     check_nits_are_prose,

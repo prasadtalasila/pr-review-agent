@@ -21,6 +21,7 @@ from publisher_harness import (
 from pr_review_agent import publisher as publisher_module
 from pr_review_agent.config import PublishConfig
 from pr_review_agent.engine import Finding, Severity
+from pr_review_agent.findings import Assessment, Recommendation, Risk
 from pr_review_agent.poller.client import GitHubClientError
 from pr_review_agent.publisher import PublishOutcome
 from pr_review_agent.triggers.mention import has_mention
@@ -89,6 +90,22 @@ async def test_a_review_that_asks_to_be_approved_still_posts_a_comment(runs, pos
     assert not any("/reviews" in path for path in transport.paths)
 
 
+async def test_a_changes_required_assessment_still_posts_only_a_comment(runs, posted):
+    """Issue #126: the recommendation is text in the comment, never a label."""
+    transport = Transport()
+    assessment = Assessment(
+        effort=5,
+        risk=Risk.HIGH,
+        recommendation=Recommendation.CHANGES_REQUIRED,
+        priority_files=("README.md",),
+    )
+    await make_publisher(runs, posted, transport).publish(
+        recorded(runs, assessment=assessment)
+    )
+    assert [w.url.path for w in transport.writes] == ["/repos/o/r/issues/7/comments"]
+    assert not any("/labels" in path or "/reviews" in path for path in transport.paths)
+
+
 async def test_no_request_ever_names_a_review_event(runs, posted):
     transport = Transport()
     await make_publisher(runs, posted, transport).publish(recorded(runs))
@@ -103,7 +120,7 @@ def test_the_publisher_cannot_name_an_approving_event():
     test to do it, which is the point.
     """
     source = inspect.getsource(publisher_module)
-    for forbidden in ("APPROVE", "REQUEST_CHANGES", "/reviews"):
+    for forbidden in ("APPROVE", "REQUEST_CHANGES", "/reviews", "/labels"):
         assert forbidden not in source
 
 

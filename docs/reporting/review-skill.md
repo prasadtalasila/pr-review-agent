@@ -14,7 +14,7 @@ Then start a Claude Code session and ask for a review. The skill supplies:
 | Part | What it is |
 | --- | --- |
 | `SKILL.md` | The workflow: collect the header facts, read the contract, sweep, discard, write findings as JSON, render, check. |
-| `references/finding-contract.md` | What is in scope, what to sweep, how a title and a body are written, what each severity means. The same file `engine/prompt.py` reads. |
+| `references/finding-contract.md` | What is in scope, what to sweep, how a title and a body are written, what each severity means, and how to fill in the assessment. The same file `engine/prompt.py` reads. |
 | `references/report-contract.md` | The rendering rules — sections, ordering, numbering, the empty report, the trailer. See [Report template](review-report.md). |
 | `references/false-positives.md` | What not to report. The other file `engine/prompt.py` reads. |
 | `scripts/collect_context.py` | Head sha, merge base, commit count and changed paths, out of git — and which standards files exist at the merge base. |
@@ -42,7 +42,7 @@ whole import closure into `<skill>/scripts/_vendor/pr_review_agent/`:
 | --- | --- |
 | `report.py` | `render` — the sections, ordering, truncation and trailer. |
 | `numbering.py` | `assign` — stable numbers, and the gaps that mean "fixed". |
-| `findings.py` | `Finding` and `Severity`. |
+| `findings.py` | `Finding`, `Severity` and `Assessment`. |
 | `sanitise.py`, `triggers/mention.py` | What `render` puts every title and body through before assembling them. |
 | `_compat.py` | The `StrEnum` shim for Python 3.10. |
 
