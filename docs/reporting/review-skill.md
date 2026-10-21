@@ -17,7 +17,9 @@ Then start a Claude Code session and ask for a review. The skill supplies:
 | `SKILL.md` | The workflow: collect the header facts, read the contract, sweep, discard, write findings as JSON, render, check. |
 | `references/finding-contract.md` | What is in scope, what to sweep, how a title and a body are written, what each severity means, and how to fill in the assessment. The same file `engine/prompt.py` reads. |
 | `references/report-contract.md` | The rendering rules — sections, ordering, numbering, the empty report, the trailer. See [Report template](review-report.md). |
-| `references/false-positives.md` | What not to report. The other file `engine/prompt.py` reads. |
+| `references/smell-baseline.md` | Twelve code smells checked on every review, capped at `minor` and overridden by the repository's standards. Also read by `engine/prompt.py`. |
+| `references/false-positives.md` | What not to report. Also read by `engine/prompt.py`. |
+| `THIRD-PARTY.md` | Where the adapted text came from, at which upstream commit, and the MIT licences it is used under. |
 | `scripts/collect_context.py` | Head sha, merge base, commit count and changed paths, out of git — and which standards files exist at the merge base. |
 | `scripts/render_report.py` | `findings.json` → a report, through `report.render` itself. |
 | `scripts/check_report.py` | A hand-written or hand-edited report, checked against the contract. |
@@ -92,8 +94,8 @@ from whoever opened the pull request. Three of the four injection defences in
 make a directory loadable.
 
 The engine is given the same text by a route that widens nothing:
-`engine/prompt.py` reads `finding-contract.md` and `false-positives.md` out
-of the package and splices them into the prompt. `report-contract.md` is not
+`engine/prompt.py` reads `finding-contract.md`, `smell-baseline.md` and
+`false-positives.md` out of the package and splices them into the prompt. `report-contract.md` is not
 sent and does not need to be — the sections, the ordering, the numbering and
 the trailer are `report.render`'s, decided in code, so the daemon's report
 format does not depend on a model complying with a description of it. If a future release runs the engine inside bubblewrap

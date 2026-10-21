@@ -39,6 +39,40 @@ def test_the_prompt_sweeps_for_spending_and_swallowed_failures(tmp_path):
     assert "tolerated without a stated reason" in prompt
 
 
+def test_the_prompt_sweeps_format_changes_and_the_tests_a_diff_adds(tmp_path):
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "A change to a stored or exchanged format" in prompt
+    assert "a mock that would still pass with the code deleted" in prompt
+
+
+def test_the_prompt_carries_the_smell_baseline(tmp_path):
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "## Code-smell baseline" in prompt
+    for smell in ("Feature Envy", "Speculative Generality", "Refused Bequest"):
+        assert f"**{smell}**" in prompt
+
+
+def test_a_smell_is_capped_below_a_defect_and_yields_to_the_repository(tmp_path):
+    """A heuristic must not outrank a defect, nor overrule a written standard."""
+    prompt = " ".join(build_prompt(request(tmp_path), standards="").split())
+    assert "Report it as `minor` or `nit`" in prompt
+    assert "The repository overrides it." in prompt
+    assert "The diff has to introduce it or make it worse." in prompt
+
+
+def test_the_smell_baseline_sits_between_the_contract_and_the_filter(tmp_path):
+    prompt = build_prompt(request(tmp_path), standards="")
+    baseline = prompt.index("## Code-smell baseline")
+    assert prompt.index("## Out of scope") < baseline
+    assert baseline < prompt.index("## What not to report")
+
+
+def test_the_filter_admits_the_smell_baseline_as_written_down_style(tmp_path):
+    """Otherwise "style the project has not written down" drops every smell."""
+    prompt = build_prompt(request(tmp_path), standards="")
+    assert "The code-smell baseline is the one exception" in prompt
+
+
 def test_the_prompt_requires_a_remedy_as_the_last_paragraph(tmp_path):
     prompt = build_prompt(request(tmp_path), standards="")
     assert "last paragraph of `body`" in prompt

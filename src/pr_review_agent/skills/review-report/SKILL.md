@@ -61,6 +61,11 @@ answer in prose and stop.
    never opens — the build script that copies a deleted asset, the test whose
    selector the change invalidates.
 
+   Check the hunks against `references/smell-baseline.md` as you go: twelve
+   code smells that apply even where the repository documents nothing,
+   reported as `minor` or `nit` and never against a standard the repository
+   states.
+
 5. **Discard.** Read `references/false-positives.md` and drop everything it
    names. A report that spends its first item on a nitpick does not get read
    to its second.
@@ -90,6 +95,7 @@ Read these on demand, not up front.
 |---|---|
 | `references/finding-contract.md` | Before reviewing. What is in scope, what to sweep, how to write a title and a body, what each severity means, and how to fill in the assessment. |
 | `references/report-contract.md` | When rendering by hand, or when a check fails and you need the rule. The assessment line, sections, ordering, numbering, the empty report, the trailer. |
+| `references/smell-baseline.md` | While sweeping. The twelve code smells a diff may introduce, and the rules that cap them at `minor` and let the repository override them. |
 | `references/false-positives.md` | After sweeping, before writing. What not to report. |
 
 ## Scripts

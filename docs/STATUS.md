@@ -34,6 +34,7 @@ they are reproduced here so they survive the issue being closed.
 | Coverage footer naming what the exclusions withheld | implemented, unit tested |
 | Mandatory effort, risk and merge assessment on every review | implemented, unit tested |
 | `@claude describe` and the description skill | implemented, unit tested |
+| Code-smell baseline and the format and test sweep items in the review contract | implemented, unit tested |
 | Retention sweep | not started |
 
 The ordering is deliberate: the **budget governor lands before the review

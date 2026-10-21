@@ -30,6 +30,9 @@ and a report whose first entry gets skipped does not get read to its second.
   If the repo has a `CLAUDE.md` or equivalent, a finding may cite it — and
   must quote the line it cites, because a rule the document does not actually
   contain is the most common false positive there is.
+  The code-smell baseline is the one exception: it is written down, in
+  `smell-baseline.md`, and a smell the diff introduces may be reported under
+  its rules.
 
 ### Not report text
 

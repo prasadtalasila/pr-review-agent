@@ -37,6 +37,12 @@ When the diff touches something, check what depends on it. At minimum:
 - **Generated artefacts** committed alongside their generator: is the
   generator runnable on CI, and does the artefact match what it would
   produce?
+- **A change to a stored or exchanged format**: a database schema, a config
+  key, a file layout, a wire format. Does a migration come with it, and does
+  data or configuration the previous release wrote still load?
+- **Tests the diff adds or changes.** Do they exercise the real behaviour, or
+  a mock that would still pass with the code deleted? Do they reach the edge
+  cases the change creates -- the empty input, the boundary, the error path?
 - **A new path to something that spends or authenticates.** A call that
   costs money, or code that creates, reads, logs or forwards a credential.
   Money and identity are the two classes of mistake a later commit cannot

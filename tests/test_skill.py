@@ -33,6 +33,7 @@ from pr_review_agent.engine.prompt import (
     FALSE_POSITIVES,
     FINDINGS_SCHEMA,
     REVIEW_INSTRUCTIONS,
+    SMELL_BASELINE,
 )
 from pr_review_agent.findings import Assessment
 from pr_review_agent.publisher import TRAILER, render
@@ -79,6 +80,28 @@ def test_prompt_reads_the_false_positive_reference() -> None:
     assert skills.reference("false-positives.md") == FALSE_POSITIVES
 
 
+def test_prompt_reads_the_smell_baseline_reference() -> None:
+    """The smell baseline reaches the daemon from the file a session reads."""
+    assert skills.reference("smell-baseline.md") == SMELL_BASELINE
+
+
+@pytest.mark.parametrize(
+    ("upstream", "commit"),
+    [
+        ("https://github.com/mattpocock/skills", "5beb35b"),
+        ("https://github.com/obra/superpowers", "b739a8a"),
+    ],
+)
+def test_adapted_text_names_its_upstream_and_carries_its_licence(
+    upstream: str, commit: str
+) -> None:
+    """Adapted MIT text ships with the notice the licence asks for."""
+    notice = (ROOT / "THIRD-PARTY.md").read_text(encoding="utf-8")
+    assert upstream in notice
+    assert commit in notice
+    assert notice.count("Permission is hereby granted, free of charge") == 2
+
+
 def test_schema_asset_matches_the_schema_the_engine_enforces() -> None:
     """A finding written against the asset is one ``--json-schema`` accepts."""
     asset = json.loads((ASSETS / "findings.schema.json").read_text(encoding="utf-8"))
@@ -107,10 +130,16 @@ def test_skill_front_matter_names_the_directory() -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["finding-contract.md", "report-contract.md", "false-positives.md"]
+    "name",
+    [
+        "finding-contract.md",
+        "report-contract.md",
+        "false-positives.md",
+        "smell-baseline.md",
+    ],
 )
 def test_every_reference_the_skill_names_exists(name: str) -> None:
-    """SKILL.md sends the reader to three files; all three have to be there."""
+    """SKILL.md sends the reader to four files; all four have to be there."""
     assert name in (ROOT / "SKILL.md").read_text(encoding="utf-8")
     assert skills.reference(name)
 
