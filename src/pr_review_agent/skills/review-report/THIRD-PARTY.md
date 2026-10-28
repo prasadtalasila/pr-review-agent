@@ -7,9 +7,9 @@ questions to the user, its own output format), and none of that applies to
 a reviewer that answers in `findings.schema.json`.
 
 | Here | Adapted from | Upstream commit |
-|---|---|---|
-| `references/smell-baseline.md`: the twelve smells, their remedies, and the rules that the repository overrides the baseline and a smell is a judgement call | `skills/engineering/code-review/SKILL.md` in https://github.com/mattpocock/skills | `5beb35b040e3de97e54fa9e386d7e42d15c295c2` |
-| `references/finding-contract.md`, *What to sweep*: the stored-or-exchanged-format item (migration, backward compatibility) and the tests-the-diff-adds item (real behaviour, edge cases) | `skills/requesting-code-review/code-reviewer.md` in https://github.com/obra/superpowers | `b739a8af570e10a95898f2bdf6cec97467fa6c12` |
+| --- | --- | --- |
+| `references/smell-baseline.md`: the twelve smells, their remedies, and the rules that the repository overrides the baseline and a smell is a judgement call | `skills/engineering/code-review/SKILL.md` in <https://github.com/mattpocock/skills> | `5beb35b040e3de97e54fa9e386d7e42d15c295c2` |
+| `references/finding-contract.md`, *What to sweep*: the stored-or-exchanged-format item (migration, backward compatibility) and the tests-the-diff-adds item (real behaviour, edge cases) | `skills/requesting-code-review/code-reviewer.md` in <https://github.com/obra/superpowers> | `b739a8af570e10a95898f2bdf6cec97467fa6c12` |
 
 ## mattpocock/skills
 
