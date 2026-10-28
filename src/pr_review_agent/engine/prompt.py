@@ -57,6 +57,16 @@ REVIEW_INSTRUCTIONS = reference("finding-contract.md")
 #: the entry after it does not get read.
 FALSE_POSITIVES = reference("false-positives.md")
 
+#: Twelve code smells every review checks the diff against, capped at
+#: ``minor`` and overridden by the repository's own standards. Adapted from
+#: an MIT-licensed skill; the skill directory's ``THIRD-PARTY.md`` names the
+#: upstream commit and carries its licence.
+#:
+#: Sent between the contract and the filter: it is a source of findings, so
+#: it belongs after the rules a finding obeys, and the filter is written to
+#: admit it, so the filter has to come after it.
+SMELL_BASELINE = reference("smell-baseline.md")
+
 #: The shape a finding has to arrive in. Kept flat and small: the more a
 #: schema demands, the more runs end in a validation failure that spent
 #: tokens and produced nothing. ``title`` earns its place because the report
@@ -129,6 +139,8 @@ def build_prompt(request: ReviewRequest, standards: str) -> str:
         "The working directory holds the pull request head. Read it.",
         "",
         REVIEW_INSTRUCTIONS,
+        "",
+        SMELL_BASELINE,
         "",
         FALSE_POSITIVES,
     ]
