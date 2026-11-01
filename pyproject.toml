@@ -65,13 +65,13 @@ include = [
 ]
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^9.0.3"
+pytest = "^9.2.0"
 pytest-cov = "^7.1"
-ruff = "^0.16"
-pylint = "^4.0"
+ruff = "^0.17"
+pylint = "^4.1"
 pyright = "^1.1"
-pytest-asyncio = "^1.2"
-cryptography = ">=42"
+pytest-asyncio = "^1.4"
+cryptography = ">=50.0.2"
 
 [tool.poetry.group.docs]
 optional = true
